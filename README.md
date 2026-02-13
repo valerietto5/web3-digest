@@ -44,3 +44,26 @@ python wallet_cli.py --account val-main --currency usd --assets btc eth
 
 
 
+
+
+## Sample output
+
+Example run:
+
+python wallet_cli.py --account val-main --currency usd --assets btc eth
+
+Account: val-main | Currency: usd
+Generated: 2026-02-13T04:50:11.598021+00:00
+Balances updated: just now | Prices updated: just now
+------------------------------------------------------------
+Total: 1,052.05 usd
+24h change: -11.43 usd (-1.07%)
+------------------------------------------------------------
+Positions:
+  btc  amt=0.01         px=66281         value=662.81 usd  | 24h: -1.22%
+  eth  amt=0.2          px=1946.21       value=389.24 usd  | 24h: -0.83%
+
+
+
+
+
