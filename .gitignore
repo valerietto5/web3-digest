@@ -11,3 +11,9 @@ wallet.db
 
 # Secrets / environment
 .env
+
+# Local account config (do not upload)
+accounts.json
+
+# Generated exports 
+exports/
