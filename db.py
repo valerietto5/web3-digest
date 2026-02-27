@@ -4,6 +4,16 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable, Optional
 
+from contextlib import contextmanager
+
+@contextmanager
+def open_conn(db_path: Path):
+    con = get_conn(db_path)
+    try:
+        yield con
+    finally:
+        con.close()
+
 DB_PATH = Path("wallet.db")
 
 
@@ -17,7 +27,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
-    with get_conn(db_path) as conn:
+    with open_conn(db_path) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS price_snapshots (
@@ -57,6 +67,25 @@ def init_db(db_path: Path = DB_PATH) -> None:
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                account TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                total_value REAL NOT NULL,
+                source TEXT NOT NULL
+            );
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_lookup
+            ON portfolio_snapshots (account, currency, ts);
+            """
+        )
 
 
 def insert_price_snapshot(
@@ -71,7 +100,7 @@ def insert_price_snapshot(
     """
     rows = [(ts, asset, currency, float(price), source) for asset, price in prices.items()]
 
-    with get_conn(db_path) as conn:
+    with open_conn(db_path) as conn:
         conn.executemany(
             """
             INSERT INTO price_snapshots (ts, asset, currency, price, source)
@@ -79,6 +108,7 @@ def insert_price_snapshot(
             """,
             rows,
         )
+        conn.commit()
     return len(rows)
 
 
@@ -146,7 +176,7 @@ def get_latest_prices_with_ts(
     """
 
     out: dict[str, tuple[str, float]] = {}
-    with get_conn(db_path) as conn:
+    with open_conn(db_path) as conn:
         for row in conn.execute(sql, params):
             out[row["asset"]] = (row["ts"], float(row["price"]))
     return out
@@ -238,6 +268,52 @@ def get_portfolio_value_history(
     return out
 
 
+def insert_portfolio_snapshot(
+    ts: str,
+    account: str,
+    currency: str,
+    total_value: float,
+    source: str = "computed",
+    db_path: Path = DB_PATH,
+) -> int:
+    con = get_conn(db_path)
+    cur = con.cursor()
+    cur.execute(
+        """
+        INSERT INTO portfolio_snapshots (ts, account, currency, total_value, source)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (ts, account, currency, float(total_value), source),
+    )
+    con.commit()
+    return int(cur.rowcount)
+
+
+def get_portfolio_snapshot_history(
+    account: str,
+    currency: str,
+    limit: int = 10,
+    db_path: Path = DB_PATH,
+) -> list[tuple[str, float, str]]:
+    """
+    Returns list of (ts, total_value, source), newest first.
+    """
+    con = get_conn(db_path)
+    cur = con.cursor()
+    rows = cur.execute(
+        """
+        SELECT ts, total_value, source
+        FROM portfolio_snapshots
+        WHERE account = ? AND currency = ?
+        ORDER BY ts DESC
+        LIMIT ?
+        """,
+        (account, currency, int(limit)),
+    ).fetchall()
+    return [(str(ts), float(tv), str(src)) for (ts, tv, src) in rows]
+
+
+
 
 def get_latest_price(asset: str, currency: str, db_path: Path = DB_PATH) -> tuple[str, float] | None:
     with get_conn(db_path) as conn:
@@ -267,7 +343,7 @@ def get_price_at_or_before(
     Returns the latest (ts, price) where snapshot ts <= given ts.
     Useful for "24h ago" comparisons when you don't have an exact snapshot at that time.
     """
-    with get_conn(db_path) as conn:
+    with open_conn(db_path) as conn:
         row = conn.execute(
             """
             SELECT ts, price
@@ -289,7 +365,7 @@ def get_price_at_or_before(
 
 def insert_balance_snapshot(ts: str, account: str, balances: dict[str, float], source: str = "manual", db_path: Path = DB_PATH) -> int:
     rows = [(ts, account, asset, float(amount), source) for asset, amount in balances.items()]
-    with get_conn(db_path) as conn:
+    with open_conn(db_path) as conn:
         conn.executemany(
             """
             INSERT INTO balance_snapshots (ts, account, asset, amount, source)
@@ -297,6 +373,7 @@ def insert_balance_snapshot(ts: str, account: str, balances: dict[str, float], s
             """,
             rows,
         )
+        conn.commit()
     return len(rows)
 
 
@@ -358,7 +435,7 @@ def get_latest_balances_with_ts(
     """
 
     out: dict[str, tuple[str, float]] = {}
-    with get_conn(db_path) as conn:
+    with open_conn(db_path) as conn:
         for row in conn.execute(sql, params):
             out[row["asset"]] = (row["ts"], float(row["amount"]))
     return out

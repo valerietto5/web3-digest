@@ -4,7 +4,9 @@ import json
 
 from datetime import datetime, timezone
 
-COINGECKO_IDS = {"btc": "bitcoin", "eth": "ethereum"}
+from token_registry import TOKENS
+
+COINGECKO_IDS = {"btc": "bitcoin", "eth": "ethereum", "sol": "solana"}
 
 COINGECKO_IDS["usdc"] = "usd-coin"
 
@@ -123,40 +125,134 @@ def print_price(price, symbol="$", label=""):
     else:
         print(f"{symbol}{price:,.2f}")
 
-def fetch_prices(coins, currency="usd"):
+
+def coingecko_id_for_asset(asset: str) -> str | None:
+    """
+    Map our internal asset keys to a CoinGecko id.
+    Supports:
+      - normal keys (btc, eth, sol, usdc) via COINGECKO_IDS
+      - asset keys from token_registry (e.g. "bonk", "usdt")
+      - SPL keys like spl:<mint> via token_registry.TOKENS[mint]["coingecko_id"]
+
+    IMPORTANT: SPL mint addresses are case-sensitive. Do NOT lowercase the mint.
+    """
+    raw = str(asset).strip()
+    raw_lower = raw.lower()
+
+    # normal keys (we store these lowercase)
+    if raw_lower in COINGECKO_IDS:
+        return COINGECKO_IDS[raw_lower]
+
+    # asset keys coming from the registry (e.g. "bonk", "usdt")
+    for meta in TOKENS.values():
+        if meta.get("asset", "").lower() == raw_lower:
+            return meta.get("coingecko_id")
+
+    # spl:<mint> (keep mint case!)
+    if raw_lower.startswith("spl:"):
+        mint = raw.split(":", 1)[1]  # <-- preserves original mint case
+        meta = TOKENS.get(mint)
+        if meta:
+            return meta.get("coingecko_id")
+
+    return None
+
+
+def fetch_prices(coins, currency="usd", allow_dexscreener: bool = False, min_liquidity_usd: float = 5_000.0):
     url = "https://api.coingecko.com/api/v3/simple/price"
     currency = norm(currency)
+
+    # Normalize coins safely:
+    # - keep SPL mint case (base58 is case-sensitive)
+    # - lowercase normal assets
+    coins = list(coins)
+    norm_coins = []
+    for c in coins:
+        s = str(c).strip()
+        if s.lower().startswith("spl:"):
+            mint = s.split(":", 1)[1]          # keep mint EXACT case
+            norm_coins.append("spl:" + mint)   # normalize prefix only
+        else:
+            norm_coins.append(s.lower())
+    coins = norm_coins
+
+    # Build CoinGecko ids list (batched)
     ids = []
     for q in coins:
-        cg_id = COINGECKO_IDS.get(q)        
+        cg_id = coingecko_id_for_asset(q)
         if not cg_id:
             continue
-        if cg_id in ids:
-            continue
-        ids.append(cg_id)
+        if cg_id not in ids:
+            ids.append(cg_id)
+
+    # Fetch from CoinGecko (if we have any ids)
+    data = {}
     ids_str = ",".join(ids)
-    if ids_str == "":
-        return {}
-    params = {"ids": ids_str, "vs_currencies": currency}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        if not isinstance(data, dict):
-            return {}   
-        out = {}
-        seen = set()
-        for q in coins:
-            if q in seen:
-                continue
-            seen.add(q)
-            cg_id = COINGECKO_IDS.get(q)
-            if not cg_id:
-                continue
-            out[q] = data.get(cg_id, {})
-        return(out) 
-    except requests.RequestException:
-        return {}
+    if ids_str:
+        params = {"ids": ids_str, "vs_currencies": currency}
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict):
+                data = {}
+        except requests.RequestException:
+            data = {}
+
+    # Build output keyed by our input assets
+    out = {}
+    seen = set()
+    for q in coins:
+        if q in seen:
+            continue
+        seen.add(q)
+
+        cg_id = coingecko_id_for_asset(q)
+        if not cg_id:
+            continue
+
+        val = data.get(cg_id)
+        if isinstance(val, dict):
+            out[q] = val
+
+    # DexScreener fallback (opt-in, USD-only)
+    if allow_dexscreener and currency == "usd":
+        try:
+            from token_registry import TOKENS
+            from providers.dexscreener import fetch_best_pair_price_usd_solana
+        except Exception:
+            TOKENS = {}
+            fetch_best_pair_price_usd_solana = None
+
+        if fetch_best_pair_price_usd_solana is not None:
+            for q in coins:
+                if q in out:
+                    continue
+                s = str(q).strip()
+                if not s.lower().startswith("spl:"):
+                    continue
+
+                mint_in = s.split(":", 1)[1]
+
+                # Find registry entry (case-insensitive), only if dexscreener=True
+                meta = TOKENS.get(mint_in)
+                canonical_mint = mint_in
+                if meta is None:
+                    for k, v in TOKENS.items():
+                        if k.lower() == mint_in.lower():
+                            meta = v
+                            canonical_mint = k
+                            break
+
+                if not meta or not meta.get("dexscreener"):
+                    continue
+
+                pair = fetch_best_pair_price_usd_solana(canonical_mint, min_liquidity_usd=min_liquidity_usd)
+                if pair:
+                    out[f"spl:{canonical_mint}"] = {"usd": pair.price_usd}
+
+    return out
+
     
 
 def save_snapshot(prices, currency):
@@ -199,7 +295,10 @@ def load_snapshots():
 
 def parse_coins(s, allowed=None):
     if allowed is None:
-        allowed = set(COINGECKO_IDS.keys())
+        unknown = [c for c in coins if coingecko_id_for_asset(c) is None]
+        if unknown:
+            raise ValueError(f"Unknown/unmapped assets: {', '.join(unknown)}")
+
     parts = s.split(",")
     ok = []
     bad = []

@@ -48,6 +48,8 @@ Shipped:
 
 \- Swap entry V0: `--swap-from/--swap-to` prints a Jupiter redirect link (+ prints account address when available)
 
+\- generic run\_solana\_demo.bat reads address/assets from accounts.json; end-to-end Solana refresh + report.”
+
 
 
 Notes:
