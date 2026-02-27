@@ -31,6 +31,7 @@ python run_prices_to_db.py --assets btc eth --currency usd --quiet
 3) View wallet report:
 python wallet_cli.py --account val-main --currency usd --assets btc eth
 
+Setup: copy accounts.sample.json -> accounts.json and fill in your wallet address.
 
 ## Wallet UX (saved accounts)
 
@@ -58,6 +59,7 @@ python wallet_cli.py --account sol-test --swap-from sol --swap-to usdc
 - 24h change is only shown when a baseline price snapshot exists near "24h ago" (within a 30h tolerance rule). Otherwise it prints `n/a`.
 
 - Local files like `wallet.db` and `.venv/` are ignored via `.gitignore`.
+
 
 
 
