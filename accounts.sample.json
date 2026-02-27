@@ -1,0 +1,12 @@
+{
+  "sol-test": {
+    "chain": "solana",
+    "address": "<PUBKEY>",
+    "default_assets": ["sol", "usdc", "spl:<mint>"]
+  },
+  "val-main": {
+    "chain": "manual",
+    "address": null,
+    "default_assets": ["btc", "eth", "usdc"]
+  }
+}
