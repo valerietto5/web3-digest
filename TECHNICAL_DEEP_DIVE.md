@@ -6,7 +6,7 @@
 ### 3) Normalization & Registries
 ### 4) Persistence (SQLite)
 ### 5) Portfolio Compute
-### 6) Wallet UX (CLI)
+### 6) Wallet UX (CLI + Web)
 ### 7) Project/Docs + Generated/Legacy
 
 ## Layer 2 — File Map (grouped by Layer 1)
@@ -15,34 +15,60 @@
 
 ### 1) External APIs & Protocols
 
-This project touches the outside world in **three** places:
+This project now touches the outside world in **six** main places:
 
 #### A) CoinGecko — price snapshots (HTTPS REST)
 - **What it is:** a public HTTP API that returns JSON price data.
 - **Where we use it:** `wallet_helpers.py`
 - **Main function:** `fetch_prices(coins, currency="usd")`
-  - Calls: `https://api.coingecko.com/api/v3/simple/price`
+  - Calls CoinGecko Simple Price
   - Input: internal asset keys like `btc`, `eth`, `sol`, `usdc`, or allowlisted `spl:<mint>`
-  - Output: a `{asset_key: price}` mapping that gets written into SQLite via `run_prices_to_db.py`.
+  - Output: a `{asset_key: price}` mapping that gets written into SQLite via `run_prices_to_db.py`
 
-#### B) Solana mainnet RPC — on-chain balances (HTTPS JSON-RPC)
-- **What it is:** Solana nodes expose a **JSON-RPC** interface over HTTPS (request/response JSON).
+#### B) Solana RPC — on-chain balances (HTTPS JSON-RPC)
+- **What it is:** Solana nodes expose a JSON-RPC interface over HTTPS.
 - **Where we use it:** `providers/solana_rpc.py`
 - **Main functions:**
-  - `_rpc_call(...)` — low-level helper that sends a JSON-RPC request and returns parsed JSON.
-  - `get_sol_balance_lamports(address)` — reads native SOL balance (in lamports).
-  - `get_spl_token_balances(address)` — reads SPL token accounts and returns UI amounts.
-- **Default endpoint:** `https://api.mainnet-beta.solana.com`
-- **Important:** this is **read-only**. We do not sign transactions, and we do not handle seed phrases.
+  - `_rpc_call(...)` — low-level JSON-RPC helper
+  - `get_sol_balance_lamports(address)` — reads native SOL balance
+  - `get_spl_token_balances(address)` — reads SPL token accounts and returns UI amounts
+- **Why it matters:** this is the read path for wallet balances and token holdings.
 
-#### C) Jupiter swap link — redirect only (no API call)
-- **What it is:** a URL that opens Jupiter’s swap UI in a browser.
-- **Where we use it:** `wallet_cli.py`
-- **Behavior:** when you pass `--swap-from` and `--swap-to`, we print a link like:
-  - `https://jup.ag/swap/SOL-USDC`
-- **Important:** we are **not swapping inside our app** (V0 policy). This is a “wallet-like escape hatch”.
+#### C) Jupiter — quote data + swap destination
+- **What it is:** Jupiter is currently used in two ways:
+  1. as a **quote source** for swap preview / comparison in the web app
+  2. as a **swap destination link** in the CLI flow
+- **Where we use it:**
+  - quote flow via the backend `/swap/quote` endpoint
+  - redirect/deep-link behavior in `wallet_cli.py`
+- **Important:** the current quote surface is **Jupiter-first**, not yet a full cross-provider routing engine.
 
+#### D) DexScreener — SPL fallback pricing (HTTPS REST)
+- **What it is:** a public HTTP API that returns token/pool data including USD price.
+- **Where we use it:** `providers/dexscreener.py` and `run_prices_to_db.py` behind a flag
+- **Why it exists:** fallback pricing for allowlisted SPL tokens when CoinGecko is missing or insufficient
+- **Safety guards:**
+  - allowlist only
+  - minimum liquidity threshold
+  - USD-focused fallback path
 
+#### E) Phantom browser wallet — wallet boundary in the browser
+- **What it is:** Phantom injects a wallet provider into the browser environment.
+- **Where we use it:** the web UI served at `GET /ui`
+- **Current browser-side actions:**
+  - connect wallet
+  - sign message
+  - sign transaction for devnet send flow
+- **Important:** private keys never touch our server; Phantom keeps custody and signs client-side.
+
+#### F) Solana devnet RPC + browser-side web3 flow — transaction testing
+- **What it is:** the web UI includes a real devnet transaction test path.
+- **Where we use it:** browser-side wallet flow in the `/ui` experience
+- **What it currently enables:**
+  - send SOL on devnet
+  - request devnet airdrops
+  - surface more honest transaction errors during testing
+- **Why it matters:** this moved the product beyond read-only wallet behavior into an early transaction-support/testing surface.
 
 ### 2) Data Ingestion
 
@@ -83,10 +109,14 @@ This project touches the outside world in **three** places:
     1) balances → 2) prices → 3) wallet_cli.py
   - Note: it’s a .bat script (no Python def, so it won’t show in findstr "def ")
 
-#### Derived ingestion (portfolio history — upcoming)
-- *run_portfolio_history.py*
-  - Calls compute_portfolio_report(...)
-  - Writes a “portfolio snapshot” time series into a history table (once finalized)
+##### Derived ingestion (portfolio history — shipped)
+We store a time series of total portfolio value so the UI can show portfolio history without recomputing everything on the fly.
+- **DB table:** `portfolio_snapshots`
+- **Primary writer:** the API refresh/report flow
+  - after refresh operations, the backend computes a report and writes a snapshot via `db.insert_portfolio_snapshot(...)`
+  - this keeps `/portfolio/history` alive during normal usage
+- **Why it exists:** history becomes a first-class product feature instead of a one-off calculation
+- **Legacy/optional path:** `run_portfolio_history.py` still exists if we want scheduled history writing later
 
 #### What ingestion does not do
 It does *not* compute wallet logic (totals, deltas, staleness decisions).  
@@ -155,12 +185,18 @@ In V0, persistence is simple:
     - get_latest_price(asset, currency) / get_latest_balance(account, asset) — latest single value convenience helpers.
     - get_price_at_or_before(asset, currency, ts) — baseline lookup used for honest 24h deltas.
     - get_portfolio_value_history(...) — helper to retrieve historical portfolio values (used by history tooling).
+    - insert_portfolio_snapshot(ts, account, currency, total_value, source, ...) — inserts one portfolio total into portfolio_snapshots.
+    - get_portfolio_snapshot_history(account, currency, limit, ...) — reads the latest snapshot rows for the history table.
+
 
 - *wallet.db* (SQLite database file)
   - *Purpose:* local state storage (ignored by .gitignore).
   - *High-level tables:*
     - balance_snapshots — timestamped (ts, account, asset, amount, source)
     - price_snapshots — timestamped (ts, asset, currency, price, source)
+    - portfolio_snapshots — timestamped (ts, account, currency, total_value, source)
+      - used by the web UI history table (`GET /portfolio/history`)
+      - written automatically after refresh flows (so history grows during normal use)
 
 - *inspect_db.py* (debug helper)
   - *Purpose:* quick inspection script for DB rows when debugging.
@@ -202,44 +238,74 @@ In V0, persistence is simple:
 
 
 
-### 6) Wallet UX (CLI)
+### 6) Wallet UX (CLI + Web)
+
+This layer is the user-facing surface of the project. It currently exists in **two interfaces**:
+1. a CLI wallet experience
+2. a lightweight web UI served by FastAPI
 
 #### wallet_cli.py
-**Purpose:** The “user-facing” entrypoint. Reads saved accounts, chooses assets, calls the portfolio engine, prints a clean report. Also provides wallet-like utilities (list accounts, save account, swap redirect link).
+**Purpose:** the original user-facing entrypoint. It reads saved accounts, chooses assets, calls the portfolio engine, prints a clean report, and provides wallet-like utilities.
 
-**Inputs:**
-- CLI flags (`--account`, `--assets`, `--currency`, etc.)
-- `accounts.json` (optional; used when `--account` is provided and `--assets` is omitted)
-- SQLite DB (balances + prices snapshots)
+**Key capabilities:**
+- list saved accounts
+- save/update account presets
+- choose assets and currency
+- print portfolio reports from DB-backed snapshots
+- generate a Jupiter swap link for redirect-based swap handoff
 
-**Outputs:**
-- Console output (portfolio report)
-- Optional side effects:
-  - writes/updates `accounts.json` when using `--save-account`
-  - prints swap redirect URL when using `--swap-from/--swap-to`
-
-**Main dependencies:**
-- `portfolio.compute_portfolio_report()` (domain report)
-- `db.py` (via portfolio/db calls)
-- `accounts.json` (saved accounts)
-
-**How to run (examples):**
-- `python wallet_cli.py --list-accounts`
-- `python wallet_cli.py --account sol-test --currency usd`
-- `python wallet_cli.py --account val-main --assets btc eth --currency usd`
-- `python wallet_cli.py --swap-from sol --swap-to usdc`
-- `python wallet_cli.py --account sol-test --swap-from sol --swap-to usdc`
+**Why it matters:** this is the first wallet-like shell of the project and the simplest way to exercise the engine end-to-end.
 
 #### accounts.json
-**Purpose:** Saved “wallet profiles” so you don’t retype addresses/assets every time.
+**Purpose:** saved wallet profiles so the user does not have to retype addresses and default assets every time.
 
 **Typical fields per account:**
-- `chain` (e.g. `solana` or `manual`)
-- `address` (Solana public key for read-only mode; null for manual)
-- `default_assets` (assets used when `--assets` is not provided)
+- `chain`
+- `address`
+- `default_assets`
 
-**Why it exists:** Makes the CLI feel like a wallet (saved accounts + defaults) instead of a one-off script.
+**Why it matters:** it makes the CLI feel like a reusable wallet tool rather than a one-off script.
 
+#### api/main.py
+**Purpose:** FastAPI application entrypoint that exposes the wallet engine over HTTP and serves the web product surface.
+
+**Key API responsibilities:**
+- health/status endpoints
+- accounts endpoint
+- latest portfolio report endpoint
+- portfolio history endpoint
+- refresh balances endpoint
+- refresh prices endpoint
+- swap quote endpoint
+- root metadata endpoint
+- `/ui` route for the browser experience
+
+**Why it exists:**
+- keeps the core engine reusable across CLI, API, and UI
+- keeps refresh and reporting snapshot-first
+- creates a bridge between backend wallet logic and browser wallet actions
+
+#### api/ui_page.py
+**Purpose:** keeps the web UI markup/JS separate from the FastAPI routing file.
+
+**Why it matters:**
+- reduces clutter in the backend entrypoint
+- makes the product easier to evolve
+- marks the shift from “single-file demo UI” toward a more maintainable app structure
+
+**Current web UI capabilities:**
+- connect Phantom
+- sign message
+- refresh balances/prices
+- inspect latest portfolio state
+- view portfolio history
+- preview swap quotes
+- send SOL on devnet
+- request devnet airdrops
+- show activity / support-oriented feedback
+
+**Important product note:**
+The web surface is no longer just a demo shell. It now acts as the first real wallet/execution cockpit for testing product behavior, error states, and user-facing trust/transparency patterns.
 
 
 ### 7) Project / Docs + Generated / Legacy
@@ -291,6 +357,55 @@ In V0, persistence is simple:
 
 ## Layer 3 — Code Glossary (inside each file)
 (we’ll list key functions/blocks alphabetically per file)
+
+### API (main.py)
+
+**Purpose:** FastAPI entrypoint that wires the wallet engine, DB-backed refresh/report flow, and browser UI together.
+
+**Key internal helpers:**
+- `call_with_supported_kwargs(fn, **kwargs)` — keeps API wiring resilient when helper signatures evolve
+- `_cooldown_ok(key, min_seconds, force)` — prevents excessive refresh spam against external APIs/RPC
+- `_mark_refreshed(key)` — tracks the most recent refresh timestamp
+- `_run_cmd(cmd, timeout=...)` — runs ingestion scripts as subprocesses for refresh flows
+- `_write_portfolio_snapshot(account, currency="usd")` — computes a report and writes a portfolio history row
+
+**Key endpoints:**
+- `GET /` — simple API metadata/root
+- `GET /health` — heartbeat
+- `GET /accounts` — saved accounts
+- `GET /portfolio/latest` — current report
+- `GET /portfolio/history` — portfolio history table data
+- `POST /refresh/balances` — balance refresh
+- `POST /refresh/prices` — price refresh
+- `/swap/quote` — Jupiter-backed quote preview path
+- `GET /ui` — serves the browser wallet/execution cockpit
+
+
+### DB (db.py)
+
+- insert_portfolio_snapshot(...) — writes portfolio total snapshots into `portfolio_snapshots`.
+- get_portfolio_snapshot_history(...) — reads latest rows for the UI history table.
+
+
+### UI Wallet Boundary (browser JS in the /ui experience)
+
+This layer is where the non-custodial boundary becomes real.
+
+**Core browser-side actions:**
+- detect Phantom provider
+- connect/disconnect wallet
+- sign message for proof-of-ownership
+- refresh wallet balance display
+- request devnet airdrop
+- sign and submit devnet SOL sends
+- preview swap quotes
+- update activity/log/status panels
+
+**Why this matters:**
+- private keys remain in Phantom
+- the UI can still demonstrate real wallet behavior
+- the project now supports support-mode debugging and clearer user-facing error handling instead of only static reporting
+
 
 ### Symbols / underscore (internal helpers)
 
