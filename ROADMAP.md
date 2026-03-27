@@ -1,266 +1,365 @@
-
-## New `ROADMAP.md`
-
-```markdown
 # Roadmap (Weekly / Monthly)
 
 This file is the “where we’re going next” plan.
 Updated weekly on Friday.
 
 ## Current phase
-**V1 runway shipped enough to move into V1.5 planning.**
+**Swap-transparency V1 is now the clear product wedge.**
 
-We now have:
-- read-only wallet foundation
-- FastAPI layer
-- browser UI
-- Phantom connect/sign boundary
-- Send SOL devnet path
-- transaction state UI
-- preflight balance checks
-- activity log
-- in-app devnet airdrop helper / diagnostics
+We are no longer primarily building “a wallet that can also do swaps.”
+We are building a **wallet-connected execution-transparency app**.
 
-The product is no longer “read-only portfolio with ambitions.”
-It is now a real early wallet surface.
+That means:
+
+- Phantom remains the wallet, signer, and security layer
+- Web3 Digest becomes the place where users:
+  - connect their wallet
+  - compare swap routes
+  - understand costs and tradeoffs
+  - make better execution decisions
+  - later view holdings and portfolio data in a clearer connected dashboard
+
+The product direction is now much more precise:
+
+**connect Phantom, swap with transparency, then expand the connected dashboard experience later.**
 
 ---
 
-## This week — what we shipped
+## What is effectively shipped so far
+
+### Core app foundation
+- FastAPI backend
+- browser UI at `/ui`
+- wallet-connected flow
+- Phantom connect/sign boundary
+- activity log
+- transaction state handling
+- route/quote UI foundation
+- swap comparison surface
+- debug visibility where needed
+
+### Send / wallet-connected foundation
+- Send SOL devnet path
+- preflight insufficient-balance checks
+- live devnet wallet balance display
+- in-app devnet airdrop helper / diagnostics
+- support-mode error translation
+
+### Swap-transparency foundation
+- swap quote surface inside `/ui`
+- recommended route block
+- alternative route block
+- direct-route comparison block
+- theoretical no-fee baseline
+- route shortfall vs ideal display
+- “Why this route?” product explanation
+- softer product-facing note for Jupiter free-tier limitations
+- reusable baseline helper on backend
+- `/swap/inline-baseline` endpoint
+- live ideal baseline behavior separated from executable quote preview
+
+---
+
+## Honest current status
+
+### What is now real
+- the app can connect Phantom
+- the app can show a swap comparison surface
+- the app can separate:
+  - ideal/theoretical baseline
+  - executable route comparison
+- the app can explain recommendation logic in a user-facing way
+- the app already has the skeleton of an execution-intelligence product
+
+### What is not yet complete
+- swap cost accounting is not fully computed yet
+- route comparison is still Jupiter-first, not multi-universe yet
+- the final swap input UX is not yet in its intended two-panel form
+- the connected dashboard / holdings experience is still secondary and underdeveloped
+- mobile-native execution is not a first-build priority yet
+
+---
+
+## Product identity (locked direction)
+
+Web3 Digest is **not** trying to replace Phantom.
+
+It is a **wallet-connected execution-transparency app**.
+
+### Phantom handles:
+- wallet creation
+- custody / key management
+- transaction signing
+- trusted wallet security
+
+### Web3 Digest handles:
+- route comparison
+- execution transparency
+- ideal vs executable reference
+- cost and shortfall visibility
+- direct-route lens
+- later, a better connected dashboard / holdings experience
+
+This is a product built **on top of Phantom**, not **against Phantom**.
+
+---
+
+## Core product focus
+
+### Immediate focus: swap transparency
+We should focus **110% on swap transparency**.
+
+That means the main product surface is:
+
+- source token
+- destination token
+- typed amount
+- ideal/theoretical baseline
+- executable quote preview
+- recommended route
+- alternatives
+- direct-route comparison
+- route explanation
+- honest limitations / data notes
+
+### Secondary later focus: connected dashboard
+Later, we can expand the connected wallet experience with:
+
+- holdings view
+- better token presentation
+- charts / richer asset inspection
+- activity/history
+- improved portfolio visibility compared to the minimal wallet-number view
+
+But this is a **later supporting layer**, not the main wedge right now.
+
+---
+
+## Product design direction
+
+### Current state
+The current inline baseline row is a **transitional UI**.
+
+It works for now because it proves the behavior and keeps the architecture clean.
+
+### Final direction
+The swap input should evolve toward a more **stacked, two-panel, LlamaSwap-like layout**:
+
+- **top panel**
+  - source token
+  - editable amount
+  - supporting reference line
+
+- **bottom panel**
+  - destination token
+  - live ideal/theoretical converted amount
+  - supporting reference line
+
+### Important design rule
+The product should stay split into 2 layers:
+
+#### Layer 1 — input / reference experience
+- choose tokens
+- type amount
+- see live ideal conversion
+
+#### Layer 2 — execution intelligence
+- Preview Quote
+- recommended route
+- alternatives
+- direct-route check
+- later cost breakdown and venue-level transparency
+
+This separation is now a core product rule.
+
+---
+
+## Routing roadmap direction
+
+### Current routing layer
+- Jupiter-first
+- good enough to build the first real comparison surface
+- good enough to validate product behavior and UX
+
+### Future routing direction
+To be truly credible as a transparency product, we cannot stop at Jupiter.
+
+The roadmap should later integrate **at least two more routing / liquidity universes/providers** so route comparison becomes:
+
+- richer
+- more honest
+- less dependent on one provider worldview
+- more aligned with the product promise
+
+This is now a strategic requirement, not just a nice-to-have.
+
+---
+
+## Platform direction
+
+### Build path
+- **web app first**
+- mobile-aware product strategy
+- native mobile not the first build
+
+### Why web first
+- fastest iteration
+- easiest demo and showcase
+- easiest GitHub packaging
+- best for current product validation
+
+### Why mobile awareness still matters
+Real-world crypto swapping — especially in fast-moving meme/token environments — is often heavily **phone-first**, and Phantom’s strongest real-world advantage is its mobile habit and UI polish.
+
+So even while staying web-first, the long-term product direction must remain:
+
+- responsive
+- mobile-aware
+- able to translate well to phone usage patterns later
+
+---
+
+## This week — what we effectively shipped
 
 ### High level
-- ✅ Send SOL UI inside `/ui`
-- ✅ Browser-side Solana transaction build
-- ✅ Phantom sign/send integration path
-- ✅ Send state machine
-  - Draft
-  - Awaiting Signature
-  - Submitted
-  - Confirmed / Failed
-- ✅ Preflight insufficient-balance check
-- ✅ Live devnet wallet balance display
-- ✅ In-app devnet airdrop helper using RPC
-- ✅ Activity log
-- ✅ Better support-mode error translation
-- ✅ Duplicate wallet UI bug fixed
-
-### Honest current status
-- Send flow is real
-- Airdrop request path is real
-- Main blocker is still **public devnet funding availability**
-- We now know the problem is external faucet / RPC availability, not core app logic
+- clarified product identity away from “new wallet”
+- locked the wallet-connected execution-transparency direction
+- clarified that Phantom remains the wallet/signing layer
+- stabilized swap quote preview surface
+- added live ideal baseline architecture
+- split baseline/reference logic from executable quote logic
+- improved user-facing wording:
+  - Why this route
+  - Route shortfall vs ideal
+  - softer Jupiter-tier note
+  - cleaner direct-route comparison note
+- confirmed the product now has a real swap-transparency skeleton
 
 ---
 
-## Current open items from this week
-These are not blockers, just unfinished polish / packaging items:
-- update docs
-- update GitHub
-- retry faucet with smaller amount / alternate provider path when useful
-- eventually confirm full **Submitted → Confirmed** send path once devnet funding lands
+## Open items right now
+
+These are active product/roadmap items, not emergencies:
+
+### Swap surface
+- continue refining the baseline + quote UX
+- evolve toward the two-panel swap input design
+- later add fuller cost accounting
+- continue improving explanation clarity
+
+### Routing expansion
+- plan the first non-Jupiter comparison additions
+- keep swap integrations modular enough to support multiple providers later
+
+### Connected dashboard
+- decide how far to extend holdings/dashboard experience without turning into a wallet competitor
+- improve token/portfolio presentation later
+
+### Docs / packaging
+- update docs so the product is framed correctly
+- keep GitHub aligned with the new identity
+- keep screenshots and README story current
 
 ---
 
-## Session log
+## Near-term roadmap (next product stretch)
 
-### 2026-03-13 (Fri) — weekly review / product reframing
-Key decisions:
-- keep the project **non-custodial**
-- start **Solana-first**, not multichain-all-at-once
-- sharpen the wedge around:
-  - route transparency
-  - no extra wallet-layer swap markup
-  - better execution for small swaps
-- treat LlamaSwap as a **benchmark / inspiration target**
-- build the first swap-intelligence layer around a practical Solana route provider path
-- keep Phantom as the **signing boundary**, not the swap store
+## Phase A — strengthen the swap-transparency core
+**Goal:** make the swap surface feel like a real product, not just a prototype.
 
----
+### Priorities
+- keep live ideal baseline behavior stable
+- keep Preview Quote reserved for executable routes only
+- improve route explanation and comparison clarity
+- improve direct-route lens presentation
+- later add clearer cost breakdown structure
+- make sure the product remains honest about limitations
 
-## Next week (W+1) — V1.5 begins
-# Solana Swap Intelligence v0
-**Theme:** Quote → Compare → Choose
-
-### Main goal
-From inside `/ui`, let a user:
-- choose a token pair and amount
-- fetch route/quote data
-- compare swap choices clearly
-- understand which route looks best and why
-
-### Definition of Done
-A user can:
-- open a swap section inside `/ui`
-- select input token / output token / amount
-- fetch a quote for a Solana swap
-- see:
-  - expected output
-  - route / venue information
-  - price impact
-  - why a route is recommended
-- get a clear “best choice” label for the current trade
-- see honest failure messages if quote data cannot be fetched
-
-**Important:** next week’s goal is primarily **swap intelligence and quote UX**, not full swap execution yet.
+### Definition of success
+A user can connect Phantom, enter a swap, and clearly understand:
+- the ideal reference
+- the recommended executable option
+- meaningful alternatives
+- whether a direct route exists
+- why the recommendation was chosen
 
 ---
 
-## Weekly plan for next week
+## Phase B — move toward final swap input UX
+**Goal:** evolve the UI shape without losing the engine/behavior separation.
 
-### Monday — swap surface + UI cleanup
-**Goal:** make the next sprint sane before we bolt on more logic.
+### Priorities
+- move from one-line baseline row to a two-panel swap input
+- keep ideal reference inside the token input experience
+- preserve execution intelligence below that layer
+- improve clarity without rushing “pretty UI” too early
 
-- Refactor `/ui` enough to reduce HTML/JS chaos
-  - at minimum: clean structure, less inline monster risk
-- Add a new **Swap** card / section in `/ui`
-- Inputs:
-  - from token
-  - to token
-  - amount
-- Keep it Solana-first
-- Keep route state / quote state visually separate from send state
-- If time:
-  - add a small “route comparison” placeholder panel
-
-**Parallel small task**
-- retry faucet path only if easy:
-  - smaller airdrop amount
-  - alternate faucet/provider path
+### Definition of success
+The swap input starts to feel closer to a real production interaction model while still sitting on the same clean backend/reference architecture.
 
 ---
 
-### Tuesday — quote integration (Solana)
-**Goal:** get first real quote data into the app.
+## Phase C — connected dashboard / holdings expansion
+**Goal:** improve the wallet-connected portfolio experience without becoming a wallet competitor.
 
-- Wire Solana quote provider path
-- Fetch quote / route data for chosen pair
-- Show basic quote result in UI
-- Display:
-  - input
-  - output
-  - route label
-  - any available price impact / route metadata
-- Add raw debug output first if needed, then simplify
+### Priorities
+- token holdings view
+- improved presentation of balances
+- later charting / richer portfolio visibility
+- better asset inspection than a plain symbol-and-number display
 
----
-
-### Wednesday — comparison UX
-**Goal:** turn quote data into product value.
-
-- Make the quote section human-readable
-- Label the route clearly
-- Add recommendation logic such as:
-  - best value
-  - lowest impact
-  - best for small size
-- Explain route choice in simple language
-- Keep the UI honest:
-  - no data → say so
-  - partial quote → say so
+### Definition of success
+A connected Phantom user gets a clearer and more useful holdings/dashboard experience than the default minimal wallet view.
 
 ---
 
-### Thursday — support-mode swap diagnostics
-**Goal:** make swap quoting feel trustworthy.
+## Phase D — multi-provider route transparency
+**Goal:** make the product’s transparency promise more credible.
 
-- Add helpful quote error states:
-  - pair unsupported
-  - no route found
-  - RPC/provider timeout
-  - provider unavailable
-- Add swap-related activity log entries
-- Add simple “why this route?” explanations
-- If time:
-  - add a comparison-friendly visual summary block
+### Priorities
+- integrate at least two more routing/liquidity universes/providers
+- compare beyond Jupiter-only
+- improve route ranking and transparency logic
+- make “best route” claims more robust
 
----
-
-### Friday — docs / GitHub / next-step decision
-**Goal:** package the sprint and choose the next layer.
-
-- Update:
-  - `VISION.md`
-  - `ROADMAP.md`
-  - `SHIPPED.md`
-  - `TECHNICAL_DEEP_DIVE.md`
-  - `README.md`
-- Update GitHub with:
-  - latest files
-  - latest UI screenshots
-  - current project status
-- Decide whether the next sprint becomes:
-  - **swap execution handoff**, or
-  - **receive UX / send SPL**, depending on what is most stable
+### Definition of success
+The product can compare more than one provider worldview and give users a stronger reason to trust the surface.
 
 ---
 
-## After next week
+## Strategic themes
 
-### Near-term path A — Swap execution
-If quote/comparison works well:
-- let user choose a route
-- prepare execution transaction
-- hand it to the connected wallet for signing
-- show status / confirmation
+### 1) Build on Phantom, do not compete with it
+Phantom is the wallet.
+Web3 Digest is the intelligence layer.
 
-### Near-term path B — Receive UX + send SPL
-If we want to round out the transaction surface first:
-- receive UX
-- copy address / QR
-- send SPL tokens
-- token-specific balance / decimals handling
+### 2) Swap transparency is the wedge
+This remains the strongest and clearest product focus.
 
-### Near-term path C — Support toolkit
-Keep deepening:
-- route explanation
-- cost breakdown
-- failure diagnostics
-- wallet/provider troubleshooting
+### 3) Ideal reference and executable route must stay separate
+This is central to both architecture and UX.
+
+### 4) Direct route should remain a distinct comparison lens
+It is not automatically better, but it is often simpler, easier to inspect, and useful as a trust-building comparison.
+
+### 5) Web first, mobile-aware
+The product should validate on the web first, but never lose sight of the fact that much real swapping behavior is mobile-first.
 
 ---
 
-## Strategic roadmap themes
-
-### 1) Solana first, multichain later
-We start with one strong execution playground, then expand.
-
-### 2) Small swaps matter
-The product wedge is strongest where wallet-layer markup hurts most:
-- retail-small trades
-- memecoin-sized activity
-- price-sensitive execution
-
-### 3) Wallet signs, app explains
-The connected wallet should approve and sign.
-Our app should:
-- compare
-- explain
-- recommend
-- diagnose
-
-### 4) Benchmark against best execution UX
-Use strong products as reference points for:
-- route clarity
-- no-extra-fee mindset
-- transparent execution
-
----
-
-## Risks / blockers to remember
-- public devnet funding is unreliable
+## Risks / constraints to remember
 - public RPC limits are real
-- giant inline UI structure is still fragile until cleaned further
-- quote/execution integrations should stay modular so we can swap providers later
+- provider limitations / pricing tiers affect comparison coverage
+- giant inline UI structures are fragile unless continuously cleaned
+- route comparison becomes much stronger only once we expand beyond Jupiter
+- connected dashboard scope must stay disciplined so we do not drift into “build another wallet”
 
 ---
 
-## What “success” looks like by the end of next week
-By next Friday, the app should feel like:
-- a wallet with a real route-comparison brain
-- not just a wallet that can send SOL
+## What success looks like in the next stage
 
-That means a user should be able to say:
+The product should increasingly feel like this:
 
-> “For this Solana trade, I can already see what my best option probably is — and the app tells me why.”
+> “I connect Phantom here not because I need another wallet, but because this app helps me understand my swap better than my wallet does.”
 
-That is the bridge from wallet prototype to actual product.
+That is the real bridge from prototype to product.

@@ -1,8 +1,8 @@
 # Web3 Digest
 
-**Web3 Digest is an execution-intelligence layer for swaps, wrapped in a wallet-like experience.**
+**Web3 Digest is a wallet-connected execution-transparency app for swaps.**
 
-It helps users compare swap routes, understand costs, and choose the best execution with no hidden wallet-layer markup.
+It helps users connect Phantom, compare routes, understand tradeoffs, and make better execution decisions with clearer cost and route visibility.
 
 Project status: **Alpha**
 
@@ -10,84 +10,110 @@ Project status: **Alpha**
 
 ## What this project is
 
-Web3 Digest is not trying to be just another wallet UI, just another swap button, or just another portfolio dashboard.
+Web3 Digest is **not** trying to become a new wallet competing with Phantom.
 
-It is a product that aims to help users:
+Instead, it sits **on top of trusted wallets like Phantom** and focuses on a different problem:
 
-- compare
-- understand
-- choose
-- execute
+- helping users understand what they are about to swap into
+- comparing routes more clearly
+- showing the gap between ideal reference and executable reality
+- making execution feel more transparent and less mysterious
 
-with clearer cost visibility, more honest route transparency, and a stronger non-custodial signing boundary.
+The product direction is simple:
 
-The long-term north star is simple:
-
-**Make swaps feel free: no hidden wallet tax, radically transparent costs, and execution that minimizes total user cost as much as possible.**
+**Connect Phantom. Swap with transparency. Expand the connected dashboard experience later.**
 
 ---
 
-## Product direction
+## Product identity
 
-### Mission
-Help people make better swaps by making execution transparent, understandable, and low-cost.
+### Phantom remains the wallet
+Phantom handles:
 
-### Vision
-Build the most trusted, user-friendly swap experience in crypto — simple enough for non-crypto natives, transparent enough for power users.
+- wallet creation
+- custody and key security
+- transaction signing
+- trusted wallet UX
 
-### Purpose
-Protect users from blind execution, hidden wallet-layer costs, and route opacity.
+### Web3 Digest becomes the intelligence layer
+Web3 Digest handles:
 
-### Core principles
-- **Non-custodial first** — the connected wallet signs; the app compares, explains, and orchestrates.
-- **Wallet signs, app explains** — the wallet is the signing boundary, not the swap product.
-- **No hidden wallet markup** — we cannot remove all swap costs, but we aim to remove extra wallet-layer tax and make total cost visible.
-- **Truthful metrics** — stale, missing, or partial data should be shown honestly.
-- **Comparison before execution** — users should understand what they are choosing before they swap.
+- route comparison
+- execution transparency
+- ideal vs executable reference
+- direct-route inspection
+- route explanation
+- later, a stronger connected holdings/dashboard experience
+
+This is a product built **with Phantom in mind, not against it**.
+
+---
+
+## Mission
+
+Help users make better swaps by making execution:
+
+- transparent
+- understandable
+- trustworthy
+- as low-friction and low-cost as possible
+
+---
+
+## Vision
+
+Build the most trusted, user-friendly **swap transparency layer** in crypto:
+
+- simple enough for non-crypto-native users
+- transparent enough for power users
+- practical enough to sit on top of wallets people already use
 
 ---
 
 ## Why this matters
 
-Many crypto users still swap through wallet UIs that:
+Many swap experiences still make users execute too blindly.
+
+Typical wallet or swap UIs often:
 
 - hide route quality
-- make total cost hard to understand
-- surface token amounts more clearly than economic outcome
+- compress cost details too much
 - make it hard to compare meaningful alternatives
+- show token amounts more clearly than economic outcome
 - feel expensive without clearly explaining why
 
-Web3 Digest exists to make swaps feel understandable instead of mysterious.
+Web3 Digest exists to make swaps feel **understandable instead of opaque**.
 
 ---
 
 ## Current state
 
-The project has moved beyond a read-only portfolio prototype.
+The project has moved well beyond a read-only portfolio prototype.
 
 Today it already includes:
 
-- a CLI wallet/reporting foundation
-- a FastAPI backend
-- a browser UI served by the API
+- CLI wallet/reporting foundation
+- FastAPI backend
+- browser UI served by the API
 - Phantom connect / disconnect / sign message support
 - live devnet wallet balance display
 - in-app devnet airdrop helper
 - real Send SOL flow on devnet
-- real Solana quote preview flow
-- human-readable recommendation / protection / route path UX
-- support-style quote and transaction diagnostics
+- swap quote preview surface
+- recommended / alternatives / direct-route comparison logic
+- live ideal/theoretical baseline reference
+- user-facing route explanation and support-style diagnostics
 
 ---
 
 ## What works today
 
-### CLI (V0)
+### CLI foundation
 - Insert balances (manual or Solana) into SQLite
 - Insert prices (CoinGecko + optional Dex fallback) into SQLite
 - Print a wallet report from stored snapshots
 
-### Web UI (V1 / V1.5 runway)
+### Web app
 - Open the UI at `GET /ui`
 - Refresh balances and prices
 - View latest portfolio report and history
@@ -95,62 +121,133 @@ Today it already includes:
 - Sign a message
 - View live devnet wallet balance
 - Request devnet airdrop from inside the UI
-- Send SOL on devnet with real transaction confirmation
+- Send SOL on devnet with transaction state handling
 - Preview swap quotes inside the UI
 - Review:
-  - recommendation
-  - you spend / you receive
+  - ideal/theoretical baseline
+  - recommended route
+  - alternative route(s)
+  - direct-route lens
   - minimum received
-  - protections
   - route path
   - route explanation
-  - support-style error states
+  - support-style error states and notes
 
 ---
 
 ## Swap UX philosophy
 
-The current direction is to make the **economic result** clearer than typical swap UIs.
+The product should make the **economic result** easier to understand than typical swap UIs do.
 
-For each route, the product should prioritize:
+### Core rule
+The product must clearly separate:
 
-1. recommendation / choice framing
-2. what the user spends
-3. what the user receives
-4. estimated total swap cost
-5. protections
-6. route transparency
-7. expandable debug details
+- **ideal/theoretical reference**
+- **real executable quote**
 
-### Planned default comparison surface
-The comparison surface is being designed around **2 blocks**:
+Those are different layers and should stay separate in both UX and architecture.
 
-#### 1. Recommended route
-A top recommended route chosen by the main ranking logic.
+### Current comparison surface
+The swap surface is built around:
 
-Inside it:
-- **Other options**
-  - 2nd best
-  - 3rd best
+#### 1. Live baseline / reference layer
+- choose tokens
+- type amount
+- see live ideal/theoretical conversion
 
-These alternatives will be ranked by the **same core metric** as the recommendation, so the product stays transparent and internally consistent.
+#### 2. Execution-intelligence layer
+- Preview Quote
+- recommended route
+- alternatives
+- direct-route check
+- route explanation
+- later cost breakdown
 
-#### 2. Direct route check
-A separate lens for the most direct / fewer-step route.
+### Why this matters
+A key product insight is that:
 
-This block is meant to show a more direct path that may be easier to inspect, even if it is not always the best total-value route.
+- router-reported `priceImpactPct`
+- and the **gap vs ideal baseline**
 
-### Cost philosophy
-The key user-facing metric will be:
+are **not the same metric**.
 
-**Estimated total swap cost**
+Both matter, and both should stay visible.
 
-And the displayed cost breakdown must add up **exactly** to that headline number.
+---
 
-Initial simple breakdown labels:
-- **Execution cost**
-- **Network fee**
-- **Extra wallet fee** (only if it exists)
+## Product design direction
+
+The current inline baseline row is a **transitional UI**.
+
+The longer-term swap input should evolve toward a more stacked, two-panel, wallet-connected experience where:
+
+- the user types directly in the source token panel
+- the destination panel shows the ideal/theoretical converted amount live
+- executable route comparison stays below that as a separate action and intelligence layer
+
+So the current work is focused first on:
+
+- engine
+- behavior
+- product logic
+- clean separation of concerns
+
+Pretty UI and final polish come later.
+
+---
+
+## Connected dashboard direction
+
+The product may later expand into a stronger wallet-connected dashboard experience, such as:
+
+- better holdings view
+- improved token presentation
+- clearer asset inspection
+- charts / richer portfolio visibility
+- better connected portfolio UX than a minimal wallet-number view
+
+But this remains **secondary** to the main wedge.
+
+### Primary wedge
+**Swap transparency first. Dashboard expansion second.**
+
+---
+
+## Routing direction
+
+The current comparison surface is **Jupiter-first**, which is the right first step.
+
+But the long-term product should not stop at one provider worldview.
+
+The roadmap is expected to expand into at least **two additional routing/liquidity universes/providers** so route comparison becomes:
+
+- richer
+- more credible
+- more honest
+- more aligned with the transparency promise
+
+---
+
+## Platform direction
+
+### Web first
+The product is being built as a **web app first** because that is the right path for:
+
+- fast iteration
+- clean demos
+- GitHub showcase
+- early product validation
+
+### Mobile-aware
+Even though native mobile is not the first build, the long-term direction must stay **mobile-aware**.
+
+That matters because much real-world swapping behavior — especially in fast-moving meme/token environments — is heavily **phone-first**, and Phantom’s strongest real-world advantage is its mobile usage habit and polished UX.
+
+So the right path is:
+
+- web first
+- responsive and mobile-aware later
+- native mobile only if the product earns it
 
 ---
 
@@ -161,7 +258,7 @@ Initial simple breakdown labels:
   - API layer
   - refresh scripts
   - persistence logic
-  - ranking / comparison logic
+  - swap ranking / comparison logic
 
 - **SQLite**
   - balances
@@ -173,7 +270,7 @@ Initial simple breakdown labels:
   - browser UI
   - wallet integration
   - swap comparison surface
-  - future execution UX
+  - live baseline behavior
 
 - **Wallet boundary**
   - browser wallet provider
@@ -184,14 +281,14 @@ Initial simple breakdown labels:
 
 ## Project structure
 
-Typical important files / areas:
+Important areas include:
 
 - `api/`
   - FastAPI backend
   - `/ui`
   - refresh endpoints
   - portfolio endpoints
-  - swap quote endpoint
+  - swap quote and baseline endpoints
 
 - `wallet_cli.py`
   - CLI wallet/report entrypoint
@@ -218,84 +315,62 @@ Typical important files / areas:
 
 ## Version ladder
 
-### V0 — Read-only wallet foundation
+### V0 — read-only wallet foundation
 - balances
 - prices
 - history
 - CLI report
 - truthful stale/missing data handling
 
-### V1 — Connected wallet runway
+### V1 — wallet-connected runway
 - Phantom connect / sign
 - browser wallet cockpit
 - Send SOL on devnet
 - transaction state UI
 - support-style diagnostics
 
-### V1.5 — Swap intelligence surface
+### V1.5 — swap-transparency foundation
 - in-app swap form
+- live ideal baseline
 - quote provider integration
-- recommendation / protections / path
-- honest quote UX
-- support-style quote failures
+- recommendation / alternatives / direct-route check
+- “Why this route?” explanation
+- honest quote UX and support-style failures
 
-### V2 — Ranked comparison surface
+### V2 — stronger comparison surface
 Planned:
-- recommended route
-- 2nd best
-- 3rd best
-- direct route check
-- coherent cost ranking
-- expandable option details
+- richer multi-option comparison
+- better route ranking clarity
+- clearer cost framing
+- more polished swap input UX
+- more trustworthy comparison flow
 
-### V2.5 — Swap execution handoff
+### V2.5 — swap execution handoff
 Planned:
 - choose route
 - hand transaction to wallet for signing
 - execute from inside the UI
 - show status / confirmation / failure clearly
 
-### V3+ — deeper comparison and multichain expansion
+### V3+ — deeper route intelligence + connected dashboard expansion
 Planned:
-- stronger ranking logic
-- direct venue/provider integrations
-- multichain execution-intelligence model
-- richer support/debugging layers
-
----
-
-## Near-term roadmap
-
-### Next major build
-Turn the current single-quote swap UI into a **ranked comparison surface** with:
-
-- **Recommended route**
-- **Other options**
-  - 2nd best
-  - 3rd best
-- **Direct route check**
-
-### After that
-- route selection
-- swap execution handoff
-- stronger cost model
 - direct venue/provider comparison
-- receive UX
-- send SPL tokens
-- UI polish
-- docs / GitHub / application packaging
+- multi-provider routing worldview
+- stronger holdings/dashboard UX
+- richer support/debugging layers
+- later multichain expansion if justified
 
 ---
 
 ## What is not shipped yet
 
-- ranked multi-option comparison surface
-- 2nd-best / 3rd-best route cards
-- finalized direct-route check block
-- actual swap execution
-- independent venue/provider comparison
-- polished production-grade UI
-- final packaging of docs / screenshots / public project story
+- complete cost accounting for swap comparison
+- non-Jupiter routing universes/providers
+- final two-panel swap input design
+- production-grade polished UI
+- full swap execution flow
+- richer connected holdings/dashboard experience
+- final public packaging of docs / screenshots / demo story
 
 ---
 
@@ -310,7 +385,7 @@ Current status remains **Alpha**.
 
 ---
 
-## Why this project also matters personally
+## Why this project matters personally
 
 This project is also intentionally designed to:
 
@@ -321,6 +396,6 @@ This project is also intentionally designed to:
 
 ---
 
-## Long-term product sentence
+## One-line product sentence
 
-**Web3 Digest aims to become an execution-intelligence layer for swaps, wrapped in a wallet-like experience — starting on Solana, making execution transparent and low-cost, and helping users compare, understand, and choose the best route without hidden wallet-layer markup.**
+**Web3 Digest is a wallet-connected execution-transparency app that helps users compare routes, understand tradeoffs, and make better swap decisions on top of trusted wallets like Phantom.**
