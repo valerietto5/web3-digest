@@ -179,8 +179,15 @@ def build_ui_html() -> str:
     </div>
 
     <div class="row" style="margin-top: 10px;">
-      <button id="btnPreviewSwap" class="secondary">Preview Quote</button>
+      <button id="btnPreviewSwap" type="button" class="secondary">Preview Quote</button>
       <button id="btnClearSwap" class="secondary">Clear</button>
+    </div>
+
+    <div class="row" id="swapInlineBaselineRow" style="margin-top: 6px;">
+      <div class="muted" id="swapSpendValueHint">You spend: —</div>
+      <div class="muted" id="swapIdealOutputHint">Ideal no-fee baseline: —</div>
+      <div class="muted" id="swapBaselineDeltaHint">Difference vs best checked route: —</div>
+      <div class="muted" id="swapBaselineNote">Ideal no-fee reference for comparison.</div>
     </div>
 
     <div class="card" id="swapQuoteCard" style="margin-top:10px;">
@@ -190,30 +197,33 @@ def build_ui_html() -> str:
       </div>
 
       <div class="muted" id="swapRecommendation" style="margin-top:8px;">recommendation: —</div>
-
-      <div class="muted" id="swapQuoteSummary" style="margin-top:8px;">quote: —</div>
-      <div class="muted" id="swapProtectionLine" style="margin-top:8px;">protections: —</div>
-      <details id="swapDebugWrap" style="margin-top:8px; display:none;">
-        <summary class="muted" style="cursor:pointer;">Raw quote debug JSON</summary>
-        <pre id="swapQuotePreview" style="margin-top:8px;"></pre>
-      </details>
+      <div class="muted" id="swapCompareSummary" style="margin-top:8px;">comparison summary: —</div>
     </div>
 
-    <div class="card" id="swapRoutesCard" style="margin-top:10px;">
-      <h4 style="margin: 0 0 6px 0;">Route Comparison</h4>
-      <div class="muted" id="swapCompareSummary" style="margin-top:4px;">comparison summary: —</div>
-      <div class="muted" id="swapRoutePath" style="margin-top:8px;">route path: —</div>
-      <div class="muted" id="swapRoutesText" style="margin-top:8px;">
-        Placeholder for Jupiter first, then later Phantom / Meteora / other route sources.
-      </div>
+    <div class="card" id="swapRecommendedCard" style="margin-top:10px;">
+      <h4 style="margin: 0 0 6px 0;">Recommended route</h4>
+      <div class="muted" id="swapRecommendedBox">No quote yet.</div>
     </div>
+
+    <div class="card" id="swapAlternativesCard" style="margin-top:10px;">
+      <h4 style="margin: 0 0 6px 0;">Other options</h4>
+      <div class="muted" id="swapAlternativesBox">No alternatives yet.</div>
+    </div>
+
+    <div class="card" id="swapDirectCard" style="margin-top:10px;">
+      <h4 style="margin: 0 0 6px 0;">Direct route check</h4>
+      <div class="muted" id="swapDirectBox">No direct-route check yet.</div>
+    </div>
+
+    <details id="swapDebugWrap" class="card" style="margin-top:10px; display:none;">
+      <summary class="muted" style="cursor:pointer;">Raw quote debug JSON</summary>
+      <pre id="swapQuotePreview" style="margin-top:8px;"></pre>
+    </details>
 
     <div id="swapStatus" class="card" style="display:none; margin-top:10px;"></div>
-  </div>
 
-
-
-  <div class="card" id="summaryCard">
+    </div>
+    <div class="card" id="summaryCard">
     <div class="row">
       <div><span class="pill" id="pillBalances">balances: ?</span></div>
       <div><span class="pill" id="pillPrices">prices: ?</span></div>
@@ -267,6 +277,7 @@ def build_ui_html() -> str:
 <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
 <script>
   const $ = (id) => document.getElementById(id);
+  console.log("ui script loaded");
 
 
   const DEVNET_RPC_URL = "https://api.devnet.solana.com";
@@ -352,36 +363,155 @@ function showSwapStatus(kind, title, payload) {
   logActivity(kind, title, payload);
 }
 
+
 function clearSwapUi() {
   $("swapAmount").value = "";
-  $("swapQuoteSummary").textContent = "quote: —";
   $("swapDebugWrap").style.display = "none";
   $("swapQuotePreview").textContent = "";
   $("swapStatus").style.display = "none";
   setSwapPhase("Draft", "Ready to request a swap quote.");
-  $("swapRoutesText").textContent =
-    "Placeholder for Jupiter first, then later Phantom / Meteora / other route sources.";
-  $("swapRecommendation").textContent = "recommendation: —";
-  $("swapProtectionLine").textContent = "protections: —";
-  $("swapCompareSummary").textContent = "comparison summary: —";
-  $("swapRoutePath").textContent = "route path: —";
+  resetSwapQuoteDisplay();
+  resetSwapInlineBaseline();
 }
+
+
+
+async function updateLiveSwapBaseline() {
+  const fromToken = $("swapFromToken").value;
+  const toToken = $("swapToToken").value;
+  const rawAmount = ($("swapAmount").value || "").trim();
+  const amount = Number(rawAmount);
+
+  if (!rawAmount || !Number.isFinite(amount) || amount <= 0 || fromToken === toToken) {
+    resetSwapInlineBaseline();
+    return;
+  }
+
+  const url =
+    "/swap/inline-baseline?" +
+    qs({
+      from_token: fromToken,
+      to_token: toToken,
+      amount: amount,
+      network: "solana"
+    });
+
+  let res;
+  try {
+    res = await fetchMaybeJson(url);
+  } catch (err) {
+    resetSwapInlineBaseline();
+    $("swapBaselineNote").textContent = "Live baseline unavailable right now.";
+    return;
+  }
+
+  if (!res.ok || !res.data?.ok || !res.data?.inline_baseline) {
+    resetSwapInlineBaseline();
+    $("swapBaselineNote").textContent = "Live baseline unavailable right now.";
+    return;
+  }
+
+  renderSwapInlineBaseline(res.data.inline_baseline, null);
+}
+
+
+
+function resetSwapInlineBaseline() {
+  const spend = $("swapSpendValueHint");
+  const ideal = $("swapIdealOutputHint");
+  const delta = $("swapBaselineDeltaHint");
+  const note = $("swapBaselineNote");
+
+  if (spend) spend.textContent = "You spend: —";
+  if (ideal) ideal.textContent = "Ideal no-fee baseline: —";
+  if (delta) delta.textContent = "Difference vs best checked route: —";
+  if (note) note.textContent = "Ideal no-fee reference for comparison.";
+}
+
+function resetSwapInlineBaseline() {
+  const spend = $("swapSpendValueHint");
+  const ideal = $("swapIdealOutputHint");
+  const delta = $("swapBaselineDeltaHint");
+  const note = $("swapBaselineNote");
+
+  if (spend) spend.textContent = "You spend: —";
+  if (ideal) ideal.textContent = "Ideal no-fee baseline: —";
+  if (delta) delta.textContent = "Difference vs best checked route: —";
+  if (note) note.textContent = "Ideal no-fee reference for comparison.";
+}
+
+function renderSwapInlineBaseline(baseline, delta = null) {
+  const spend = $("swapSpendValueHint");
+  const ideal = $("swapIdealOutputHint");
+  const deltaLine = $("swapBaselineDeltaHint");
+  const note = $("swapBaselineNote");
+
+  if (!baseline) {
+    resetSwapInlineBaseline();
+    return;
+  }
+
+  const inputAmount =
+    baseline.input_amount == null ? "—" : fmtNum(Number(baseline.input_amount), 6);
+  const inputToken = baseline.input_token || "";
+  const inputUsd =
+    baseline.input_usd_value == null
+      ? "n/a"
+      : "$" + fmtNum(Number(baseline.input_usd_value), 2);
+
+  const idealOut =
+    baseline.ideal_output_amount == null
+      ? "n/a"
+      : fmtNum(Number(baseline.ideal_output_amount), 6);
+
+  const outputToken = baseline.output_token || "";
+  const outputUsd =
+    baseline.output_usd_value == null
+      ? "n/a"
+      : "$" + fmtNum(Number(baseline.output_usd_value), 2);
+
+  if (spend) {
+    spend.textContent =
+      "You spend: " + inputAmount + " " + inputToken + " ≈ " + inputUsd;
+  }
+
+  if (ideal) {
+    ideal.textContent =
+      "Ideal no-fee baseline: ~" + idealOut + " " + outputToken + " (≈ " + outputUsd + ")";
+  }
+
+  if (deltaLine) {
+    if (delta && (delta.output_diff_abs != null || delta.output_diff_pct != null)) {
+      const absNum = Math.abs(Number(delta.output_diff_abs));
+      const pctNum = Math.abs(Number(delta.output_diff_pct));
+
+      const absTxt = Number.isFinite(absNum) ? fmtNum(absNum, 6) : "n/a";
+      const pctTxt = Number.isFinite(pctNum) ? fmtNum(pctNum, 2) + "%" : "n/a";
+
+      deltaLine.textContent =
+        "Route shortfall vs ideal: " + absTxt + " " + outputToken + " (" + pctTxt + ")";
+    } else {
+      deltaLine.textContent = "Difference vs best checked route: —";
+    }
+  }
+
+  if (note) {
+    note.textContent = "Theoretical baseline, not an executable quote.";
+  }
+}
+
 
 
 
 function resetSwapQuoteDisplay() {
   $("swapRecommendation").textContent = "recommendation: —";
-  $("swapQuoteSummary").textContent = "quote: —";
-  $("swapProtectionLine").textContent = "protections: —";
   $("swapCompareSummary").textContent = "comparison summary: —";
-  $("swapRoutePath").textContent = "route path: —";
-  $("swapRoutesText").textContent =
-    "Placeholder for Jupiter first, then later Phantom / Meteora / other route sources.";
+  $("swapRecommendedBox").innerHTML = "<div class='muted'>No quote yet.</div>";
+  $("swapAlternativesBox").innerHTML = "<div class='muted'>No alternatives yet.</div>";
+  $("swapDirectBox").innerHTML = "<div class='muted'>No direct-route check yet.</div>";
   $("swapDebugWrap").style.display = "none";
   $("swapQuotePreview").textContent = "";
 }
-
-
 
 
 
@@ -510,8 +640,81 @@ function getSwapThrownErrorInfo(err) {
 
 
 
+function renderSwapOptionCard(opt, opts = {}) {
+  if (!opt) {
+    return "<div class='muted'>No data.</div>";
+  }
+
+  const title = opts.title || (opt.label || "Route");
+  const note = opts.note || "";
+  const estOut = fmtNum(Number(opt.estimated_output || 0), 6);
+  const minReceived = opt.min_received == null ? "n/a" : fmtNum(Number(opt.min_received), 6);
+  const impact = formatImpactPct(opt.price_impact_pct);
+  const slippage = formatSettingPctFromBps(opt?.protections?.slippage_bps ?? opt?.slippage_bps);
+  const routeLabel = opt.route_label || "unknown-route";
+  const routeShape = opt.route_shape || "unknown";
+  const routeSteps = Array.isArray(opt.route_steps) ? opt.route_steps.length : 0;
+
+  const parts = [];
+  if (Array.isArray(opt.route_steps) && opt.route_steps.length) {
+    for (const leg of opt.route_steps) {
+      const inLabel = mintLabel(leg?.input_mint);
+      const outLabel = mintLabel(leg?.output_mint);
+
+      if (!parts.length) {
+        parts.push(inLabel);
+      } else if (parts[parts.length - 1] !== inLabel) {
+        parts.push(inLabel);
+      }
+
+      if (parts[parts.length - 1] !== outLabel) {
+        parts.push(outLabel);
+      }
+    }
+  }
+
+  const routePath = parts.length
+    ? parts.join(" → ")
+    : ((opt.from_token || "?") + " → " + (opt.to_token || "?"));
+
+  return `
+    <div class="card" style="margin-top:8px;">
+      <div><strong>${escapeHtml(title)}</strong></div>
+      <div class="muted" style="margin-top:6px;">
+        Receive (est.): ${escapeHtml(estOut)} ${escapeHtml(opt.to_token || "")}
+      </div>
+      <div class="muted" style="margin-top:4px;">
+        Min received: ${escapeHtml(minReceived)} ${escapeHtml(opt.to_token || "")}
+      </div>
+      <div class="muted" style="margin-top:4px;">
+        Route: ${escapeHtml(routeLabel)} | Shape: ${escapeHtml(routeShape)} | Steps: ${escapeHtml(String(routeSteps))}
+      </div>
+      <div class="muted" style="margin-top:4px;">
+        Path: ${escapeHtml(routePath)}
+      </div>
+      <div class="muted" style="margin-top:4px;">
+        Impact: ${escapeHtml(impact)} | Slippage setting: ${escapeHtml(slippage)}
+      </div>
+      <div class="muted" style="margin-top:4px;">
+        Estimated total swap cost: not computed yet
+      </div>
+      <div class="muted" style="margin-top:4px;">
+        ${escapeHtml(opt.explanation || "No explanation available.")}
+      </div>
+      ${
+        note
+          ? `<div class="muted" style="margin-top:6px;"><em>${escapeHtml(note)}</em></div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+
 
 async function previewSwap() {
+  showSwapStatus("warn", "Preview clicked", { step: "previewSwap entered" });
+
   const fromToken = $("swapFromToken").value;
   const toToken = $("swapToToken").value;
   const rawAmount = ($("swapAmount").value || "").trim();
@@ -519,29 +722,22 @@ async function previewSwap() {
 
   if (!rawAmount) {
     setSwapPhase("Failed", "Enter an amount first.");
-    showSwapStatus("warn", "Swap preview failed", {
-      error: "Amount is required."
-    });
+    showSwapStatus("warn", "Swap preview failed", { error: "Amount is required." });
     return;
   }
 
   if (!Number.isFinite(amount) || amount <= 0) {
     setSwapPhase("Failed", "Amount must be a valid number greater than 0.");
-    showSwapStatus("warn", "Swap preview failed", {
-      error: "Invalid amount."
-    });
+    showSwapStatus("warn", "Swap preview failed", { error: "Invalid amount." });
     return;
   }
 
   if (fromToken === toToken) {
     setSwapPhase("Failed", "From token and to token cannot be the same.");
-    showSwapStatus("warn", "Swap preview failed", {
-      error: "Choose two different tokens."
-    });
+    showSwapStatus("warn", "Swap preview failed", { error: "Choose two different tokens." });
     return;
   }
 
-  
   setSwapPhase("Draft", "Requesting backend quote preview...");
 
   const url =
@@ -580,124 +776,174 @@ async function previewSwap() {
   }
 
   const quote = res.data || {};
+  renderSwapInlineBaseline(
+    quote.inline_baseline,
+    quote.inline_baseline_vs_recommended
+  );
 
-  if (!Array.isArray(quote.route_plan) || !quote.route_plan.length) {
+  const recommended = quote?.recommended || null;
+  const otherOptions = Array.isArray(quote?.other_options) ? quote.other_options : [];
+  const directRoute = quote?.direct_route_check || null;
+
+  if (!quote?.ok || !recommended) {
     resetSwapQuoteDisplay();
     setSwapPhase("Failed", "No swap route was found for this request.");
-    showSwapStatus("warn", "No route found", {
-      quote
-    });
+    showSwapStatus("warn", "No route found", { quote });
     return;
   }
 
-
-
-
-
-
-  const estOut =
-    quote.estimated_output === null || quote.estimated_output === undefined
-      ? "TBD"
-      : fmtNum(Number(quote.estimated_output), 6);
-
-  const minReceivedUi = uiAmountFromRaw(
-    quote.to_token,
-    quote.raw_quote?.otherAmountThreshold
-  );
-
-  const minReceived =
-    minReceivedUi === null ? "n/a" : fmtNum(minReceivedUi, 6);
-
-  const priceImpact = formatImpactPct(quote.price_impact_pct);
-  const slippageSetting = formatSettingPctFromBps(quote.slippage_bps);
-  const routeLabel = quote.route_label || "unknown-route";
-  const providerLabel =
-    (quote.provider || "").toLowerCase() === "jupiter-metis"
-      ? "Jupiter"
-      : (quote.provider || "current provider");
-
-  const recommendationText =
-    "Recommendation: Best value right now is " +
-    routeLabel +
-    " through " +
-    providerLabel +
-    " for this request.";
-
-  const swapUsdValue =
-    quote.raw_quote?.swapUsdValue === null || quote.raw_quote?.swapUsdValue === undefined
-      ? "n/a"
-      : "~$" + fmtNum(Number(quote.raw_quote.swapUsdValue), 2);
-
-  $("swapRecommendation").textContent = recommendationText;
-  $("swapQuoteSummary").textContent =
-    "You pay: " + quote.input_amount + " " + quote.from_token +
-    " | You receive (est.): " + estOut + " " + quote.to_token +
-    " | Min received: " + minReceived + " " + quote.to_token;
-
-  $("swapProtectionLine").textContent =
-    "Protections: minimum received " + minReceived + " " + quote.to_token +
-    " | slippage setting " + slippageSetting +
-    " | impact " + priceImpact;
-
-  const routeLegs = Array.isArray(quote.route_plan) ? quote.route_plan.length : 0;
-  const routeShape =
-    routeLegs <= 1 ? "direct/simple route" : (routeLegs + "-leg route");
-
-  const routePathParts = [];
-
-  if (Array.isArray(quote.route_plan) && quote.route_plan.length) {
-    for (const leg of quote.route_plan) {
-      const info = leg?.swapInfo || {};
-      const inLabel = mintLabel(info.inputMint);
-      const outLabel = mintLabel(info.outputMint);
-
-      if (!routePathParts.length) {
-        routePathParts.push(inLabel);
-      } else if (routePathParts[routePathParts.length - 1] !== inLabel) {
-        routePathParts.push(inLabel);
-      }
-
-      if (routePathParts[routePathParts.length - 1] !== outLabel) {
-        routePathParts.push(outLabel);
-      }
-    }
+  function numOrNull(x) {
+    const n = Number(x);
+    return Number.isFinite(n) ? n : null;
   }
 
-  const fallbackRoutePath = quote.from_token + " → " + quote.to_token;
-  const routePathText = routePathParts.length ? routePathParts.join(" → ") : fallbackRoutePath;
-  const stepText = routeLegs === 1 ? "1 step" : (routeLegs + " steps");
+  function fmtTokenAmount(x, digits = 6) {
+    const n = numOrNull(x);
+    if (n === null) return "n/a";
+    return fmtNum(n, digits);
+  }
 
-  $("swapRoutePath").textContent =
-    "Route path: " + routePathText + " | Steps: " + stepText;
+  const displayRec = recommended;
 
-  $("swapCompareSummary").textContent =
-    "Best value: " + routeLabel +
-    " through " + providerLabel +
-    " | Route type: " + routeShape +
-    " | Cross-provider comparison: not active yet";
+  const recommendationText =
+    "Recommended block: Recommended via " +
+    (displayRec.route_label || "unknown-route") +
+    " on Jupiter. This currently has the strongest checked output (~" +
+    fmtTokenAmount(displayRec.estimated_output) +
+    " " +
+    (displayRec.to_token || toToken) +
+    ").";
 
-  const quoteMs =
-    quote.raw_quote?.timeTaken === null || quote.raw_quote?.timeTaken === undefined
-      ? "n/a"
-      : Math.round(Number(quote.raw_quote.timeTaken) * 1000) + " ms";
+  try {
+    const compareBits = [];
+    const variantErrors = Array.isArray(quote?.debug?.variant_errors)
+      ? quote.debug.variant_errors
+      : [];
 
-  $("swapRoutesText").textContent =
-    "Best route right now (within Jupiter): " + routeLabel +
-    " | Shape: " + routeShape +
-    " | Impact: " + priceImpact +
-    " | Slippage setting: " + slippageSetting +
-    " | Quote value: " + swapUsdValue +
-    " | Quote speed: " + quoteMs +
-    " | Why shown: highest output returned by current provider for this request." +
-    " | Note: this is not yet a cross-provider comparison.";
+    const broaderSearchTierBlocked = variantErrors.some((e) => {
+      const detail = String(e?.detail || "").toLowerCase();
+      return detail.includes("restrict_intermediate_tokens") && detail.includes("free tier");
+    });
 
+    compareBits.push(
+      "Selection basis: " + (quote?.summary?.selection_basis || "not provided")
+    );
+    compareBits.push("Other options: " + otherOptions.length);
+    compareBits.push("Direct route: " + (directRoute ? "available" : "not available"));
 
-  $("swapDebugWrap").style.display = "block";
-  $("swapQuotePreview").textContent = JSON.stringify(quote, null, 2);
+    if (quote?.summary?.recommended_reason) {
+      compareBits.push("Why this route: " + quote.summary.recommended_reason);
+    }
 
-  setSwapPhase("Quoted", "Backend quote preview ready.");
-  showSwapStatus("ok", "Swap preview ready", quote);
+    if (broaderSearchTierBlocked) {
+      compareBits.push(
+        "Note: Broader search not available in current Jupiter tier; showing checked restricted variants only."
+      );
+    }
+
+    $("swapRecommendation").textContent = recommendationText;
+    $("swapCompareSummary").textContent = compareBits.join(" | ");
+
+    $("swapRecommendedBox").innerHTML = renderSwapOptionCard(displayRec);
+
+    if (otherOptions.length) {
+      $("swapAlternativesBox").innerHTML = otherOptions
+        .map((opt, idx) =>
+          renderSwapOptionCard(opt, {
+            title: "Alternative " + (idx + 1)
+          })
+        )
+        .join("");
+    } else {
+      $("swapAlternativesBox").innerHTML =
+        "<div class='muted'>No additional ranked alternatives returned.</div>";
+    }
+
+    let directNote = "";
+    let directMatchesAlternative = false;
+
+    if (directRoute) {
+      directMatchesAlternative = otherOptions.some((opt) => {
+        return (
+          opt?.route_label === directRoute?.route_label &&
+          String(opt?.estimated_output_raw) === String(directRoute?.estimated_output_raw)
+        );
+      });
+
+      if (displayRec?.variant_id === "direct_route_check") {
+        directNote = "Direct route is also the current recommendation.";
+      } else if (directMatchesAlternative) {
+        directNote = "This direct-route result matches one of the ranked alternatives.";
+      } else {
+        directNote = "This is the direct-only lens for comparison.";
+      }
+
+      $("swapDirectBox").innerHTML = renderSwapOptionCard(directRoute, {
+        note: directNote
+      });
+    } else {
+      $("swapDirectBox").innerHTML =
+        "<div class='muted'>No direct-route check was returned for this request.</div>";
+    }
+
+    $("swapDebugWrap").style.display = "block";
+    $("swapQuotePreview").textContent = JSON.stringify(quote, null, 2);
+
+    setSwapPhase("Quoted", "Backend quote preview ready.");
+    showSwapStatus("ok", "Swap preview ready", quote);
+  } catch (err) {
+    console.error("previewSwap render error:", err);
+    setSwapPhase("Failed", "Swap quote rendering failed in the browser.");
+    showSwapStatus("err", "Swap preview render failed", {
+      error: err?.message || String(err)
+    });
+  }
 }
+
+async function updateLiveSwapBaseline() {
+  const fromToken = $("swapFromToken").value;
+  const toToken = $("swapToToken").value;
+  const rawAmount = ($("swapAmount").value || "").trim();
+  const amount = Number(rawAmount);
+
+  if (!rawAmount || !Number.isFinite(amount) || amount <= 0 || fromToken === toToken) {
+    resetSwapInlineBaseline();
+    return;
+  }
+
+  const url =
+    "/swap/inline-baseline?" +
+    qs({
+      from_token: fromToken,
+      to_token: toToken,
+      amount: amount,
+      network: "solana"
+    });
+
+  let res;
+  try {
+    res = await fetchMaybeJson(url);
+  } catch (err) {
+    resetSwapInlineBaseline();
+    $("swapBaselineNote").textContent = "Live baseline unavailable right now.";
+    return;
+  }
+
+  if (!res.ok || !res.data?.ok || !res.data?.inline_baseline) {
+    resetSwapInlineBaseline();
+    $("swapBaselineNote").textContent = "Live baseline unavailable right now.";
+    return;
+  }
+
+  renderSwapInlineBaseline(res.data.inline_baseline, null);
+}
+
+
+
+
+
+
+
 
   function mintLabel(mint) {
     if (!mint) return "unknown";
@@ -1676,6 +1922,8 @@ async function signMessageWithPhantom() {
     await loadReportAndHistory();
   }
 
+  console.log("attaching listeners");
+
   $("btnLoad").addEventListener("click", loadReportAndHistory);
   $("btnRefreshBalances").addEventListener("click", refreshBalances);
   $("btnRefreshPrices").addEventListener("click", refreshPrices);
@@ -1688,6 +1936,9 @@ async function signMessageWithPhantom() {
   $("btnAirdropDevnet").addEventListener("click", requestDevnetAirdrop);
   $("btnPreviewSwap").addEventListener("click", previewSwap);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
+  $("swapAmount").addEventListener("input", updateLiveSwapBaseline);
+  $("swapFromToken").addEventListener("change", updateLiveSwapBaseline);
+  $("swapToToken").addEventListener("change", updateLiveSwapBaseline);
 
   // init
   (async () => {

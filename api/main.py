@@ -206,6 +206,310 @@ def to_raw_amount(amount: float, decimals: int) -> int:
     return raw
 
 
+
+def _safe_float(value):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _ui_amount(raw_value, decimals: int):
+    try:
+        if raw_value is None:
+            return None
+        return int(raw_value) / (10 ** decimals)
+    except Exception:
+        return None
+
+
+def _route_steps(route_plan: list[dict]) -> list[dict]:
+    steps = []
+    for leg in route_plan or []:
+        swap_info = leg.get("swapInfo") or {}
+        steps.append(
+            {
+                "label": swap_info.get("label"),
+                "percent": leg.get("percent"),
+                "input_mint": swap_info.get("inputMint"),
+                "output_mint": swap_info.get("outputMint"),
+                "in_amount_raw": swap_info.get("inAmount"),
+                "out_amount_raw": swap_info.get("outAmount"),
+            }
+        )
+    return steps
+
+
+def _route_labels(route_plan: list[dict]) -> list[str]:
+    out = []
+    seen = set()
+    for step in _route_steps(route_plan):
+        label = step.get("label")
+        if label and label not in seen:
+            seen.add(label)
+            out.append(label)
+    return out
+
+
+def _build_option_explanation(
+    *,
+    only_direct_routes: bool,
+    restrict_intermediate_tokens: bool,
+    route_labels: list[str],
+    route_plan: list[dict],
+) -> str:
+    parts = []
+
+    if only_direct_routes:
+        parts.append("Direct-route-only check.")
+    elif restrict_intermediate_tokens:
+        parts.append("Stable-token intermediate restriction enabled.")
+    else:
+        parts.append("Broader routing search with intermediate restriction relaxed.")
+
+    if route_labels:
+        parts.append("Uses " + " → ".join(route_labels[:3]) + ".")
+
+    if len(route_plan) > 1:
+        parts.append(f"Route plan has {len(route_plan)} legs.")
+    elif len(route_plan) == 1:
+        parts.append("Single-leg route plan.")
+
+    return " ".join(parts)
+
+
+def _fetch_jupiter_quote(params: dict) -> dict:
+    url = "https://lite-api.jup.ag/swap/v1/quote?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=e.code, detail=f"Jupiter HTTP error: {body}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Jupiter request failed: {e}")
+
+
+def _try_fetch_jupiter_quote(params: dict) -> dict:
+    try:
+        return {"ok": True, "data": _fetch_jupiter_quote(params)}
+    except HTTPException as e:
+        return {
+            "ok": False,
+            "error": {
+                "status_code": e.status_code,
+                "detail": e.detail,
+            },
+        }
+
+
+def _normalize_quote_option(
+    *,
+    variant_id: str,
+    label: str,
+    kind: str,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    input_amount: float,
+    input_amount_raw: int,
+    output_decimals: int,
+    checked_params: dict,
+) -> dict:
+    route_plan = quote.get("routePlan") or []
+    route_labels = _route_labels(route_plan)
+    out_amount_raw = quote.get("outAmount")
+    threshold_raw = quote.get("otherAmountThreshold")
+
+    only_direct_routes = str(checked_params.get("onlyDirectRoutes", "false")).lower() == "true"
+    restrict_intermediate_tokens = str(
+        checked_params.get("restrictIntermediateTokens", "true")
+    ).lower() == "true"
+
+    option = {
+        "variant_id": variant_id,
+        "label": label,
+        "kind": kind,
+        "provider": "jupiter-metis",
+        "is_jupiter_only": True,
+        "from_token": from_token,
+        "to_token": to_token,
+        "input_amount": input_amount,
+        "input_amount_raw": str(input_amount_raw),
+        "estimated_output": _ui_amount(out_amount_raw, output_decimals),
+        "estimated_output_raw": out_amount_raw,
+        "min_received": _ui_amount(threshold_raw, output_decimals),
+        "min_received_raw": threshold_raw,
+        "estimated_total_swap_cost": None,
+        "execution_cost": None,
+        "cost_scope": "not_computed_yet",
+        "price_impact_pct": _safe_float(quote.get("priceImpactPct")),
+        "slippage_bps": quote.get("slippageBps"),
+        "route_label": route_labels[0] if route_labels else None,
+        "route_labels": route_labels,
+        "route_steps": _route_steps(route_plan),
+        "route_step_count": len(route_plan),
+        "route_shape": (
+            "direct"
+            if only_direct_routes
+            else ("single-path" if len(route_plan) == 1 else "multi-leg-or-split")
+        ),
+        "protections": {
+            "slippage_bps": quote.get("slippageBps"),
+            "restrict_intermediate_tokens": restrict_intermediate_tokens,
+            "only_direct_routes": only_direct_routes,
+        },
+        "explanation": _build_option_explanation(
+            only_direct_routes=only_direct_routes,
+            restrict_intermediate_tokens=restrict_intermediate_tokens,
+            route_labels=route_labels,
+            route_plan=route_plan,
+        ),
+        "raw_quote": quote,
+        "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
+    }
+    return option
+
+
+def _dedupe_options(options: list[dict]) -> list[dict]:
+    out = []
+    seen = set()
+
+    for opt in options:
+        if not opt:
+            continue
+
+        key = (
+            opt.get("estimated_output_raw"),
+            tuple(opt.get("route_labels") or []),
+            opt.get("protections", {}).get("only_direct_routes"),
+            opt.get("protections", {}).get("restrict_intermediate_tokens"),
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        out.append(opt)
+
+    return out
+
+
+def _strip_internal_sort_key(option: dict | None) -> dict | None:
+    if not option:
+        return option
+    option.pop("_sort_out_amount_raw", None)
+    return option
+
+
+
+def _extract_price_number(value) -> float | None:
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if isinstance(value, dict):
+        for key in ("price", "usd_price", "value"):
+            v = value.get(key)
+            if isinstance(v, (int, float)):
+                return float(v)
+
+    if isinstance(value, (list, tuple)):
+        # Common pattern in this project: (ts, price)
+        for item in reversed(value):
+            if isinstance(item, (int, float)):
+                return float(item)
+
+    return None
+
+
+def _latest_usd_price_for_token(token_symbol: str) -> float | None:
+    token_symbol = (token_symbol or "").strip().upper()
+
+    # Stable shortcut for now
+    if token_symbol == "USDC":
+        return 1.0
+
+    row = call_with_supported_kwargs(
+        db.get_latest_price,
+        asset=token_symbol.lower(),
+        currency="usd",
+    )
+    return _extract_price_number(row)
+
+
+
+
+
+
+def _build_inline_baseline(
+    from_token: str,
+    to_token: str,
+    amount: float,
+    fallback_input_usd_value: float | None = None,
+    best_output_amount: float | None = None,
+):
+    input_usd_price = _latest_usd_price_for_token(from_token)
+    output_usd_price = _latest_usd_price_for_token(to_token)
+
+    input_usd_value = None
+    if input_usd_price is not None:
+        input_usd_value = amount * input_usd_price
+    else:
+        input_usd_value = fallback_input_usd_value
+
+    ideal_output_amount = None
+    if input_usd_value is not None and output_usd_price is not None and output_usd_price > 0:
+        ideal_output_amount = input_usd_value / output_usd_price
+
+    baseline_diff_abs = None
+    baseline_diff_pct = None
+    if ideal_output_amount is not None and best_output_amount is not None:
+        baseline_diff_abs = best_output_amount - ideal_output_amount
+        if ideal_output_amount != 0:
+            baseline_diff_pct = (baseline_diff_abs / ideal_output_amount) * 100.0
+
+    inline_baseline = {
+        "label": "Theoretical no-fee baseline",
+        "is_executable": False,
+        "input_amount": amount,
+        "input_token": from_token,
+        "input_usd_price": input_usd_price,
+        "input_usd_value": input_usd_value,
+        "ideal_output_amount": ideal_output_amount,
+        "output_token": to_token,
+        "output_usd_price": output_usd_price,
+        "output_usd_value": input_usd_value,
+        "pricing_source": (
+            "sqlite_usd_snapshots"
+            if input_usd_price is not None and output_usd_price is not None
+            else "quote_fallback_partial"
+        ),
+        "note": "Theoretical market baseline for the swap input area. Not an executable quote.",
+    }
+
+    inline_baseline_vs_recommended = {
+        "output_diff_abs": baseline_diff_abs,
+        "output_diff_pct": baseline_diff_pct,
+        "note": "Difference between the theoretical baseline and the current recommended executable route.",
+    }
+
+    return inline_baseline, inline_baseline_vs_recommended
+
+
+
+
+
 @app.get("/swap/quote")
 def swap_quote(from_token: str, to_token: str, amount: float, network: str = "solana"):
     from_token = from_token.upper().strip()
@@ -223,15 +527,11 @@ def swap_quote(from_token: str, to_token: str, amount: float, network: str = "so
     if from_token not in TOKEN_META or to_token not in TOKEN_META:
         raise HTTPException(status_code=400, detail="unsupported token for now")
 
-    
-        
-
     input_meta = TOKEN_META[from_token]
     output_meta = TOKEN_META[to_token]
-
     raw_amount = to_raw_amount(amount, input_meta["decimals"])
 
-    params = {
+    base_params = {
         "inputMint": input_meta["mint"],
         "outputMint": output_meta["mint"],
         "amount": str(raw_amount),
@@ -240,31 +540,176 @@ def swap_quote(from_token: str, to_token: str, amount: float, network: str = "so
         "instructionVersion": "V2",
     }
 
-    url = "https://lite-api.jup.ag/swap/v1/quote?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/json",
-        },
-        method="GET",
+    # 1) Recommended/default Jupiter quote
+    recommended_raw = _fetch_jupiter_quote(base_params)
+    recommended = _normalize_quote_option(
+        variant_id="recommended_default",
+        label="Recommended",
+        kind="recommended",
+        quote=recommended_raw,
+        from_token=from_token,
+        to_token=to_token,
+        input_amount=amount,
+        input_amount_raw=raw_amount,
+        output_decimals=output_meta["decimals"],
+        checked_params=base_params,
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        raise HTTPException(status_code=e.code, detail=f"Jupiter HTTP error: {body}")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Jupiter request failed: {e}")
+    diagnostics = []
+    variant_candidates = []
 
-    route_plan = data.get("routePlan", [])
-    first_leg = route_plan[0]["swapInfo"] if route_plan else {}
+    # 2) Broader search variant (relax intermediate-token restriction)
+    broader_params = {
+        **base_params,
+        "restrictIntermediateTokens": "false",
+    }
+    broader_result = _try_fetch_jupiter_quote(broader_params)
+    if broader_result["ok"]:
+        variant_candidates.append(
+            _normalize_quote_option(
+                variant_id="broader_search",
+                label="Broader search",
+                kind="alternative",
+                quote=broader_result["data"],
+                from_token=from_token,
+                to_token=to_token,
+                input_amount=amount,
+                input_amount_raw=raw_amount,
+                output_decimals=output_meta["decimals"],
+                checked_params=broader_params,
+            )
+        )
+    else:
+        diagnostics.append({"variant_id": "broader_search", **broader_result["error"]})
 
-    out_amount_raw = data.get("outAmount")
-    out_amount_ui = None
-    if out_amount_raw is not None:
-        out_amount_ui = int(out_amount_raw) / (10 ** output_meta["decimals"])
+    # 3) Force an alternate venue mix by excluding DEX labels from the recommended route
+    recommended_labels = recommended.get("route_labels") or []
+    if recommended_labels:
+        exclude_params = {
+            **base_params,
+            "excludeDexes": ",".join(recommended_labels),
+        }
+        exclude_result = _try_fetch_jupiter_quote(exclude_params)
+        if exclude_result["ok"]:
+            variant_candidates.append(
+                _normalize_quote_option(
+                    variant_id="exclude_recommended_dexes",
+                    label="Alternate venue mix",
+                    kind="alternative",
+                    quote=exclude_result["data"],
+                    from_token=from_token,
+                    to_token=to_token,
+                    input_amount=amount,
+                    input_amount_raw=raw_amount,
+                    output_decimals=output_meta["decimals"],
+                    checked_params=exclude_params,
+                )
+            )
+        else:
+            diagnostics.append(
+                {"variant_id": "exclude_recommended_dexes", **exclude_result["error"]}
+            )
+
+    # 4) Direct-route-only check
+    direct_params = {
+        **base_params,
+        "onlyDirectRoutes": "true",
+    }
+    direct_result = _try_fetch_jupiter_quote(direct_params)
+    direct_route_check = None
+    if direct_result["ok"]:
+        direct_route_check = _normalize_quote_option(
+            variant_id="direct_route_check",
+            label="Direct route check",
+            kind="direct",
+            quote=direct_result["data"],
+            from_token=from_token,
+            to_token=to_token,
+            input_amount=amount,
+            input_amount_raw=raw_amount,
+            output_decimals=output_meta["decimals"],
+            checked_params=direct_params,
+        )
+    else:
+        diagnostics.append({"variant_id": "direct_route_check", **direct_result["error"]})
+
+    # Build the ranked candidate pool from all successful checked variants
+    ranked_candidates = [recommended, *variant_candidates]
+    if direct_route_check:
+        ranked_candidates.append(direct_route_check)
+
+    ranked_candidates = _dedupe_options(ranked_candidates)
+    ranked_candidates.sort(key=lambda x: x.get("_sort_out_amount_raw", -1), reverse=True)
+
+    # Best checked option becomes the true recommended option
+    best_option = ranked_candidates[0] if ranked_candidates else recommended
+
+    best_variant_id = best_option.get("variant_id")
+    best_option = {
+        **best_option,
+        "kind": "recommended",
+        "label": "Recommended",
+    }
+
+    # Other options = next best checked variants, excluding the best one
+    ranked_other_options = []
+    for opt in ranked_candidates[1:]:
+        if opt.get("variant_id") == "direct_route_check":
+            continue
+
+        variant_id = opt.get("variant_id")
+        alt_label = opt.get("label") or "Alternative"
+
+        if variant_id == "recommended_default":
+            alt_label = "Default Jupiter route"
+        elif variant_id == "exclude_recommended_dexes":
+            alt_label = "Alternate venue mix"
+        elif variant_id == "broader_search":
+            alt_label = "Broader search"
+
+        ranked_other_options.append({
+            **opt,
+            "kind": "alternative",
+            "label": alt_label,
+        })
+
+    ranked_other_options = ranked_other_options[:2]
+
+    # Keep direct route available as its own block too
+    direct_route_output = None
+    if direct_route_check:
+        direct_route_output = {
+            **direct_route_check,
+            "kind": "direct",
+            "label": "Direct route check",
+        }
+
+    best_option = _strip_internal_sort_key(best_option)
+    ranked_other_options = [_strip_internal_sort_key(x) for x in ranked_other_options]
+    direct_route_output = _strip_internal_sort_key(direct_route_output)
+
+    recommended_reason = {
+        "recommended_default": "The default Jupiter quote had the best checked output for this request.",
+        "exclude_recommended_dexes": "An alternate venue mix produced the best checked output for this request.",
+        "direct_route_check": "The direct-route-only check produced the best checked output for this request.",
+        "broader_search": "A broader routing search produced the best checked output for this request.",
+    }.get(
+        best_variant_id,
+        "The recommended option had the strongest checked output among the currently available variants."
+    )
+
+    best_output_amount = _safe_float(best_option.get("estimated_output"))
+
+    inline_baseline, inline_baseline_vs_recommended = _build_inline_baseline(
+        from_token=from_token,
+        to_token=to_token,
+        amount=amount,
+        fallback_input_usd_value=_safe_float(recommended_raw.get("swapUsdValue")),
+        best_output_amount=best_output_amount,
+    )
+
+
+
 
     return {
         "ok": True,
@@ -273,15 +718,82 @@ def swap_quote(from_token: str, to_token: str, amount: float, network: str = "so
         "from_token": from_token,
         "to_token": to_token,
         "input_amount": amount,
+        "inline_baseline": inline_baseline,
+        "inline_baseline_vs_recommended": inline_baseline_vs_recommended,
         "input_amount_raw": raw_amount,
-        "estimated_output": out_amount_ui,
-        "estimated_output_raw": out_amount_raw,
-        "route_label": first_leg.get("label"),
-        "price_impact_pct": data.get("priceImpactPct"),
-        "slippage_bps": data.get("slippageBps"),
-        "route_plan": route_plan,
-        "raw_quote": data,
+        "recommended": best_option,
+        "other_options": ranked_other_options,
+        "direct_route_check": direct_route_output,
+        "summary": {
+            "selection_basis": "highest_output_amount_among_checked_variants",
+            "headline_label": "Estimated total swap cost",
+            "cost_scope": "not_computed_yet",
+            "recommended_reason": recommended_reason,
+            "checked_variants": [
+                "recommended_default",
+                "broader_search",
+                "exclude_recommended_dexes",
+                "direct_route_check",
+            ],
+            "available_other_options": len(ranked_other_options),
+            "direct_route_available": direct_route_output is not None,
+        },
+        "debug": {
+            "route_debug": recommended_raw.get("mostReliableAmmsQuoteReport"),
+            "variant_errors": diagnostics,
+            "notes": [
+                "This is a Jupiter-first comparison surface, not a full multi-provider ranking engine yet.",
+                "Estimated total swap cost is not computed yet in this backend version.",
+            ],
+        },
     }
+
+
+
+
+@app.get("/swap/inline-baseline")
+def swap_inline_baseline(from_token: str, to_token: str, amount: float, network: str = "solana"):
+    from_token = from_token.upper().strip()
+    to_token = to_token.upper().strip()
+
+    if network != "solana":
+        raise HTTPException(status_code=400, detail="only solana is supported for now")
+
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount must be greater than 0")
+
+    if from_token == to_token:
+        raise HTTPException(status_code=400, detail="from_token and to_token must be different")
+
+    if from_token not in TOKEN_META or to_token not in TOKEN_META:
+        raise HTTPException(status_code=400, detail="unsupported token for now")
+
+    inline_baseline, _ = _build_inline_baseline(
+        from_token=from_token,
+        to_token=to_token,
+        amount=amount,
+        fallback_input_usd_value=None,
+        best_output_amount=None,
+    )
+
+    return {
+        "ok": True,
+        "network": network,
+        "from_token": from_token,
+        "to_token": to_token,
+        "input_amount": amount,
+        "inline_baseline": inline_baseline,
+    }
+
+
+
+
+
+
+
+
+
+
 
 
 
