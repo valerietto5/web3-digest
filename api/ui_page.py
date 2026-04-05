@@ -282,7 +282,7 @@ def build_ui_html() -> str:
 
   const DEVNET_RPC_URL = "https://api.devnet.solana.com";
   const DEVNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
-
+  const SWAP_MAINNET_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=424c6876-f1cb-4c1d-80cc-68e8166de810";
 
   const ACTIVITY_LIMIT = 8;
   const activityItems = [];
@@ -331,6 +331,31 @@ def build_ui_html() -> str:
 
     box.innerHTML = html;
   }
+
+
+
+function b64ToBytes(b64) {
+  const bin = atob(b64 || "");
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function jupInstructionToWeb3(ix) {
+  if (!ix) return null;
+
+  return new solanaWeb3.TransactionInstruction({
+    programId: new solanaWeb3.PublicKey(ix.programId),
+    keys: (ix.accounts || []).map((acc) => ({
+      pubkey: new solanaWeb3.PublicKey(acc.pubkey),
+      isSigner: !!acc.isSigner,
+      isWritable: !!acc.isWritable,
+    })),
+    data: b64ToBytes(ix.data || ""),
+  });
+}
+
+
 
 
 function setSwapPhase(phase, text) {
@@ -423,22 +448,30 @@ function resetSwapInlineBaseline() {
   const note = $("swapBaselineNote");
 
   if (spend) spend.textContent = "You spend: —";
-  if (ideal) ideal.textContent = "Ideal no-fee baseline: —";
-  if (delta) delta.textContent = "Difference vs best checked route: —";
-  if (note) note.textContent = "Ideal no-fee reference for comparison.";
+  if (ideal) ideal.textContent = "Theoretical reference baseline: —";
+  if (delta) delta.textContent = "Executable output vs reference: —";
+  if (note) note.textContent = "Reference pricing for comparison. Not an executable quote.";
 }
 
-function resetSwapInlineBaseline() {
-  const spend = $("swapSpendValueHint");
-  const ideal = $("swapIdealOutputHint");
-  const delta = $("swapBaselineDeltaHint");
-  const note = $("swapBaselineNote");
 
-  if (spend) spend.textContent = "You spend: —";
-  if (ideal) ideal.textContent = "Ideal no-fee baseline: —";
-  if (delta) delta.textContent = "Difference vs best checked route: —";
-  if (note) note.textContent = "Ideal no-fee reference for comparison.";
+
+function formatUtcTimestamp(ts) {
+  if (!ts) return null;
+
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const min = String(d.getUTCMinutes()).padStart(2, "0");
+
+  return `${yyyy}-${mm}-${dd} ${hh}:${min} UTC`;
 }
+
+
+
 
 function renderSwapInlineBaseline(baseline, delta = null) {
   const spend = $("swapSpendValueHint");
@@ -476,30 +509,59 @@ function renderSwapInlineBaseline(baseline, delta = null) {
   }
 
   if (ideal) {
-    ideal.textContent =
-      "Ideal no-fee baseline: ~" + idealOut + " " + outputToken + " (≈ " + outputUsd + ")";
-  }
+          const source = baseline.pricing_source;
+          const baselineLabel =
+              source === "coingecko_simple_price"
+                   ? "CoinGecko reference"
+                  : "Cached reference";
+
+          ideal.textContent =
+              baselineLabel +
+               ": ~" +
+              idealOut +
+              " " +
+              outputToken +
+              " (≈ " +
+              outputUsd +
+              ")";
+    }
 
   if (deltaLine) {
     if (delta && (delta.output_diff_abs != null || delta.output_diff_pct != null)) {
-      const absNum = Math.abs(Number(delta.output_diff_abs));
-      const pctNum = Math.abs(Number(delta.output_diff_pct));
+      const rawAbs = Number(delta.output_diff_abs);
+      const rawPct = Number(delta.output_diff_pct);
 
-      const absTxt = Number.isFinite(absNum) ? fmtNum(absNum, 6) : "n/a";
-      const pctTxt = Number.isFinite(pctNum) ? fmtNum(pctNum, 2) + "%" : "n/a";
+      const sign = Number.isFinite(rawAbs) && rawAbs > 0 ? "+" : "";
+      const absTxt = Number.isFinite(rawAbs) ? sign + fmtNum(rawAbs, 6) : "n/a";
+      const pctTxt = Number.isFinite(rawPct) ? sign + fmtNum(rawPct, 2) + "%" : "n/a";
 
       deltaLine.textContent =
-        "Route shortfall vs ideal: " + absTxt + " " + outputToken + " (" + pctTxt + ")";
+        "Executable output vs reference: " +
+        absTxt +
+        " " +
+        outputToken +
+        " (" +
+        pctTxt +
+        ")";
     } else {
-      deltaLine.textContent = "Difference vs best checked route: —";
+      deltaLine.textContent = "Executable output vs reference: —";
     }
   }
 
   if (note) {
-    note.textContent = "Theoretical baseline, not an executable quote.";
-  }
-}
+          const source = baseline.pricing_source;
+          const ts = baseline.pricing_ts;
+          const tsUtc = formatUtcTimestamp(ts);
 
+          if (source === "coingecko_simple_price") {
+              note.textContent = tsUtc
+                  ? "Source: fresh CoinGecko market price at " + tsUtc + ". Not an executable quote."
+                   : "Source: fresh CoinGecko market price. Not an executable quote.";
+          } else if (source === "sqlite_usd_snapshots") {
+              note.textContent = "Source: latest cached USD price snapshots. Not executable.";
+          }
+      }
+}
 
 
 
@@ -676,6 +738,72 @@ function renderSwapOptionCard(opt, opts = {}) {
   const routePath = parts.length
     ? parts.join(" → ")
     : ((opt.from_token || "?") + " → " + (opt.to_token || "?"));
+  
+      const tradeCostAmount = Number(opt?.estimated_trade_execution_cost?.amount);
+    const tradeCostToken =
+              opt?.estimated_trade_execution_cost?.token || opt?.to_token || "";
+
+    const tradeCostLine =
+               Number.isFinite(tradeCostAmount) && tradeCostAmount > 0
+                   ? "Execution gap vs reference: " +
+                      fmtNum(tradeCostAmount, 6) +
+                      " " +
+                      tradeCostToken
+                      : "Quoted output meets or exceeds the reference";
+
+          const explicitFees = opt?.explicit_route_fees || null;
+          const routeFeeItems = Array.isArray(explicitFees?.route_fee_items)
+              ? explicitFees.route_fee_items
+              : [];
+          const hasExplicitFees = !!explicitFees?.has_explicit_fees;
+
+          let explicitFeesText = "not disclosed in this quote";
+          if (hasExplicitFees) {
+              const feeBits = [];
+
+              if (explicitFees?.platform_fee?.amount != null) {
+                  feeBits.push(
+                      "platform fee: " +
+                          String(explicitFees.platform_fee.amount) +
+                          (explicitFees.platform_fee.feeBps != null
+                              ? " (" + String(explicitFees.platform_fee.feeBps) + " bps)"
+                              : "")
+                  );
+              }
+
+              for (const item of routeFeeItems) {
+                  const amt =
+                      item?.fee_amount != null
+                          ? fmtNum(Number(item.fee_amount), 6)
+                          : String(item?.fee_amount_raw || "unknown");
+                  const token = item?.fee_token || "fee token";
+                  const label = item?.label || "route leg";
+                  feeBits.push(label + ": " + amt + " " + token);
+              }
+
+              if (feeBits.length) {
+                  explicitFeesText = feeBits.join(" | ");
+              }
+          }
+
+           const networkFee = opt?.estimated_network_fee;
+    const networkFeeScope = opt?.network_fee_scope;
+
+    const networkFeeText =
+               networkFee && typeof networkFee === "object" && Number.isFinite(Number(networkFee.sol))
+                   ? fmtNum(Number(networkFee.sol), 9) + " SOL"
+                   : networkFeeScope === "wallet_not_connected"
+                       ? "connect Phantom to estimate"
+                       : networkFeeScope === "estimation_failed"
+                           ? "unavailable right now (mainnet RPC blocked)"
+                           : "not estimated yet";
+
+              const costScopeNote =
+                  "Route fees are shown separately for transparency and are not added to the headline.";
+
+
+
+
 
   return `
     <div class="card" style="margin-top:8px;">
@@ -696,8 +824,17 @@ function renderSwapOptionCard(opt, opts = {}) {
         Impact: ${escapeHtml(impact)} | Slippage setting: ${escapeHtml(slippage)}
       </div>
       <div class="muted" style="margin-top:4px;">
-        Estimated total swap cost: not computed yet
-      </div>
+                    ${escapeHtml(tradeCostLine)}
+                </div>
+                <div class="muted" style="margin-top:2px;">
+                     Explicit route fees: ${escapeHtml(explicitFeesText)}
+               </div>
+               <div class="muted" style="margin-top:2px;">
+                     Estimated network fee: ${escapeHtml(networkFeeText)}
+               </div>
+               <div class="muted" style="margin-top:2px;">
+                    ${escapeHtml(costScopeNote)}
+               </div>
       <div class="muted" style="margin-top:4px;">
         ${escapeHtml(opt.explanation || "No explanation available.")}
       </div>
@@ -709,6 +846,82 @@ function renderSwapOptionCard(opt, opts = {}) {
     </div>
   `;
 }
+
+
+
+
+async function fetchSwapInstructionsForQuote(rawQuote, userPublicKey) {
+  const res = await fetch("/swap/instructions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      quote_response: rawQuote,
+      user_public_key: userPublicKey,
+      as_legacy_transaction: true,
+    }),
+  });
+
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (_) {
+    data = null;
+  }
+
+  if (!res.ok || !data?.ok || !data?.instructions) {
+    throw new Error(
+      (data && (data.detail || data.error || JSON.stringify(data))) ||
+      text ||
+      "swap instructions request failed"
+    );
+  }
+
+  return data.instructions;
+}
+
+
+
+
+
+async function estimateSwapNetworkFeeLamports(rawQuote, userPublicKey) {
+  if (!rawQuote || !userPublicKey) return null;
+
+  const connection = new solanaWeb3.Connection(SWAP_MAINNET_RPC_URL, "confirmed");
+  const instructionsResp = await fetchSwapInstructionsForQuote(rawQuote, userPublicKey);
+
+  const allIxs = [
+    ...(instructionsResp.computeBudgetInstructions || []),
+    ...(instructionsResp.setupInstructions || []),
+    ...(instructionsResp.otherInstructions || []),
+    instructionsResp.swapInstruction || null,
+    instructionsResp.cleanupInstruction || null,
+  ]
+    .filter(Boolean)
+    .map(jupInstructionToWeb3)
+    .filter(Boolean);
+
+  if (!allIxs.length) return null;
+
+  const { blockhash } = await connection.getLatestBlockhash("confirmed");
+
+  const tx = new solanaWeb3.Transaction({
+    feePayer: new solanaWeb3.PublicKey(userPublicKey),
+    recentBlockhash: blockhash,
+  });
+
+  for (const ix of allIxs) {
+    tx.add(ix);
+  }
+
+  const feeResp = await connection.getFeeForMessage(tx.compileMessage(), "confirmed");
+  if (feeResp && typeof feeResp.value === "number") {
+    return feeResp.value;
+  }
+
+  return null;
+}
+
 
 
 
@@ -740,13 +953,17 @@ async function previewSwap() {
 
   setSwapPhase("Draft", "Requesting backend quote preview...");
 
+  const feeEstimatePubkey =
+    phantomProvider?.publicKey?.toString?.() || phantomPubkey || "";
+
   const url =
     "/swap/quote?" +
     qs({
       from_token: fromToken,
       to_token: toToken,
       amount: amount,
-      network: "solana"
+      network: "solana",
+      user_public_key: feeEstimatePubkey || undefined,
     });
 
   let res;
@@ -790,6 +1007,36 @@ async function previewSwap() {
     setSwapPhase("Failed", "No swap route was found for this request.");
     showSwapStatus("warn", "No route found", { quote });
     return;
+  }
+
+  if (feeEstimatePubkey) {
+    const feeTargets = [recommended, ...otherOptions, directRoute].filter(Boolean);
+
+    await Promise.all(
+      feeTargets.map(async (opt) => {
+        try {
+          const lamports = await estimateSwapNetworkFeeLamports(
+            opt?.raw_quote,
+            feeEstimatePubkey
+          );
+
+          if (typeof lamports === "number") {
+            opt.estimated_network_fee = {
+              lamports,
+              sol: lamportsToSol(lamports),
+            };
+            opt.network_fee_scope = "solana_getFeeForMessage_mainnet_legacy_estimate";
+          } else {
+            opt.estimated_network_fee = null;
+            opt.network_fee_scope = "not_estimated";
+          }
+        } catch (err) {
+          console.warn("swap network fee estimate failed", err);
+          opt.estimated_network_fee = null;
+          opt.network_fee_scope = "estimation_failed";
+        }
+      })
+    );
   }
 
   function numOrNull(x) {
@@ -871,11 +1118,14 @@ async function previewSwap() {
       });
 
       if (displayRec?.variant_id === "direct_route_check") {
-        directNote = "Direct route is also the current recommendation.";
+        directNote =
+          "Direct route is also the current recommendation. This is the simplest route shape in the current comparison.";
       } else if (directMatchesAlternative) {
-        directNote = "This direct-route result matches one of the ranked alternatives.";
+        directNote =
+          "This direct route matches one of the ranked alternatives. It is still useful as a simpler, easier-to-inspect execution path.";
       } else {
-        directNote = "This is the direct-only lens for comparison.";
+        directNote =
+          "This direct route is shown as a simpler comparison lens: fewer steps, easier inspection, and lower route complexity — but not always the highest-output option in the current comparison.";
       }
 
       $("swapDirectBox").innerHTML = renderSwapOptionCard(directRoute, {
@@ -900,43 +1150,14 @@ async function previewSwap() {
   }
 }
 
-async function updateLiveSwapBaseline() {
-  const fromToken = $("swapFromToken").value;
-  const toToken = $("swapToToken").value;
-  const rawAmount = ($("swapAmount").value || "").trim();
-  const amount = Number(rawAmount);
 
-  if (!rawAmount || !Number.isFinite(amount) || amount <= 0 || fromToken === toToken) {
-    resetSwapInlineBaseline();
-    return;
-  }
 
-  const url =
-    "/swap/inline-baseline?" +
-    qs({
-      from_token: fromToken,
-      to_token: toToken,
-      amount: amount,
-      network: "solana"
-    });
 
-  let res;
-  try {
-    res = await fetchMaybeJson(url);
-  } catch (err) {
-    resetSwapInlineBaseline();
-    $("swapBaselineNote").textContent = "Live baseline unavailable right now.";
-    return;
-  }
 
-  if (!res.ok || !res.data?.ok || !res.data?.inline_baseline) {
-    resetSwapInlineBaseline();
-    $("swapBaselineNote").textContent = "Live baseline unavailable right now.";
-    return;
-  }
 
-  renderSwapInlineBaseline(res.data.inline_baseline, null);
-}
+
+
+
 
 
 

@@ -19,8 +19,157 @@ import urllib.request
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
+from fastapi import Body
+
+import requests
+from datetime import datetime, timezone
 
 app = FastAPI(title="Web3 Digest API", version="0.1.0")
+
+
+
+
+COINGECKO_IDS = {
+    "SOL": "solana",
+    "USDC": "usd-coin",
+}
+
+def _fetch_fresh_reference_prices_usd(tokens: list[str]) -> dict:
+    """
+    Fetch fresh USD reference prices from CoinGecko for quote-time comparison.
+    Returns:
+        {
+            "SOL": {
+                "usd": 93.12,
+                "coingecko_id": "solana",
+                "last_updated_at": 1711788300,
+                "last_updated_iso": "2026-03-30T06:45:00+00:00",
+            },
+            ...
+        }
+    """
+    token_to_cg = {}
+    for token in tokens:
+        cg_id = COINGECKO_IDS.get(token)
+        if not cg_id:
+            continue
+        token_to_cg[token] = cg_id
+
+    if not token_to_cg:
+        return {}
+
+    ids = ",".join(sorted(set(token_to_cg.values())))
+
+    resp = requests.get(
+        "https://api.coingecko.com/api/v3/simple/price",
+        params={
+            "ids": ids,
+            "vs_currencies": "usd",
+            "include_last_updated_at": "true",
+        },
+        timeout=10,
+        headers={"accept": "application/json"},
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    out = {}
+    for token, cg_id in token_to_cg.items():
+        row = data.get(cg_id) or {}
+        usd = row.get("usd")
+        last_updated_at = row.get("last_updated_at")
+
+        if usd is None:
+            continue
+
+        out[token] = {
+            "usd": float(usd),
+            "coingecko_id": cg_id,
+            "last_updated_at": last_updated_at,
+            "last_updated_iso": (
+                datetime.fromtimestamp(last_updated_at, tz=timezone.utc).isoformat()
+                if last_updated_at
+                else None
+            ),
+        }
+
+    return out
+
+
+def _build_fresh_quote_reference_baseline(
+    from_token: str,
+    to_token: str,
+    amount: float,
+    best_output_amount: float | None,
+    fallback_input_usd_value: float | None,
+):
+    """
+    Try to build a fresh quote-time theoretical reference baseline from CoinGecko.
+    If that fails, fall back to the existing cached/sqlite baseline helper.
+    """
+    try:
+        fresh_prices = _fetch_fresh_reference_prices_usd([from_token, to_token])
+
+        from_row = fresh_prices.get(from_token)
+        to_row = fresh_prices.get(to_token)
+
+        if from_row and to_row and to_row["usd"] > 0:
+            input_usd_price = float(from_row["usd"])
+            output_usd_price = float(to_row["usd"])
+            input_usd_value = amount * input_usd_price
+            ideal_output_amount = input_usd_value / output_usd_price
+
+            baseline = {
+                "label": "Theoretical reference baseline",
+                "is_executable": False,
+                "input_amount": amount,
+                "input_token": from_token,
+                "input_usd_price": input_usd_price,
+                "input_usd_value": input_usd_value,
+                "ideal_output_amount": ideal_output_amount,
+                "output_token": to_token,
+                "output_usd_price": output_usd_price,
+                "output_usd_value": ideal_output_amount * output_usd_price,
+                "pricing_source": "coingecko_simple_price",
+                "pricing_ts": from_row.get("last_updated_iso") or to_row.get("last_updated_iso"),
+                "pricing_source_detail": {
+                    "from_token_coingecko_id": from_row.get("coingecko_id"),
+                    "to_token_coingecko_id": to_row.get("coingecko_id"),
+                    "from_token_last_updated_at": from_row.get("last_updated_iso"),
+                    "to_token_last_updated_at": to_row.get("last_updated_iso"),
+                },
+                "note": "Fresh market reference for quote comparison. Not an executable quote.",
+            }
+
+            baseline_vs_recommended = None
+            if best_output_amount is not None and ideal_output_amount:
+                diff_abs = best_output_amount - ideal_output_amount
+                diff_pct = (diff_abs / ideal_output_amount) * 100
+
+                baseline_vs_recommended = {
+                    "output_diff_abs": diff_abs,
+                    "output_diff_pct": diff_pct,
+                    "note": "Difference between the fresh theoretical reference and the current recommended executable route.",
+                }
+
+            return baseline, baseline_vs_recommended
+
+    except Exception:
+        pass
+
+    # Fallback to existing cached/sqlite-based baseline so quote preview never breaks
+    return _build_inline_baseline(
+        from_token=from_token,
+        to_token=to_token,
+        amount=amount,
+        fallback_input_usd_value=fallback_input_usd_value,
+        best_output_amount=best_output_amount,
+    )
+
+
+
+
+
 
 
 def _write_portfolio_snapshot(account: str, currency: str = "usd") -> None:
@@ -280,11 +429,68 @@ def _build_option_explanation(
     return " ".join(parts)
 
 
-def _fetch_jupiter_quote(params: dict) -> dict:
-    url = "https://lite-api.jup.ag/swap/v1/quote?" + urllib.parse.urlencode(params)
+def _fetch_jupiter_swap_instructions(
+    *,
+    quote_response: dict,
+    user_public_key: str,
+    as_legacy_transaction: bool = True,
+) -> dict:
+    url = "https://api.jup.ag/swap/v1/swap-instructions"
+
+    payload = {
+        "userPublicKey": user_public_key,
+        "quoteResponse": quote_response,
+        "wrapAndUnwrapSol": True,
+        "useSharedAccounts": True,
+        "dynamicComputeUnitLimit": True,
+        "asLegacyTransaction": as_legacy_transaction,
+    }
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+    jup_api_key = os.getenv("JUP_API_KEY")
+    if jup_api_key:
+        headers["x-api-key"] = jup_api_key
+
     req = urllib.request.Request(
         url,
-        headers={"Accept": "application/json"},
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=e.code, detail=f"Jupiter swap-instructions HTTP error: {body}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Jupiter swap-instructions request failed: {e}")
+
+
+
+
+
+
+
+def _fetch_jupiter_quote(params: dict) -> dict:
+    url = "https://api.jup.ag/swap/v1/quote?" + urllib.parse.urlencode(params)
+
+    headers = {
+        "Accept": "application/json",
+    }
+
+    jup_api_key = os.getenv("JUP_API_KEY")
+    if jup_api_key:
+        headers["x-api-key"] = jup_api_key
+
+    req = urllib.request.Request(
+        url,
+        headers=headers,
         method="GET",
     )
 
@@ -309,6 +515,112 @@ def _try_fetch_jupiter_quote(params: dict) -> dict:
                 "detail": e.detail,
             },
         }
+
+
+
+TOKEN_META_BY_MINT = {
+    (meta.get("mint") or "").strip(): {"symbol": symbol, **meta}
+    for symbol, meta in TOKEN_META.items()
+    if isinstance(meta, dict) and meta.get("mint")
+}
+
+
+def _mint_meta(fee_mint: str | None) -> dict | None:
+    if not fee_mint:
+        return None
+    return TOKEN_META_BY_MINT.get((fee_mint or "").strip())
+
+
+def _extract_explicit_route_fees(quote: dict) -> dict:
+    platform_fee = quote.get("platformFee")
+    route_plan = quote.get("routePlan") or []
+
+    route_fee_items = []
+    for leg in route_plan:
+        swap_info = leg.get("swapInfo") or {}
+        fee_amount_raw = swap_info.get("feeAmount")
+        fee_mint = swap_info.get("feeMint")
+
+        if fee_amount_raw in (None, "", "0", 0):
+            continue
+
+        mint_meta = _mint_meta(fee_mint)
+        decimals = mint_meta.get("decimals") if mint_meta else None
+        fee_token = mint_meta.get("symbol") if mint_meta else None
+
+        route_fee_items.append(
+            {
+                "label": swap_info.get("label"),
+                "fee_amount_raw": str(fee_amount_raw),
+                "fee_amount": (
+                    _ui_amount(fee_amount_raw, decimals)
+                    if decimals is not None
+                    else None
+                ),
+                "fee_mint": fee_mint,
+                "fee_token": fee_token,
+            }
+        )
+
+    return {
+        "platform_fee": platform_fee,
+        "route_fee_items": route_fee_items,
+        "has_explicit_fees": bool(platform_fee) or bool(route_fee_items),
+    }
+
+
+def _compute_trade_execution_cost(
+    reference_output_amount: float | None,
+    quoted_output_amount: float | None,
+    output_token: str | None,
+) -> dict:
+    if reference_output_amount is None or quoted_output_amount is None:
+        return {
+            "amount": None,
+            "token": output_token,
+            "reference_output_amount": reference_output_amount,
+            "quoted_output_amount": quoted_output_amount,
+            "raw_difference": None,
+            "scope": "benchmark_shortfall_vs_fresh_reference",
+            "floored_at_zero": True,
+        }
+
+    raw_difference = reference_output_amount - quoted_output_amount
+    amount = max(0.0, raw_difference)
+
+    return {
+        "amount": amount,
+        "token": output_token,
+        "reference_output_amount": reference_output_amount,
+        "quoted_output_amount": quoted_output_amount,
+        "raw_difference": raw_difference,
+        "scope": "benchmark_shortfall_vs_fresh_reference",
+        "floored_at_zero": True,
+    }
+
+
+def _attach_cost_fields(
+    option: dict | None,
+    reference_output_amount: float | None,
+) -> dict | None:
+    if not option:
+        return option
+
+    quoted_output_amount = _safe_float(option.get("estimated_output"))
+    trade_cost = _compute_trade_execution_cost(
+        reference_output_amount=reference_output_amount,
+        quoted_output_amount=quoted_output_amount,
+        output_token=option.get("to_token"),
+    )
+
+    option["estimated_trade_execution_cost"] = trade_cost
+    option["execution_cost"] = trade_cost.get("amount")
+    option["cost_scope"] = trade_cost.get("scope")
+
+    return option
+
+
+
 
 
 def _normalize_quote_option(
@@ -349,8 +661,12 @@ def _normalize_quote_option(
         "min_received": _ui_amount(threshold_raw, output_decimals),
         "min_received_raw": threshold_raw,
         "estimated_total_swap_cost": None,
+        "estimated_trade_execution_cost": None,
         "execution_cost": None,
         "cost_scope": "not_computed_yet",
+        "explicit_route_fees": _extract_explicit_route_fees(quote),
+        "estimated_network_fee": None,
+        "network_fee_scope": "not_estimated_yet",
         "price_impact_pct": _safe_float(quote.get("priceImpactPct")),
         "slippage_bps": quote.get("slippageBps"),
         "route_label": route_labels[0] if route_labels else None,
@@ -507,11 +823,38 @@ def _build_inline_baseline(
     return inline_baseline, inline_baseline_vs_recommended
 
 
+@app.post("/swap/instructions")
+def swap_instructions(payload: dict = Body(...)):
+    quote_response = payload.get("quote_response")
+    user_public_key = (payload.get("user_public_key") or "").strip()
+    as_legacy_transaction = bool(payload.get("as_legacy_transaction", True))
 
+    if not quote_response or not isinstance(quote_response, dict):
+        raise HTTPException(status_code=400, detail="quote_response is required")
+
+    if not user_public_key:
+        raise HTTPException(status_code=400, detail="user_public_key is required")
+
+    data = _fetch_jupiter_swap_instructions(
+        quote_response=quote_response,
+        user_public_key=user_public_key,
+        as_legacy_transaction=as_legacy_transaction,
+    )
+
+    return {
+        "ok": True,
+        "instructions": data,
+    }
 
 
 @app.get("/swap/quote")
-def swap_quote(from_token: str, to_token: str, amount: float, network: str = "solana"):
+def swap_quote(
+    from_token: str,
+    to_token: str,
+    amount: float,
+    network: str = "solana",
+    user_public_key: str | None = None,
+):
     from_token = from_token.upper().strip()
     to_token = to_token.upper().strip()
 
@@ -700,7 +1043,7 @@ def swap_quote(from_token: str, to_token: str, amount: float, network: str = "so
 
     best_output_amount = _safe_float(best_option.get("estimated_output"))
 
-    inline_baseline, inline_baseline_vs_recommended = _build_inline_baseline(
+    inline_baseline, inline_baseline_vs_recommended = _build_fresh_quote_reference_baseline(
         from_token=from_token,
         to_token=to_token,
         amount=amount,
@@ -708,8 +1051,18 @@ def swap_quote(from_token: str, to_token: str, amount: float, network: str = "so
         best_output_amount=best_output_amount,
     )
 
+    reference_output_amount = _safe_float((inline_baseline or {}).get("ideal_output_amount"))
+
+    best_option = _attach_cost_fields(best_option, reference_output_amount)
+    ranked_other_options = [
+        _attach_cost_fields(opt, reference_output_amount) for opt in ranked_other_options
+    ] 
+    direct_route_output = _attach_cost_fields(direct_route_output, reference_output_amount)
 
 
+    best_option = _strip_internal_sort_key(best_option)
+    ranked_other_options = [_strip_internal_sort_key(x) for x in ranked_other_options]
+    direct_route_output = _strip_internal_sort_key(direct_route_output)
 
     return {
         "ok": True,
@@ -726,8 +1079,8 @@ def swap_quote(from_token: str, to_token: str, amount: float, network: str = "so
         "direct_route_check": direct_route_output,
         "summary": {
             "selection_basis": "highest_output_amount_among_checked_variants",
-            "headline_label": "Estimated total swap cost",
-            "cost_scope": "not_computed_yet",
+            "headline_label": "Estimated trade execution cost",
+            "cost_scope": "benchmark_shortfall_vs_fresh_reference",
             "recommended_reason": recommended_reason,
             "checked_variants": [
                 "recommended_default",
@@ -743,7 +1096,7 @@ def swap_quote(from_token: str, to_token: str, amount: float, network: str = "so
             "variant_errors": diagnostics,
             "notes": [
                 "This is a Jupiter-first comparison surface, not a full multi-provider ranking engine yet.",
-                "Estimated total swap cost is not computed yet in this backend version.",
+                "Estimated trade execution cost is computed as benchmark shortfall vs fresh reference; explicit route fees and network fee are shown separately when available.",
             ],
         },
     }
