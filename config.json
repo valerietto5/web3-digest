@@ -1,0 +1,34 @@
+{
+  "keywords": [
+    "customer support",
+    "customer success",
+    "customer service",
+    "community",
+    "business development",
+    "bdr",
+    "inside sales",
+    "growth",
+    "developer relations",
+    "devrel"
+  ],
+  "include_locations": [
+    "italy",
+    "europe",
+    "european union",
+    "eu",
+    "rome",
+    "remote"
+  ],
+  "exclude_phrases": [
+    "german required",
+    "fluent german",
+    "us only",
+    "must be located in the us",
+    "hong kong",
+    "singapore",
+    "southeast asia"
+  ],
+  "max_results": 30,
+  "only_new": false
+
+}

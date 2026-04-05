@@ -21,14 +21,28 @@ def main(argv: List[str] | None = None) -> None:
     p.add_argument("--source", default="coingecko", help="Source label to store in DB (default: coingecko)")
     p.add_argument("--limit", type=int, default=5, help="History rows to print for BTC (default: 5)")
     p.add_argument("--quiet", action="store_true", help="Only print insert confirmation")
+    p.add_argument("--dex", action="store_true", help="Allow DexScreener fallback for allowlisted SPL tokens (USD only)")
+    p.add_argument("--min-liquidity-usd", type=float, default=5000.0, help="Min liquidity (USD) for DexScreener fallback")
     args = p.parse_args(argv)
 
     init_db()
 
     currency = args.currency.lower()
-    assets = [a.lower() for a in args.assets]
+    assets = []
+    for a in args.assets:
+        s = a.strip()
+        if s.lower().startswith("spl:"):
+            assets.append("spl:" + s.split(":", 1)[1])  # keep mint case
+        else:
+            assets.append(s.lower())
 
-    prices_raw = fetch_prices(assets, currency=currency)
+
+    prices_raw = fetch_prices(
+        assets,
+        currency=currency,
+        allow_dexscreener=args.dex,
+        min_liquidity_usd=args.min_liquidity_usd,
+)
 
     # Flatten if it’s nested like {"btc": {"usd": 123}}
     prices = {}
@@ -46,7 +60,11 @@ def main(argv: List[str] | None = None) -> None:
 
     ts = datetime.now(timezone.utc).isoformat()
 
-    n = insert_price_snapshot(ts=ts, prices=prices, currency=currency, source=args.source)
+    source_label = args.source
+    if args.dex and args.source == "coingecko":
+        source_label = "coingecko+dexscreener"
+
+    n = insert_price_snapshot(ts=ts, prices=prices, currency=currency, source=source_label)
     print(f"Inserted {n} rows at {ts}")
 
     if args.quiet:

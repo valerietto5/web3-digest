@@ -1,0 +1,28 @@
+{
+  "sol-test": {
+    "chain": "solana",
+    "address": "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+    "default_assets": [
+      "sol",
+      "usdc",
+      "spl:3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
+    ]
+  },
+  "val-main": {
+    "chain": "manual",
+    "address": null,
+    "default_assets": [
+      "btc",
+      "eth",
+      "usdc"
+    ]
+  },
+  "sol-test2": {
+    "chain": "solana",
+    "address": "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+    "default_assets": [
+      "sol",
+      "usdc"
+    ]
+  }
+}

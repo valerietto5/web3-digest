@@ -7,6 +7,28 @@ from typing import Dict, List
 from db import init_db, insert_balance_snapshot, get_latest_balances
 from portfolio import compute_portfolio_report
 
+from token_registry import TOKENS
+
+def normalize_asset_key(s: str) -> str:
+    """
+    Normalize asset keys:
+    - normal assets -> lowercase (btc, eth, usdc, sol)
+    - spl:<mint> -> keep mint case (base58 is case-sensitive)
+      If mint exists in our registry, use the registry's canonical mint casing.
+    """
+    raw = str(s).strip()
+    low = raw.lower()
+
+    if low.startswith("spl:"):
+        mint_in = raw.split(":", 1)[1]  # preserve original case
+        # If it's in registry, canonicalize casing
+        for mint in TOKENS.keys():
+            if mint.lower() == mint_in.lower():
+                return "spl:" + mint
+        return "spl:" + mint_in
+
+    return low
+
 
 def parse_set_kv(pairs: List[str]) -> Dict[str, float]:
     out: Dict[str, float] = {}
@@ -14,7 +36,7 @@ def parse_set_kv(pairs: List[str]) -> Dict[str, float]:
         if "=" not in item:
             raise ValueError(f"Invalid --set '{item}'. Use like btc=0.01")
         k, v = item.split("=", 1)
-        k = k.strip().lower()
+        k = normalize_asset_key(k)
         out[k] = float(v)
     return out
 
@@ -31,19 +53,32 @@ def main(argv: List[str] | None = None) -> None:
         help="Override balances as key=value pairs, e.g. --set btc=0.01 eth=0.2 usdc=150",
     )
     p.add_argument("--currency", default="usd", help="Currency for portfolio report (default: usd)")
+    p.add_argument("--address", help="Owner address (required when --source solana)")
+
     p.add_argument("--no-report", action="store_true", help="Only insert balances; skip portfolio report print")
     args = p.parse_args(argv)
 
     init_db()
 
     account = args.account
-    assets = [a.lower() for a in args.assets]
 
-    # Default balances (used if --set not provided for a given asset)
-    balances: Dict[str, float] = {
-        "btc": 0.01,
-        "eth": 0.2,
-        "usdc": 150.0,
+    if args.source == "solana":
+        if not args.address:
+            raise SystemExit("Error: --address is required when --source solana")
+
+        from providers.solana_balance_provider import fetch_solana_owner_balances
+        balances = fetch_solana_owner_balances(args.address)
+        assets = list(balances.keys())
+
+    else:
+        assets = [normalize_asset_key(a) for a in args.assets]
+
+
+        # Default balances (used if --set not provided for a given asset)
+        balances: Dict[str, float] = {
+            "btc": 0.01,
+            "eth": 0.2,
+            "usdc": 150.0,
     }
 
     overrides = parse_set_kv(args.set) if args.set else {}
@@ -51,6 +86,8 @@ def main(argv: List[str] | None = None) -> None:
 
     # Only insert balances for selected assets
     balances = {a: balances[a] for a in assets if a in balances}
+
+
 
     if not balances:
         raise RuntimeError("No balances to insert. Provide assets that exist in defaults or pass --set pairs.")
