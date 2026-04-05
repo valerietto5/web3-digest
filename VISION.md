@@ -6,7 +6,7 @@ Web3 Digest is a **wallet-connected execution-transparency app** for crypto swap
 
 It is **not** a new wallet competing with Phantom.
 
-Instead, the product sits **on top of trusted wallets like Phantom**. Users connect their wallet, keep Phantom as the signing/security layer, and use Web3 Digest to make better swap decisions through clearer route comparison, cost visibility, and execution transparency.
+Instead, the product sits **on top of trusted wallets like Phantom**. Users connect their wallet, keep Phantom as the signing and security layer, and use Web3 Digest to make better swap decisions through clearer route comparison, cost visibility, and execution transparency.
 
 ---
 
@@ -27,6 +27,8 @@ That means:
   - route comparison
   - execution clarity
   - cost visibility
+  - route-shape explanation
+  - direct-route inspection
   - later, a stronger connected dashboard / holdings experience
 
 This is a product built **with** Phantom in mind, not **against** it.
@@ -63,13 +65,14 @@ The immediate focus is **110% on swap transparency**.
 
 This includes:
 
-- ideal / theoretical no-fee baseline
+- theoretical reference baseline
 - executable quote preview
 - recommended route
 - alternative routes
 - direct-route comparison
-- route shape explanation
-- cost and shortfall clarity
+- route-shape explanation
+- execution gap versus reference
+- separate visibility for route fees and network fee when available
 - honest product notes when data or routing coverage is limited
 
 The swap surface is the wedge.
@@ -89,22 +92,32 @@ The product should not just say “best route.” It should explain:
 - what route is being used
 - why it was selected
 - how it compares to alternatives
-- how it compares to a theoretical ideal reference
+- how it compares to a theoretical reference
 - whether a direct route exists as a simpler comparison lens
 
 ### 3. Honest product behavior
-If something is unavailable, unsupported, stale, or incomplete, the UI should say so clearly.
+If something is unavailable, unsupported, stale, incomplete, or estimated, the UI should say so clearly.
 
 ### 4. Separation of reference vs execution
 The product should clearly distinguish between:
 
-- **ideal/theoretical reference pricing**
+- **theoretical reference pricing**
 - **real executable quotes**
 
 These are different layers and should remain separated in both product logic and user experience.
 
-### 5. Build on strong existing rails
-The product should leverage trusted wallets and existing routing ecosystems first, then expand intelligently where transparency and comparison create real value.
+### 5. Honest cost framing
+The product should keep cost explanation simple and trustworthy.
+
+That means:
+
+- show the gap versus reference clearly
+- keep route fees separate when explicitly available
+- keep network fee separate when estimated
+- avoid pretending to know fee breakdowns that are not truly disclosed
+
+### 6. Build on strong existing rails
+The product should leverage trusted wallets and strong routing ecosystems first, then expand intelligently where transparency and comparison create real value.
 
 ---
 
@@ -116,11 +129,12 @@ Web3 Digest should help users see:
 
 - what they ideally should get
 - what they are actually being offered
-- how much they are giving up versus the ideal reference
+- how much they are giving up versus the theoretical reference
 - whether the recommended route is direct or complex
 - what meaningful alternatives exist
+- what the route path and route shape actually look like
 
-A key product insight is that **router-reported price impact** and the **gap versus the ideal market baseline** are not the same metric. Both matter.
+A key product insight is that **router-reported price impact** and the **gap versus the theoretical market reference** are not the same metric. Both matter.
 
 ---
 
@@ -130,13 +144,15 @@ A key product insight is that **router-reported price impact** and the **gap ver
 - connect Phantom
 - choose tokens
 - type amount
-- see ideal/theoretical live conversion
+- see live theoretical conversion
 
 ### Layer 2 — execution intelligence
 - request executable quotes
 - compare recommended route vs alternatives
 - inspect direct-route lens
 - understand route shape and protections
+- understand execution gap versus reference
+- show route fees and network fee separately where possible
 - later add fuller cost breakdowns and venue-level transparency
 
 This separation should stay central to the design.
@@ -147,7 +163,7 @@ This separation should stay central to the design.
 
 Web3 Digest should provide a **wallet-connected, wallet-like experience**, but should not try to replace Phantom.
 
-That means the later dashboard/portfolio layer can expand into:
+That means the later dashboard / portfolio layer can expand into:
 
 - connected holdings view
 - token balances
@@ -162,9 +178,19 @@ But this should remain an extension of the connected-wallet experience, not a cu
 
 ## Routing direction
 
-The first comparison layer is Jupiter-based, but the long-term product cannot stop at one routing universe.
+The first comparison layer is **Jupiter-first**, which is the right first step.
 
-The roadmap should expand beyond Jupiter into at least two additional routing / liquidity universes so that route comparison becomes more credible, richer, and less dependent on a single provider’s worldview.
+But the long-term product cannot stop at one routing universe.
+
+The roadmap should expand beyond Jupiter into at least two additional routing / liquidity universes so that route comparison becomes:
+
+- more credible
+- richer
+- more honest
+- less dependent on a single provider worldview
+
+The long-term goal is not to become a prettier wrapper around one router.  
+It is to become a better **execution-transparency layer**.
 
 ---
 
@@ -187,16 +213,32 @@ This matters because many real users — especially in fast-moving meme/token en
 
 ## Near-term design direction
 
-The current inline baseline row is a transitional UI.
+The current inline reference row is a transitional UI.
 
 The final swap input should evolve toward a more stacked, two-panel, wallet-connected swap experience where:
 
 - the user types the source amount directly in the source token panel
-- the destination panel shows the ideal/theoretical converted amount live
+- the destination panel shows the theoretical converted amount live
 - executable quote comparison remains a separate action and comparison layer below that
 
 So the final design goal is not “make it prettier first.”  
-It is: **build the right behavior and architecture now so the future UI can sit on top of a strong engine.**
+It is:
+
+**build the right behavior, trust model, and architecture now so the future UI can sit on top of a strong engine.**
+
+---
+
+## What success should feel like
+
+A good Web3 Digest experience should make a user feel:
+
+- “I understand what I’m being offered.”
+- “I can see whether this route is simple or complex.”
+- “I can compare the recommended route against real alternatives.”
+- “I understand the gap between the theoretical reference and the executable result.”
+- “I am not being asked to execute blindly.”
+
+That feeling of clarity is the product.
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Web3 Digest is a wallet-connected execution-transparency app for swaps.**
 
-It helps users connect Phantom, compare routes, understand tradeoffs, and make better execution decisions with clearer cost and route visibility.
+It helps users connect Phantom, compare routes, understand tradeoffs, and make better execution decisions with clearer cost, route, and execution visibility.
 
 Project status: **Alpha**
 
@@ -18,6 +18,7 @@ Instead, it sits **on top of trusted wallets like Phantom** and focuses on a dif
 - comparing routes more clearly
 - showing the gap between ideal reference and executable reality
 - making execution feel more transparent and less mysterious
+- turning swap decisions into something users can inspect instead of blindly accept
 
 The product direction is simple:
 
@@ -43,6 +44,8 @@ Web3 Digest handles:
 - ideal vs executable reference
 - direct-route inspection
 - route explanation
+- route-shape visibility
+- support-style diagnostics
 - later, a stronger connected holdings/dashboard experience
 
 This is a product built **with Phantom in mind, not against it**.
@@ -101,7 +104,9 @@ Today it already includes:
 - real Send SOL flow on devnet
 - swap quote preview surface
 - recommended / alternatives / direct-route comparison logic
-- live ideal/theoretical baseline reference
+- live reference baseline updates while typing
+- estimated network fee display for swap options
+- explicit route fee display when available
 - user-facing route explanation and support-style diagnostics
 
 ---
@@ -124,13 +129,17 @@ Today it already includes:
 - Send SOL on devnet with transaction state handling
 - Preview swap quotes inside the UI
 - Review:
-  - ideal/theoretical baseline
+  - theoretical reference baseline
   - recommended route
   - alternative route(s)
   - direct-route lens
   - minimum received
   - route path
+  - route shape / step count
   - route explanation
+  - execution gap vs reference
+  - explicit route fees when available
+  - estimated network fee
   - support-style error states and notes
 
 ---
@@ -142,7 +151,7 @@ The product should make the **economic result** easier to understand than typica
 ### Core rule
 The product must clearly separate:
 
-- **ideal/theoretical reference**
+- **theoretical reference**
 - **real executable quote**
 
 Those are different layers and should stay separate in both UX and architecture.
@@ -150,10 +159,10 @@ Those are different layers and should stay separate in both UX and architecture.
 ### Current comparison surface
 The swap surface is built around:
 
-#### 1. Live baseline / reference layer
+#### 1. Live reference layer
 - choose tokens
 - type amount
-- see live ideal/theoretical conversion
+- see live theoretical conversion
 
 #### 2. Execution-intelligence layer
 - Preview Quote
@@ -161,13 +170,14 @@ The swap surface is built around:
 - alternatives
 - direct-route check
 - route explanation
-- later cost breakdown
+- execution gap vs reference
+- separate fee visibility
 
 ### Why this matters
 A key product insight is that:
 
 - router-reported `priceImpactPct`
-- and the **gap vs ideal baseline**
+- and the **gap vs theoretical reference**
 
 are **not the same metric**.
 
@@ -175,14 +185,30 @@ Both matter, and both should stay visible.
 
 ---
 
+## Current implementation notes
+
+The current swap surface is already useful, but it is still Alpha.
+
+### Honest notes about the current build
+- swap comparison is currently **Jupiter-first**
+- the swap card is currently **quote preview only**, not full swap execution
+- route fees are shown separately **when explicitly available in the quote**
+- estimated network fee is shown separately from the headline execution-gap framing
+- the current swap network-fee estimation path uses a **mainnet RPC call**
+- the current frontend still contains a **hardcoded Helius mainnet RPC URL** for that fee-estimation step, which should be moved into safer backend/env-managed config soon
+
+That means the product wedge is real, but parts of the implementation still need hardening.
+
+---
+
 ## Product design direction
 
-The current inline baseline row is a **transitional UI**.
+The current inline reference row is a **transitional UI**.
 
 The longer-term swap input should evolve toward a more stacked, two-panel, wallet-connected experience where:
 
 - the user types directly in the source token panel
-- the destination panel shows the ideal/theoretical converted amount live
+- the destination panel shows the theoretical converted amount live
 - executable route comparison stays below that as a separate action and intelligence layer
 
 So the current work is focused first on:
@@ -190,7 +216,8 @@ So the current work is focused first on:
 - engine
 - behavior
 - product logic
-- clean separation of concerns
+- cost honesty
+- clear separation of concerns
 
 Pretty UI and final polish come later.
 
@@ -259,6 +286,7 @@ So the right path is:
   - refresh scripts
   - persistence logic
   - swap ranking / comparison logic
+  - Jupiter quote + instruction plumbing
 
 - **SQLite**
   - balances
@@ -270,7 +298,8 @@ So the right path is:
   - browser UI
   - wallet integration
   - swap comparison surface
-  - live baseline behavior
+  - live reference behavior
+  - client-side fee-estimation flow
 
 - **Wallet boundary**
   - browser wallet provider
@@ -288,7 +317,7 @@ Important areas include:
   - `/ui`
   - refresh endpoints
   - portfolio endpoints
-  - swap quote and baseline endpoints
+  - swap quote, instruction, and inline-baseline endpoints
 
 - `wallet_cli.py`
   - CLI wallet/report entrypoint
@@ -331,10 +360,12 @@ Important areas include:
 
 ### V1.5 — swap-transparency foundation
 - in-app swap form
-- live ideal baseline
+- live theoretical reference
 - quote provider integration
 - recommendation / alternatives / direct-route check
 - “Why this route?” explanation
+- estimated network fee visibility
+- explicit route-fee visibility when available
 - honest quote UX and support-style failures
 
 ### V2 — stronger comparison surface
@@ -343,6 +374,7 @@ Planned:
 - better route ranking clarity
 - clearer cost framing
 - more polished swap input UX
+- safer config handling for swap infrastructure
 - more trustworthy comparison flow
 
 ### V2.5 — swap execution handoff
@@ -364,11 +396,12 @@ Planned:
 
 ## What is not shipped yet
 
+- full swap execution flow from the swap card
 - complete cost accounting for swap comparison
 - non-Jupiter routing universes/providers
 - final two-panel swap input design
+- production-grade config cleanup for swap infra
 - production-grade polished UI
-- full swap execution flow
 - richer connected holdings/dashboard experience
 - final public packaging of docs / screenshots / demo story
 
