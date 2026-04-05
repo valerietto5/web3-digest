@@ -143,10 +143,14 @@ def coingecko_id_for_asset(asset: str) -> str | None:
     if raw_lower in COINGECKO_IDS:
         return COINGECKO_IDS[raw_lower]
 
-    # asset keys coming from the registry (e.g. "bonk", "usdt")
-    for meta in TOKENS.values():
+    # asset keys coming from the registry (e.g. "bonk", "usdt", "snp500")
+    for mint, meta in TOKENS.items():
         if meta.get("asset", "").lower() == raw_lower:
-            return meta.get("coingecko_id")
+            cg = meta.get("coingecko_id")
+            if cg:
+                return cg
+            # no CoinGecko id: return canonical SPL key so Dex fallback can use it
+            return f"spl:{mint}"
 
     # spl:<mint> (keep mint case!)
     if raw_lower.startswith("spl:"):
@@ -219,7 +223,7 @@ def fetch_prices(coins, currency="usd", allow_dexscreener: bool = False, min_liq
     if allow_dexscreener and currency == "usd":
         try:
             from token_registry import TOKENS
-            from providers.dexscreener import fetch_best_pair_price_usd_solana
+            from dexscreener import fetch_best_pair_price_usd_solana
         except Exception:
             TOKENS = {}
             fetch_best_pair_price_usd_solana = None
@@ -229,10 +233,17 @@ def fetch_prices(coins, currency="usd", allow_dexscreener: bool = False, min_liq
                 if q in out:
                     continue
                 s = str(q).strip()
-                if not s.lower().startswith("spl:"):
-                    continue
 
-                mint_in = s.split(":", 1)[1]
+                if s.lower().startswith("spl:"):
+                    mint_in = s.split(":", 1)[1]
+                else:
+                    mint_in = None
+                    for k, meta in TOKENS.items():
+                        if meta.get("asset", "").lower() == s.lower():
+                            mint_in = k
+                            break
+                    if not mint_in:
+                        continue
 
                 # Find registry entry (case-insensitive), only if dexscreener=True
                 meta = TOKENS.get(mint_in)
@@ -249,7 +260,7 @@ def fetch_prices(coins, currency="usd", allow_dexscreener: bool = False, min_liq
 
                 pair = fetch_best_pair_price_usd_solana(canonical_mint, min_liquidity_usd=min_liquidity_usd)
                 if pair:
-                    out[f"spl:{canonical_mint}"] = {"usd": pair.price_usd}
+                    out[q] = {"usd": pair.price_usd}
 
     return out
 

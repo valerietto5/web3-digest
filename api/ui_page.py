@@ -282,7 +282,7 @@ def build_ui_html() -> str:
 
   const DEVNET_RPC_URL = "https://api.devnet.solana.com";
   const DEVNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
-  const SWAP_MAINNET_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=424c6876-f1cb-4c1d-80cc-68e8166de810";
+  const SWAP_MAINNET_RPC_URL = "https://api.mainnet-beta.solana.com";
 
   const ACTIVITY_LIMIT = 8;
   const activityItems = [];

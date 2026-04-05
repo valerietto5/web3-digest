@@ -66,7 +66,7 @@ def main(argv: List[str] | None = None) -> None:
         if not args.address:
             raise SystemExit("Error: --address is required when --source solana")
 
-        from providers.solana_balance_provider import fetch_solana_owner_balances
+        from solana_balance_provider import fetch_solana_owner_balances
         balances = fetch_solana_owner_balances(args.address)
         assets = list(balances.keys())
 

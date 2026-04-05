@@ -19,10 +19,11 @@ class TokenMeta(TypedDict, total=False):
 TOKENS: Dict[str, TokenMeta] = {
 
     "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump": {
+        "asset": "snp500",
         "symbol": "SNP500",
         "name": "SNP500",
         "dexscreener": True,
-},
+    },
     # USDC (Solana)
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
         "asset": "usdc",

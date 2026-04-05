@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Dict
-from providers.solana_rpc import get_sol_balance_lamports, get_spl_token_balances
+from solana_rpc import get_sol_balance_lamports, get_spl_token_balances
 from token_registry import mint_to_asset_key
 
 
