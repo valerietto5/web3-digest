@@ -430,3 +430,40 @@ That is the immediate target.
 7. trust that the app is being honest about what it knows and what it does not know  
 
 That is the milestone we are driving toward now.
+
+---
+
+## This week plan (Tuesday–Friday)
+
+### Tuesday — backend fee estimation kickoff
+- confirm clean Mac startup and env truth
+- trace current quote / instructions / fee path
+- begin moving network-fee estimation to the backend
+- keep quote preview stable while patching the fee path
+
+### Wednesday — backend fee estimation completion
+- finish backend fee estimation flow
+- test success and failure states
+- wire clean UI behavior for:
+  - fee available
+  - fee unavailable
+  - RPC/auth/config failure
+- lock the wording for fee visibility
+
+### Thursday — swap product polish
+- define cleaner 2-card structure
+- card 1: recommended execution
+- card 2: direct / simpler route
+- reduce noisy or repetitive text
+- improve hierarchy so the user can understand the surface in seconds
+- keep the lower slippage-risk card as the planned next layer
+
+### Friday — review, roadmap lock, and next sprint decision
+- review backend fee-estimation result
+- review swap-surface polish result
+- update roadmap with exact next-week resume point
+- decide next sprint between:
+  - continued UX polish
+  - execution groundwork
+  - two-panel input evolution
+  - route / slippage intelligence expansion
