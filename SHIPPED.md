@@ -139,7 +139,7 @@ A real wallet-connected transaction path already exists.
 The swap product wedge is already live in quote-preview form.
 
 ### Current shipped swap surface
-- SOLana-first swap card in `/ui`
+- Solana-first swap card in `/ui`
 - token selectors
 - amount input
 - Preview Quote action
@@ -148,12 +148,16 @@ The swap product wedge is already live in quote-preview form.
 - backend quote preview flow through `/swap/quote`
 - Jupiter-first quote engine
 - quote comparison surface
-- recommended route block
-- up to two ranked alternative options
-- direct-route check block
+- recommended route card
+- nested alternatives inside the recommended card
+- direct-route comparison card
 - raw quote debug JSON section
 - state / status handling for quote flow
 - activity logging for quote actions
+
+### Why this matters
+The swap area is no longer just a raw quote block.  
+It now has a real product hierarchy.
 
 ---
 
@@ -196,11 +200,11 @@ The swap UI is already more than a single quote box.
 - compare checked variants
 - rank by strongest checked output
 - promote best checked option to “Recommended”
-- keep two additional alternatives where available
+- keep additional alternatives where available
 - keep direct route as a separate comparison lens
 
 ### Shipped route details
-Each route block can already show:
+The comparison surface can already show:
 - estimated receive amount
 - minimum received
 - route label
@@ -220,26 +224,92 @@ This is already a meaningful execution-transparency surface, not just a raw quot
 
 ## 9) Swap cost framing V1
 
-The first honest cost framing is now present.
+The first honest cost framing is now present and materially improved.
 
 ### Shipped
-- “Estimated trade execution cost” concept
-- benchmark shortfall vs fresh reference logic
-- explicit route fees shown separately when available
-- network fee shown separately
-- note explaining that separate fee fields are not being folded into the headline blindly
-- route price impact still shown separately from the reference gap
+- separate **top transparency layer**:
+  - You spend
+  - CoinGecko reference
+  - Executable output vs reference
+  - source/timestamp
+- separate **cost layer** in the Recommended card
+- **Estimated total swap cost** headline for the recommended route
+- expandable cost breakdown for the recommended route:
+  - execution cost
+  - network cost
+  - route fees
+- honest handling of undisclosed route fees:
+  - `not disclosed for this swap`
+- network cost shown in USD
+- route price impact kept separate from the reference gap
+- execution cost floored at zero when the route beats the reference benchmark
 
 ### Why this matters
-This is exactly the type of trust-building product behavior we want:
-- simple
-- honest
-- no fake decomposition
-- no overclaiming of precision
+The product is now doing what it is supposed to do:
+
+- showing the route result
+- showing the benchmark comparison
+- showing the known cost story
+- not pretending to know cost components it does not actually know
+
+This is much closer to a real trust-building swap product.
 
 ---
 
-## 10) Swap instructions path
+## 10) Recommended / Alternatives / Direct card structure
+
+A major UI/UX checkpoint is now shipped.
+
+### Shipped structure
+- Recommended is the primary card
+- Alternatives are nested under Recommended
+- Alternatives are compact and expandable
+- Direct route is a lighter second card
+- the old heavier 3-section structure has been simplified
+
+### Shipped compact-alternatives behavior
+Alternative rows currently show:
+- route name
+- receive amount
+- execution cost
+- shape / step count
+
+They are currently informative-only.
+
+### Shipped Direct-card simplification
+The Direct card now:
+- keeps the route comparison visible
+- removes most of the heavier fee/debug clutter
+- behaves more like a true second comparison card
+- uses shorter note language
+
+### Why this matters
+The quote surface is now much more:
+- compact
+- understandable
+- mobile-friendly
+- product-like
+
+This is one of the biggest UX milestones shipped so far.
+
+---
+
+## 11) Tiny-cost formatting improvement
+
+Cost formatting is already cleaner than before.
+
+### Shipped
+- very small USD costs are no longer shown with overly noisy 6-decimal formatting
+- tiny costs now display more compactly, for example:
+  - `$0.0004`
+  - instead of overly verbose forms like `$0.000420`
+
+### Why this matters
+The numbers stay truthful but become easier to scan.
+
+---
+
+## 12) Swap instructions path
 
 The app also already includes the swap-instructions backend path.
 
@@ -247,31 +317,31 @@ The app also already includes the swap-instructions backend path.
 - `/swap/instructions` endpoint
 - Jupiter swap-instructions request flow
 - authenticated request support through `x-api-key` when configured
-- instruction normalization for frontend fee estimation flow
+- instruction normalization for frontend/backend fee estimation flow
 
 This means the app has already moved beyond quote-only backend plumbing and into instruction-aware infrastructure.
 
 ---
 
-## 11) Network-fee estimation for swaps
+## 13) Network-fee estimation for swaps
 
 Swap network-fee estimation is already live in the current UI flow.
 
 ### Shipped
 - fetch swap instructions for the selected quote
-- build transaction instructions client-side
-- estimate fee from compiled transaction message
-- show estimated network fee per option
-- use connected Phantom wallet public key when available
+- estimate fee for the recommended route
+- show estimated network fee in the recommended route cost breakdown
+- fallback fee behavior when the preferred fee-estimation path is unavailable
+- honest handling of unavailable or limited fee estimation paths
 
 ### Current implementation note
-This fee estimate currently relies on a **mainnet Helius RPC URL hardcoded in the frontend**.
+This fee estimate is live and useful, but still not final-grade.
 
-So the capability is shipped, but the implementation still needs hardening.
+It still needs future hardening and refinement for stronger execution-quality confidence.
 
 ---
 
-## 12) Debug / support-mode visibility
+## 14) Debug / support-mode visibility
 
 The app already has strong debugging and inspection scaffolding.
 
@@ -280,10 +350,27 @@ The app already has strong debugging and inspection scaffolding.
 - activity log panel
 - detailed status cards
 - friendly HTTP / thrown-error handling paths
-- route explanation text
+- route explanation text where appropriate
 - backend exception handler that returns useful trace info in development
 
 This is valuable both for product development and for the project’s developer-support / integration-support angle.
+
+---
+
+## 15) Interaction model groundwork
+
+The app now implicitly supports the first real interaction-model layer for the swap surface.
+
+### Shipped direction reflected in the UI
+- expand and inspect behavior is already separated from execution behavior
+- alternatives are currently inspect-only
+- the card hierarchy already reflects future actionability order:
+  - Recommended first
+  - Direct second
+  - Alternatives later
+
+### Why this matters
+Even though the swap is not executable yet from the quote cards, the UI structure is now being built in a way that supports future actionability cleanly.
 
 ---
 
@@ -300,8 +387,10 @@ Right now, Web3 Digest already supports:
 7. previewing swap routes on Solana  
 8. comparing multiple checked route shapes  
 9. showing a theoretical reference baseline  
-10. estimating swap network fees  
-11. exposing route/debug details honestly
+10. showing a recommended card, nested alternatives, and a direct-route lens  
+11. showing a clearer swap cost story for the recommended route  
+12. estimating swap network fees for the recommended route  
+13. exposing route/debug details honestly  
 
 That is a real shipped foundation.
 
@@ -311,12 +400,16 @@ That is a real shipped foundation.
 
 To stay honest, these are **not** fully shipped yet:
 
-- real swap execution flow from the swap card
+- real swap execution flow from the swap cards
+- CTA buttons for Recommended / Direct routes
+- selectable or executable alternatives
 - multi-provider ranking beyond Jupiter-first comparison
 - full route-fee decomposition for every quote
-- production-safe RPC/auth/config handling for all swap infra
+- final-grade transaction-specific network-fee estimation
+- production-safe swap infra hardening in every path
+- two-panel swap input UX
 - polished connected dashboard experience
-- mobile-optimized UI
+- mobile-optimized final UI
 - multichain execution intelligence
 - receive UX
 - send SPL token flow
@@ -337,5 +430,7 @@ Web3 Digest already has:
 - a real devnet send flow
 - a real Solana swap quote/comparison surface
 - a real execution-transparency wedge
+- a meaningful product-quality quote hierarchy
+- a first honest swap-cost explanation model
 
 That is the current shipped state.

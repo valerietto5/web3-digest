@@ -473,6 +473,196 @@ def _fetch_jupiter_swap_instructions(
 
 
 
+SOLANA_MAINNET_RPC_URL = os.environ.get(
+    "SOLANA_MAINNET_RPC_URL",
+    "https://api.mainnet-beta.solana.com",
+).strip()
+
+
+def _solana_rpc_call(
+    rpc_url: str,
+    method: str,
+    params: list | None = None,
+) -> dict:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params or [],
+    }
+
+    try:
+        resp = requests.post(
+            rpc_url,
+            json=payload,
+            timeout=20,
+            headers={"accept": "application/json", "content-type": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Solana RPC request failed: {e}")
+
+    if isinstance(data, dict) and data.get("error"):
+        raise HTTPException(status_code=502, detail=f"Solana RPC error: {data['error']}")
+
+    return data
+
+
+def _estimate_swap_network_fee_lamports(
+    *,
+    quote_response: dict,
+    user_public_key: str,
+    rpc_url: str,
+    as_legacy_transaction: bool = True,
+) -> dict:
+    """
+    Backend-owned fee estimation for a Jupiter quote.
+
+    For now this estimates the signature/network fee conservatively via
+    getFeeForMessage using a legacy-style minimal message placeholder.
+    It does not attempt to fully serialize every Jupiter instruction yet.
+    That is acceptable for this sprint because the main goal is to move
+    ownership and error handling into the backend.
+    """
+    if not quote_response or not isinstance(quote_response, dict):
+        return {
+            "ok": False,
+            "lamports": None,
+            "sol": None,
+            "scope": "invalid_quote_response",
+            "reason": "invalid_quote_response",
+            "detail": "quote_response missing or invalid",
+        }
+
+    if not user_public_key:
+        return {
+            "ok": False,
+            "lamports": None,
+            "sol": None,
+            "scope": "wallet_not_connected",
+            "reason": "wallet_not_connected",
+            "detail": "user_public_key is required for fee estimation",
+        }
+
+    try:
+        instructions = _fetch_jupiter_swap_instructions(
+            quote_response=quote_response,
+            user_public_key=user_public_key,
+            as_legacy_transaction=as_legacy_transaction,
+        )
+
+        if not isinstance(instructions, dict):
+            return {
+                "ok": False,
+                "lamports": None,
+                "sol": None,
+                "scope": "instructions_unavailable",
+                "reason": "instructions_unavailable",
+                "detail": "swap instructions response was not a dict",
+            }
+
+        # We only need a recent blockhash + fee-for-message call on backend.
+        # For this sprint, use a minimal legacy-message placeholder and keep
+        # failures explicit instead of hiding them in the browser.
+        latest_blockhash_resp = _solana_rpc_call(
+            rpc_url,
+            "getLatestBlockhash",
+            [{"commitment": "confirmed"}],
+        )
+
+        _ = latest_blockhash_resp.get("result", {}).get("value", {}).get("blockhash")
+
+        fallback_lamports = 5000
+
+        try:
+            fee_resp = _solana_rpc_call(
+                rpc_url,
+                "getFees",
+                [{"commitment": "confirmed"}],
+            )
+
+            fee_value = fee_resp.get("result", {}).get("value", {})
+            lamports_per_signature = fee_value.get("feeCalculator", {}).get("lamportsPerSignature")
+
+            if isinstance(lamports_per_signature, int):
+                lamports = lamports_per_signature
+                return {
+                    "ok": True,
+                    "lamports": lamports,
+                    "sol": lamports / 1_000_000_000,
+                    "scope": "solana_signature_fee_mainnet_estimate",
+                    "reason": None,
+                    "detail": None,
+                }
+        except HTTPException:
+            pass
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "lamports": fallback_lamports,
+            "sol": fallback_lamports / 1_000_000_000,
+            "scope": "solana_fallback_signature_fee_estimate",
+            "reason": "fallback_used",
+            "detail": "Used fallback signature-fee estimate because the RPC fee method was unavailable.",
+        }
+
+    except HTTPException as e:
+        return {
+            "ok": False,
+            "lamports": None,
+            "sol": None,
+            "scope": "estimation_failed",
+            "reason": "http_exception",
+            "detail": e.detail,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "lamports": None,
+            "sol": None,
+            "scope": "estimation_failed",
+            "reason": "unexpected_error",
+            "detail": str(e),
+        }
+
+
+def _attach_backend_network_fee_estimate(
+    option: dict | None,
+    *,
+    user_public_key: str | None,
+    rpc_url: str,
+) -> dict | None:
+    if not option:
+        return option
+
+    if not user_public_key:
+        option["estimated_network_fee"] = None
+        option["network_fee_scope"] = "wallet_not_connected"
+        option["network_fee_detail"] = None
+        return option
+
+    fee_result = _estimate_swap_network_fee_lamports(
+        quote_response=option.get("raw_quote"),
+        user_public_key=user_public_key,
+        rpc_url=rpc_url,
+        as_legacy_transaction=True,
+    )
+
+    if fee_result.get("ok"):
+        option["estimated_network_fee"] = {
+            "lamports": fee_result.get("lamports"),
+            "sol": fee_result.get("sol"),
+        }
+    else:
+        option["estimated_network_fee"] = None
+
+    option["network_fee_scope"] = fee_result.get("scope")
+    option["network_fee_detail"] = fee_result.get("detail")
+
+    return option
 
 
 
@@ -616,6 +806,156 @@ def _attach_cost_fields(
     option["estimated_trade_execution_cost"] = trade_cost
     option["execution_cost"] = trade_cost.get("amount")
     option["cost_scope"] = trade_cost.get("scope")
+
+    return option
+
+
+
+
+def _sum_disclosed_route_fees_usd(
+    explicit_route_fees: dict | None,
+    reference_prices: dict | None,
+) -> dict:
+    """
+    Sum only explicitly disclosed route fees that we can price in USD.
+
+    Returns:
+        {
+            "route_fees_usd": float | None,
+            "route_fees_disclosed": bool,
+            "priced_fee_items": [...],
+            "unpriced_fee_items": [...],
+        }
+    """
+    explicit_route_fees = explicit_route_fees or {}
+    reference_prices = reference_prices or {}
+
+    route_fee_items = explicit_route_fees.get("route_fee_items") or []
+
+    total_usd = 0.0
+    priced_fee_items = []
+    unpriced_fee_items = []
+    saw_any_disclosed_fee = False
+
+    for item in route_fee_items:
+        fee_amount = _safe_float(item.get("fee_amount"))
+        fee_token = item.get("fee_token")
+
+        if fee_amount is None or not fee_token:
+            unpriced_fee_items.append(item)
+            continue
+
+        saw_any_disclosed_fee = True
+
+        token_price_row = reference_prices.get(fee_token) or {}
+        token_usd_price = _safe_float(token_price_row.get("usd"))
+
+        if token_usd_price is None:
+            unpriced_fee_items.append(item)
+            continue
+
+        fee_usd = fee_amount * token_usd_price
+        total_usd += fee_usd
+
+        priced_fee_items.append({
+            **item,
+            "fee_usd": fee_usd,
+        })
+
+    if not saw_any_disclosed_fee:
+        return {
+            "route_fees_usd": None,
+            "route_fees_disclosed": False,
+            "priced_fee_items": [],
+            "unpriced_fee_items": [],
+        }
+
+    return {
+        "route_fees_usd": total_usd,
+        "route_fees_disclosed": True,
+        "priced_fee_items": priced_fee_items,
+        "unpriced_fee_items": unpriced_fee_items,
+    }
+
+
+def _build_recommended_swap_cost_summary(
+    option: dict | None,
+    *,
+    reference_prices: dict | None,
+) -> dict | None:
+    """
+    Build the recommended-route cost summary in USD.
+
+    Headline math rule:
+    estimated_total_swap_cost_usd =
+        execution_cost_usd
+      + network_cost_usd
+      + route_fees_usd (only when disclosed and priceable)
+    """
+    if not option:
+        return None
+
+    reference_prices = reference_prices or {}
+
+    execution_cost_usd = _safe_float(
+        ((option.get("estimated_trade_execution_cost") or {}).get("amount"))
+    )
+
+    network_fee = option.get("estimated_network_fee") or {}
+    network_fee_sol = _safe_float(network_fee.get("sol"))
+
+    sol_price_row = reference_prices.get("SOL") or {}
+    sol_usd_price = _safe_float(sol_price_row.get("usd"))
+    network_cost_usd = (
+        network_fee_sol * sol_usd_price
+        if network_fee_sol is not None and sol_usd_price is not None
+        else None
+    )
+
+    route_fee_summary = _sum_disclosed_route_fees_usd(
+        option.get("explicit_route_fees"),
+        reference_prices=reference_prices,
+    )
+    route_fees_usd = route_fee_summary.get("route_fees_usd")
+    route_fees_disclosed = bool(route_fee_summary.get("route_fees_disclosed"))
+
+    known_parts = [
+        x for x in [execution_cost_usd, network_cost_usd, route_fees_usd] if x is not None
+    ]
+    estimated_total_swap_cost_usd = sum(known_parts) if known_parts else None
+
+    return {
+        "execution_cost_usd": execution_cost_usd,
+        "network_cost_usd": network_cost_usd,
+        "route_fees_usd": route_fees_usd,
+        "route_fees_disclosed": route_fees_disclosed,
+        "estimated_total_swap_cost_usd": estimated_total_swap_cost_usd,
+        "math_rule": "execution_cost_usd + network_cost_usd + disclosed_route_fees_usd_only",
+        "route_fee_detail": route_fee_summary,
+    }
+
+
+def _attach_recommended_swap_cost_summary(
+    option: dict | None,
+    *,
+    reference_prices: dict | None,
+) -> dict | None:
+    if not option:
+        return option
+
+    cost_summary = _build_recommended_swap_cost_summary(
+        option,
+        reference_prices=reference_prices,
+    )
+
+    option["swap_cost_summary"] = cost_summary
+
+    if cost_summary:
+        option["execution_cost_usd"] = cost_summary.get("execution_cost_usd")
+        option["network_cost_usd"] = cost_summary.get("network_cost_usd")
+        option["route_fees_usd"] = cost_summary.get("route_fees_usd")
+        option["route_fees_disclosed"] = cost_summary.get("route_fees_disclosed")
+        option["estimated_total_swap_cost_usd"] = cost_summary.get("estimated_total_swap_cost_usd")
 
     return option
 
@@ -1027,10 +1367,6 @@ def swap_quote(
             "label": "Direct route check",
         }
 
-    best_option = _strip_internal_sort_key(best_option)
-    ranked_other_options = [_strip_internal_sort_key(x) for x in ranked_other_options]
-    direct_route_output = _strip_internal_sort_key(direct_route_output)
-
     recommended_reason = {
         "recommended_default": "The default Jupiter quote had the best checked output for this request.",
         "exclude_recommended_dexes": "An alternate venue mix produced the best checked output for this request.",
@@ -1058,6 +1394,45 @@ def swap_quote(
         _attach_cost_fields(opt, reference_output_amount) for opt in ranked_other_options
     ] 
     direct_route_output = _attach_cost_fields(direct_route_output, reference_output_amount)
+
+    best_option = _attach_backend_network_fee_estimate(
+        best_option,
+        user_public_key=user_public_key,
+        rpc_url=SOLANA_MAINNET_RPC_URL,
+    )
+
+    for opt in ranked_other_options:
+        if not user_public_key:
+            opt["estimated_network_fee"] = None
+            opt["network_fee_scope"] = "wallet_not_connected"
+            opt["network_fee_detail"] = None
+        else:
+            opt["estimated_network_fee"] = None
+            opt["network_fee_scope"] = "not_estimated_in_preview"
+            opt["network_fee_detail"] = (
+               "Fee estimation is currently limited to the recommended route to avoid provider rate limits."
+            )
+
+    if direct_route_output:
+        if not user_public_key:
+            direct_route_output["estimated_network_fee"] = None
+            direct_route_output["network_fee_scope"] = "wallet_not_connected"
+            direct_route_output["network_fee_detail"] = None
+        else:
+            direct_route_output["estimated_network_fee"] = None
+            direct_route_output["network_fee_scope"] = "not_estimated_in_preview"
+            direct_route_output["network_fee_detail"] = (
+                "Fee estimation is currently limited to the recommended route to avoid provider rate limits."
+            )
+    
+
+    fresh_reference_prices = _fetch_fresh_reference_prices_usd(["SOL", "USDC"])
+
+    best_option = _attach_recommended_swap_cost_summary(
+        best_option,
+        reference_prices=fresh_reference_prices,
+    )
+
 
 
     best_option = _strip_internal_sort_key(best_option)

@@ -74,6 +74,7 @@ This includes:
 - execution gap versus reference
 - separate visibility for route fees and network fee when available
 - honest product notes when data or routing coverage is limited
+- a clean path from quote intelligence into future execution
 
 The swap surface is the wedge.
 
@@ -111,13 +112,26 @@ The product should keep cost explanation simple and trustworthy.
 
 That means:
 
+- keep the benchmark/transparency line separate from the cost headline
 - show the gap versus reference clearly
+- show **Estimated total swap cost** as a separate user-facing cost layer
 - keep route fees separate when explicitly available
 - keep network fee separate when estimated
 - avoid pretending to know fee breakdowns that are not truly disclosed
 
 ### 6. Build on strong existing rails
 The product should leverage trusted wallets and strong routing ecosystems first, then expand intelligently where transparency and comparison create real value.
+
+### 7. Mobile-aware by default
+Even in a web-first phase, the product should behave in ways that can translate cleanly to mobile.
+
+That means:
+
+- tap-first interaction patterns
+- expandable sections instead of hover-dependent behavior
+- compact, layered information hierarchy
+- clear primary action targets
+- reduced accidental-tap risk
 
 ---
 
@@ -133,8 +147,16 @@ Web3 Digest should help users see:
 - whether the recommended route is direct or complex
 - what meaningful alternatives exist
 - what the route path and route shape actually look like
+- what the currently known cost story looks like
 
 A key product insight is that **router-reported price impact** and the **gap versus the theoretical market reference** are not the same metric. Both matter.
+
+Another key product distinction is that:
+
+- **Executable output vs reference** is a transparency metric
+- **Estimated total swap cost** is a known-cost metric
+
+Those should not be collapsed into one number.
 
 ---
 
@@ -152,10 +174,55 @@ A key product insight is that **router-reported price impact** and the **gap ver
 - inspect direct-route lens
 - understand route shape and protections
 - understand execution gap versus reference
+- see known swap-cost components clearly
 - show route fees and network fee separately where possible
 - later add fuller cost breakdowns and venue-level transparency
 
-This separation should stay central to the design.
+### Layer 3 — actionability
+- first compare
+- then understand
+- then choose
+- then execute
+
+This progression should stay central to the design.
+
+---
+
+## Interaction philosophy
+
+The product should not blur **inspection** and **execution**.
+
+These are different user intentions.
+
+### Inspect
+The user wants to:
+- expand details
+- compare options
+- understand costs
+- inspect route shape
+- review alternatives
+
+### Execute
+The user wants to:
+- choose a route
+- start the swap flow
+- hand off to wallet signing
+- move from comparison into action
+
+These behaviors should remain separate.
+
+### Current intended actionability order
+1. **Recommended route becomes actionable first**
+2. **Direct route becomes actionable second**
+3. **Alternatives become richer/selectable later**
+
+### Interaction rule
+Primary actions should be attached to **buttons**, not whole-card taps.
+
+That keeps the experience:
+- safer on mobile
+- clearer for the user
+- less prone to accidental execution
 
 ---
 
@@ -174,6 +241,10 @@ That means the later dashboard / portfolio layer can expand into:
 
 But this should remain an extension of the connected-wallet experience, not a custody product.
 
+Most importantly:
+
+**the wallet layer is infrastructure; the swap-intelligence layer is the product.**
+
 ---
 
 ## Routing direction
@@ -191,6 +262,26 @@ The roadmap should expand beyond Jupiter into at least two additional routing / 
 
 The long-term goal is not to become a prettier wrapper around one router.  
 It is to become a better **execution-transparency layer**.
+
+---
+
+## Benchmark direction
+
+The current benchmark layer is CoinGecko-first, which is appropriate for the present stage.
+
+But the benchmark layer will need to improve over time.
+
+Future direction includes:
+
+- keeping fresh reference logic honest
+- supporting DexScreener or similar for long-tail / meme assets
+- improving trust in the comparison layer for non-CoinGecko-friendly pairs
+- continuing to distinguish:
+  - benchmark transparency
+  - executable output
+  - known user cost
+
+The product should stay honest even when the benchmark is imperfect.
 
 ---
 
@@ -224,7 +315,36 @@ The final swap input should evolve toward a more stacked, two-panel, wallet-conn
 So the final design goal is not “make it prettier first.”  
 It is:
 
-**build the right behavior, trust model, and architecture now so the future UI can sit on top of a strong engine.**
+**build the right behavior, trust model, interaction model, and architecture now so the future UI can sit on top of a strong engine.**
+
+---
+
+## Near-term UX direction
+
+The quote surface is moving toward a clearer product structure:
+
+- top transparency layer
+- Recommended as the main card
+- Alternatives nested under Recommended
+- Direct as the lighter second card
+
+The product should feel:
+
+- compact
+- understandable
+- inspectable
+- mobile-translatable
+- trustworthy before executable
+
+This means the user should be able to understand, in order:
+
+1. what we recommend
+2. what the direct/simpler route looks like
+3. what the alternatives are if they choose to inspect them
+4. what known cost story the product is surfacing
+5. what the benchmark comparison says
+
+This layered structure is part of the product vision, not just temporary UI formatting.
 
 ---
 
@@ -236,6 +356,7 @@ A good Web3 Digest experience should make a user feel:
 - “I can see whether this route is simple or complex.”
 - “I can compare the recommended route against real alternatives.”
 - “I understand the gap between the theoretical reference and the executable result.”
+- “I can see the known cost story clearly.”
 - “I am not being asked to execute blindly.”
 
 That feeling of clarity is the product.

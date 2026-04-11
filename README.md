@@ -41,7 +41,7 @@ Web3 Digest handles:
 
 - route comparison
 - execution transparency
-- ideal vs executable reference
+- theoretical reference vs executable reality
 - direct-route inspection
 - route explanation
 - route-shape visibility
@@ -103,10 +103,11 @@ Today it already includes:
 - in-app devnet airdrop helper
 - real Send SOL flow on devnet
 - swap quote preview surface
-- recommended / alternatives / direct-route comparison logic
+- recommended / alternatives / direct-route comparison structure
 - live reference baseline updates while typing
-- estimated network fee display for swap options
-- explicit route fee display when available
+- recommended-route cost summary in USD
+- estimated network fee display for the recommended route
+- explicit route-fee display when available
 - user-facing route explanation and support-style diagnostics
 
 ---
@@ -114,30 +115,31 @@ Today it already includes:
 ## What works today
 
 ### CLI foundation
-- Insert balances (manual or Solana) into SQLite
-- Insert prices (CoinGecko + optional Dex fallback) into SQLite
-- Print a wallet report from stored snapshots
+- insert balances (manual or Solana) into SQLite
+- insert prices (CoinGecko + optional Dex fallback) into SQLite
+- print a wallet report from stored snapshots
 
 ### Web app
-- Open the UI at `GET /ui`
-- Refresh balances and prices
-- View latest portfolio report and history
-- Connect Phantom
-- Sign a message
-- View live devnet wallet balance
-- Request devnet airdrop from inside the UI
-- Send SOL on devnet with transaction state handling
-- Preview swap quotes inside the UI
-- Review:
+- open the UI at `GET /ui`
+- refresh balances and prices
+- view latest portfolio report and history
+- connect Phantom
+- sign a message
+- view live devnet wallet balance
+- request devnet airdrop from inside the UI
+- send SOL on devnet with transaction state handling
+- preview swap quotes inside the UI
+- review:
   - theoretical reference baseline
   - recommended route
-  - alternative route(s)
+  - nested alternatives
   - direct-route lens
   - minimum received
   - route path
   - route shape / step count
   - route explanation
   - execution gap vs reference
+  - estimated total swap cost
   - explicit route fees when available
   - estimated network fee
   - support-style error states and notes
@@ -167,7 +169,7 @@ The swap surface is built around:
 #### 2. Execution-intelligence layer
 - Preview Quote
 - recommended route
-- alternatives
+- nested alternatives
 - direct-route check
 - route explanation
 - execution gap vs reference
@@ -183,6 +185,13 @@ are **not the same metric**.
 
 Both matter, and both should stay visible.
 
+A second key rule is that:
+
+- **Executable output vs reference** is a transparency metric
+- **Estimated total swap cost** is a known-cost metric
+
+Those should not be collapsed into one line.
+
 ---
 
 ## Current implementation notes
@@ -193,9 +202,9 @@ The current swap surface is already useful, but it is still Alpha.
 - swap comparison is currently **Jupiter-first**
 - the swap card is currently **quote preview only**, not full swap execution
 - route fees are shown separately **when explicitly available in the quote**
-- estimated network fee is shown separately from the headline execution-gap framing
-- the current swap network-fee estimation path uses a **mainnet RPC call**
-- the current frontend still contains a **hardcoded Helius mainnet RPC URL** for that fee-estimation step, which should be moved into safer backend/env-managed config soon
+- estimated network fee is shown separately from the headline cost model
+- the current swap network-fee estimation path still needs further hardening/refinement
+- the UI is now much cleaner structurally, but still not final visual polish
 
 That means the product wedge is real, but parts of the implementation still need hardening.
 
@@ -217,9 +226,31 @@ So the current work is focused first on:
 - behavior
 - product logic
 - cost honesty
+- interaction clarity
 - clear separation of concerns
 
 Pretty UI and final polish come later.
+
+---
+
+## Interaction direction
+
+The current swap surface is being shaped so that it can later become actionable cleanly.
+
+### Current interaction rules
+- Recommended is the main card
+- Alternatives are nested under Recommended
+- Direct is the lighter second comparison card
+- alternatives are informative only for now
+- expand and execute are separate behaviors
+- future primary actions should be **buttons**, not whole-card taps
+
+### Expected future actionability order
+1. **Recommended route becomes actionable first**
+2. **Direct route becomes actionable second**
+3. **Alternatives become richer/selectable later**
+
+This keeps the surface mobile-safer and easier to understand.
 
 ---
 
@@ -273,7 +304,8 @@ That matters because much real-world swapping behavior — especially in fast-mo
 So the right path is:
 
 - web first
-- responsive and mobile-aware later
+- mobile-aware interaction patterns now
+- responsive/mobile refinement later
 - native mobile only if the product earns it
 
 ---
@@ -299,7 +331,7 @@ So the right path is:
   - wallet integration
   - swap comparison surface
   - live reference behavior
-  - client-side fee-estimation flow
+  - frontend interaction logic
 
 - **Wallet boundary**
   - browser wallet provider
@@ -363,23 +395,22 @@ Important areas include:
 - live theoretical reference
 - quote provider integration
 - recommendation / alternatives / direct-route check
-- “Why this route?” explanation
-- estimated network fee visibility
-- explicit route-fee visibility when available
+- separate transparency line vs cost layer
+- recommended-route cost framing
 - honest quote UX and support-style failures
 
-### V2 — stronger comparison surface
+### V2 — stronger comparison surface + interaction model
 Planned:
-- richer multi-option comparison
-- better route ranking clarity
-- clearer cost framing
-- more polished swap input UX
+- tighter route-card UX
+- CTA placement / actionability model
+- clearer route interaction flow
 - safer config handling for swap infrastructure
 - more trustworthy comparison flow
 
 ### V2.5 — swap execution handoff
 Planned:
-- choose route
+- Recommended route action first
+- Direct route action second
 - hand transaction to wallet for signing
 - execute from inside the UI
 - show status / confirmation / failure clearly
@@ -396,11 +427,14 @@ Planned:
 
 ## What is not shipped yet
 
-- full swap execution flow from the swap card
-- complete cost accounting for swap comparison
-- non-Jupiter routing universes/providers
+- full swap execution flow from the swap cards
+- CTA buttons for Recommended / Direct routes
+- selectable or executable alternatives
+- multi-provider ranking beyond Jupiter-first comparison
+- final-grade transaction-specific network-fee estimation
+- final benchmark expansion for long-tail pairs
 - final two-panel swap input design
-- production-grade config cleanup for swap infra
+- production-grade swap infra hardening
 - production-grade polished UI
 - richer connected holdings/dashboard experience
 - final public packaging of docs / screenshots / demo story

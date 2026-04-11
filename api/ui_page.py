@@ -205,9 +205,8 @@ def build_ui_html() -> str:
       <div class="muted" id="swapRecommendedBox">No quote yet.</div>
     </div>
 
-    <div class="card" id="swapAlternativesCard" style="margin-top:10px;">
-      <h4 style="margin: 0 0 6px 0;">Other options</h4>
-      <div class="muted" id="swapAlternativesBox">No alternatives yet.</div>
+    <div id="swapAlternativesCard" style="display:none;">
+      <div id="swapAlternativesBox"></div>
     </div>
 
     <div class="card" id="swapDirectCard" style="margin-top:10px;">
@@ -282,7 +281,6 @@ def build_ui_html() -> str:
 
   const DEVNET_RPC_URL = "https://api.devnet.solana.com";
   const DEVNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
-  const SWAP_MAINNET_RPC_URL = "https://api.mainnet-beta.solana.com";
 
   const ACTIVITY_LIMIT = 8;
   const activityItems = [];
@@ -334,26 +332,8 @@ def build_ui_html() -> str:
 
 
 
-function b64ToBytes(b64) {
-  const bin = atob(b64 || "");
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
 
-function jupInstructionToWeb3(ix) {
-  if (!ix) return null;
 
-  return new solanaWeb3.TransactionInstruction({
-    programId: new solanaWeb3.PublicKey(ix.programId),
-    keys: (ix.accounts || []).map((acc) => ({
-      pubkey: new solanaWeb3.PublicKey(acc.pubkey),
-      isSigner: !!acc.isSigner,
-      isWritable: !!acc.isWritable,
-    })),
-    data: b64ToBytes(ix.data || ""),
-  });
-}
 
 
 
@@ -509,22 +489,22 @@ function renderSwapInlineBaseline(baseline, delta = null) {
   }
 
   if (ideal) {
-          const source = baseline.pricing_source;
-          const baselineLabel =
-              source === "coingecko_simple_price"
-                   ? "CoinGecko reference"
-                  : "Cached reference";
+    const source = baseline.pricing_source;
+    const baselineLabel =
+      source === "coingecko_simple_price"
+        ? "CoinGecko reference"
+        : "Cached reference";
 
-          ideal.textContent =
-              baselineLabel +
-               ": ~" +
-              idealOut +
-              " " +
-              outputToken +
-              " (≈ " +
-              outputUsd +
-              ")";
-    }
+    ideal.textContent =
+      baselineLabel +
+      ": ~" +
+      idealOut +
+      " " +
+      outputToken +
+      " (≈ " +
+      outputUsd +
+      ")";
+  }
 
   if (deltaLine) {
     if (delta && (delta.output_diff_abs != null || delta.output_diff_pct != null)) {
@@ -549,18 +529,18 @@ function renderSwapInlineBaseline(baseline, delta = null) {
   }
 
   if (note) {
-          const source = baseline.pricing_source;
-          const ts = baseline.pricing_ts;
-          const tsUtc = formatUtcTimestamp(ts);
+    const source = baseline.pricing_source;
+    const ts = baseline.pricing_ts;
+    const tsUtc = formatUtcTimestamp(ts);
 
-          if (source === "coingecko_simple_price") {
-              note.textContent = tsUtc
-                  ? "Source: fresh CoinGecko market price at " + tsUtc + ". Not an executable quote."
-                   : "Source: fresh CoinGecko market price. Not an executable quote.";
-          } else if (source === "sqlite_usd_snapshots") {
-              note.textContent = "Source: latest cached USD price snapshots. Not executable.";
-          }
-      }
+    if (source === "coingecko_simple_price") {
+      note.textContent = tsUtc
+        ? "Source: fresh CoinGecko market price at " + tsUtc + ". Not an executable quote."
+        : "Source: fresh CoinGecko market price. Not an executable quote.";
+    } else if (source === "sqlite_usd_snapshots") {
+      note.textContent = "Source: latest cached USD price snapshots. Not executable.";
+    }
+  }
 }
 
 
@@ -569,6 +549,7 @@ function resetSwapQuoteDisplay() {
   $("swapRecommendation").textContent = "recommendation: —";
   $("swapCompareSummary").textContent = "comparison summary: —";
   $("swapRecommendedBox").innerHTML = "<div class='muted'>No quote yet.</div>";
+  $("swapAlternativesBox").style.display = "block";
   $("swapAlternativesBox").innerHTML = "<div class='muted'>No alternatives yet.</div>";
   $("swapDirectBox").innerHTML = "<div class='muted'>No direct-route check yet.</div>";
   $("swapDebugWrap").style.display = "none";
@@ -709,6 +690,8 @@ function renderSwapOptionCard(opt, opts = {}) {
 
   const title = opts.title || (opt.label || "Route");
   const note = opts.note || "";
+  const alternativesHtml = opts.alternativesHtml || "";
+  const compactDirect = !!opts.compactDirect;
   const estOut = fmtNum(Number(opt.estimated_output || 0), 6);
   const minReceived = opt.min_received == null ? "n/a" : fmtNum(Number(opt.min_received), 6);
   const impact = formatImpactPct(opt.price_impact_pct);
@@ -738,6 +721,29 @@ function renderSwapOptionCard(opt, opts = {}) {
   const routePath = parts.length
     ? parts.join(" → ")
     : ((opt.from_token || "?") + " → " + (opt.to_token || "?"));
+
+      const isRecommendedCard = (opt?.kind || "") === "recommended";
+
+  const executionCostUsd = Number(opt?.execution_cost_usd);
+  const networkCostUsd = Number(opt?.network_cost_usd);
+  const routeFeesUsd = Number(opt?.route_fees_usd);
+  const routeFeesDisclosed = !!opt?.route_fees_disclosed;
+  const estimatedTotalSwapCostUsd = Number(opt?.estimated_total_swap_cost_usd);
+
+  const executionCostUsdText =
+    Number.isFinite(executionCostUsd) ? fmtUsdCost(executionCostUsd) : "n/a";
+
+  const networkCostUsdText =
+    Number.isFinite(networkCostUsd) ? fmtUsdCost(networkCostUsd) : "n/a";
+
+  const routeFeesUsdText = routeFeesDisclosed
+    ? (Number.isFinite(routeFeesUsd) ? fmtUsdCost(routeFeesUsd) : "n/a")
+    : "not disclosed for this swap";
+
+  const estimatedTotalSwapCostUsdText =
+    Number.isFinite(estimatedTotalSwapCostUsd)
+      ? fmtUsdCost(estimatedTotalSwapCostUsd)
+      : "n/a";
   
       const tradeCostAmount = Number(opt?.estimated_trade_execution_cost?.amount);
     const tradeCostToken =
@@ -788,15 +794,20 @@ function renderSwapOptionCard(opt, opts = {}) {
 
            const networkFee = opt?.estimated_network_fee;
     const networkFeeScope = opt?.network_fee_scope;
+    const networkFeeDetail = opt?.network_fee_detail || "";
 
     const networkFeeText =
-               networkFee && typeof networkFee === "object" && Number.isFinite(Number(networkFee.sol))
-                   ? fmtNum(Number(networkFee.sol), 9) + " SOL"
-                   : networkFeeScope === "wallet_not_connected"
-                       ? "connect Phantom to estimate"
-                       : networkFeeScope === "estimation_failed"
-                           ? "unavailable right now (mainnet RPC blocked)"
-                           : "not estimated yet";
+      networkFee && typeof networkFee === "object" && Number.isFinite(Number(networkFee.sol))
+        ? fmtNum(Number(networkFee.sol), 9) + " SOL"
+        : networkFeeScope === "wallet_not_connected"
+          ? "connect Phantom to estimate"
+          : networkFeeScope === "estimation_failed"
+            ? "unavailable right now"
+            : networkFeeScope === "estimation_unavailable"
+              ? "unavailable right now"
+              : networkFeeScope === "instructions_unavailable"
+                ? "unavailable right now"
+                : "not estimated yet";
 
               const costScopeNote =
                   "Route fees are shown separately for transparency and are not added to the headline.";
@@ -823,21 +834,73 @@ function renderSwapOptionCard(opt, opts = {}) {
       <div class="muted" style="margin-top:4px;">
         Impact: ${escapeHtml(impact)} | Slippage setting: ${escapeHtml(slippage)}
       </div>
+      ${
+  isRecommendedCard
+    ? `
       <div class="muted" style="margin-top:4px;">
-                    ${escapeHtml(tradeCostLine)}
-                </div>
-                <div class="muted" style="margin-top:2px;">
-                     Explicit route fees: ${escapeHtml(explicitFeesText)}
-               </div>
-               <div class="muted" style="margin-top:2px;">
-                     Estimated network fee: ${escapeHtml(networkFeeText)}
-               </div>
-               <div class="muted" style="margin-top:2px;">
-                    ${escapeHtml(costScopeNote)}
-               </div>
-      <div class="muted" style="margin-top:4px;">
-        ${escapeHtml(opt.explanation || "No explanation available.")}
+        <strong>Estimated total swap cost: ${escapeHtml(estimatedTotalSwapCostUsdText)}</strong>
       </div>
+      <details style="margin-top:6px;">
+        <summary class="muted" style="cursor:pointer;">Show cost breakdown</summary>
+        <div class="muted" style="margin-top:6px;">
+          Execution cost: ${escapeHtml(executionCostUsdText)}
+        </div>
+        <div class="muted" style="margin-top:2px;">
+          Network cost: ${escapeHtml(networkCostUsdText)}
+        </div>
+        <div class="muted" style="margin-top:2px;">
+          Route fees: ${escapeHtml(routeFeesUsdText)}
+        </div>
+      </details>
+      ${
+        alternativesHtml
+          ? `
+            <details style="margin-top:8px;">
+              <summary class="muted" style="cursor:pointer;">Alternatives</summary>
+              <div style="margin-top:6px;">
+                ${alternativesHtml}
+              </div>
+            </details>
+          `
+          : ""
+      }
+    `
+    : `
+      <div class="muted" style="margin-top:4px;">
+        ${escapeHtml(tradeCostLine)}
+      </div>
+      ${
+        compactDirect
+          ? ""
+          : `
+            <div class="muted" style="margin-top:2px;">
+              Explicit route fees: ${escapeHtml(explicitFeesText)}
+            </div>
+            <div class="muted" style="margin-top:2px;">
+              Estimated network fee: ${escapeHtml(networkFeeText)}
+            </div>
+            ${
+              networkFeeDetail
+                ? `<div class="muted" style="margin-top:2px;">Fee detail: ${escapeHtml(networkFeeDetail)}</div>`
+                : ""
+            }
+            <div class="muted" style="margin-top:2px;">
+              ${escapeHtml(costScopeNote)}
+            </div>
+          `
+      } 
+    `
+}
+
+    ${
+      isRecommendedCard || compactDirect
+        ? ""
+        : `
+          <div class="muted" style="margin-top:4px;">
+            ${escapeHtml(opt.explanation || "No explanation available.")}
+          </div>
+        `
+    }
       ${
         note
           ? `<div class="muted" style="margin-top:6px;"><em>${escapeHtml(note)}</em></div>`
@@ -849,80 +912,46 @@ function renderSwapOptionCard(opt, opts = {}) {
 
 
 
+function renderCompactAlternativeCard(opt, idx = 0) {
+  if (!opt) return "";
 
-async function fetchSwapInstructionsForQuote(rawQuote, userPublicKey) {
-  const res = await fetch("/swap/instructions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      quote_response: rawQuote,
-      user_public_key: userPublicKey,
-      as_legacy_transaction: true,
-    }),
-  });
+  const routeLabel = opt?.route_label || "unknown-route";
+  const estOut = fmtNum(Number(opt?.estimated_output || 0), 6);
+  const outToken = opt?.to_token || "";
+  const executionCostUsd = Number(opt?.execution_cost_usd);
+  const fallbackExecutionCost = Number(opt?.estimated_trade_execution_cost?.amount);
 
-  const text = await res.text();
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch (_) {
-    data = null;
-  }
+  const executionCostForDisplay = Number.isFinite(executionCostUsd)
+    ? executionCostUsd
+    : (Number.isFinite(fallbackExecutionCost) ? fallbackExecutionCost : NaN);
 
-  if (!res.ok || !data?.ok || !data?.instructions) {
-    throw new Error(
-      (data && (data.detail || data.error || JSON.stringify(data))) ||
-      text ||
-      "swap instructions request failed"
-    );
-  }
+  const executionCostText = Number.isFinite(executionCostForDisplay)
+    ? fmtUsdCost(executionCostForDisplay)
+    : "n/a";
 
-  return data.instructions;
+  const stepCount = Number(opt?.route_step_count || 0);
+  const shapeText =
+    stepCount > 1
+      ? `${stepCount}-step path`
+      : (opt?.route_shape === "single-path" || opt?.route_shape === "direct")
+        ? "single-path"
+        : (opt?.route_shape || "unknown");
+
+  return `
+    <div class="card" style="margin-top:8px;">
+      <div><strong>Alternative ${idx + 1} — ${escapeHtml(routeLabel)}</strong></div>
+      <div class="muted" style="margin-top:4px;">
+        Receive: ${escapeHtml(estOut)} ${escapeHtml(outToken)}
+      </div>
+      <div class="muted" style="margin-top:2px;">
+        Execution cost: ${escapeHtml(executionCostText)}
+      </div>
+      <div class="muted" style="margin-top:2px;">
+        Shape: ${escapeHtml(shapeText)}
+      </div>
+    </div>
+  `;
 }
-
-
-
-
-
-async function estimateSwapNetworkFeeLamports(rawQuote, userPublicKey) {
-  if (!rawQuote || !userPublicKey) return null;
-
-  const connection = new solanaWeb3.Connection(SWAP_MAINNET_RPC_URL, "confirmed");
-  const instructionsResp = await fetchSwapInstructionsForQuote(rawQuote, userPublicKey);
-
-  const allIxs = [
-    ...(instructionsResp.computeBudgetInstructions || []),
-    ...(instructionsResp.setupInstructions || []),
-    ...(instructionsResp.otherInstructions || []),
-    instructionsResp.swapInstruction || null,
-    instructionsResp.cleanupInstruction || null,
-  ]
-    .filter(Boolean)
-    .map(jupInstructionToWeb3)
-    .filter(Boolean);
-
-  if (!allIxs.length) return null;
-
-  const { blockhash } = await connection.getLatestBlockhash("confirmed");
-
-  const tx = new solanaWeb3.Transaction({
-    feePayer: new solanaWeb3.PublicKey(userPublicKey),
-    recentBlockhash: blockhash,
-  });
-
-  for (const ix of allIxs) {
-    tx.add(ix);
-  }
-
-  const feeResp = await connection.getFeeForMessage(tx.compileMessage(), "confirmed");
-  if (feeResp && typeof feeResp.value === "number") {
-    return feeResp.value;
-  }
-
-  return null;
-}
-
-
 
 
 async function previewSwap() {
@@ -1009,36 +1038,6 @@ async function previewSwap() {
     return;
   }
 
-  if (feeEstimatePubkey) {
-    const feeTargets = [recommended, ...otherOptions, directRoute].filter(Boolean);
-
-    await Promise.all(
-      feeTargets.map(async (opt) => {
-        try {
-          const lamports = await estimateSwapNetworkFeeLamports(
-            opt?.raw_quote,
-            feeEstimatePubkey
-          );
-
-          if (typeof lamports === "number") {
-            opt.estimated_network_fee = {
-              lamports,
-              sol: lamportsToSol(lamports),
-            };
-            opt.network_fee_scope = "solana_getFeeForMessage_mainnet_legacy_estimate";
-          } else {
-            opt.estimated_network_fee = null;
-            opt.network_fee_scope = "not_estimated";
-          }
-        } catch (err) {
-          console.warn("swap network fee estimate failed", err);
-          opt.estimated_network_fee = null;
-          opt.network_fee_scope = "estimation_failed";
-        }
-      })
-    );
-  }
-
   function numOrNull(x) {
     const n = Number(x);
     return Number.isFinite(n) ? n : null;
@@ -1053,16 +1052,14 @@ async function previewSwap() {
   const displayRec = recommended;
 
   const recommendationText =
-    "Recommended block: Recommended via " +
+    "Recommended: " +
     (displayRec.route_label || "unknown-route") +
-    " on Jupiter. This currently has the strongest checked output (~" +
+    " • ~" +
     fmtTokenAmount(displayRec.estimated_output) +
     " " +
-    (displayRec.to_token || toToken) +
-    ").";
+    (displayRec.to_token || toToken);
 
   try {
-    const compareBits = [];
     const variantErrors = Array.isArray(quote?.debug?.variant_errors)
       ? quote.debug.variant_errors
       : [];
@@ -1072,44 +1069,46 @@ async function previewSwap() {
       return detail.includes("restrict_intermediate_tokens") && detail.includes("free tier");
     });
 
-    compareBits.push(
-      "Selection basis: " + (quote?.summary?.selection_basis || "not provided")
-    );
-    compareBits.push("Other options: " + otherOptions.length);
-    compareBits.push("Direct route: " + (directRoute ? "available" : "not available"));
+    let compareSummary = "Other options: " + otherOptions.length;
 
-    if (quote?.summary?.recommended_reason) {
-      compareBits.push("Why this route: " + quote.summary.recommended_reason);
+    const directMatchesRecommended =
+      directRoute &&
+      displayRec?.route_label === directRoute?.route_label &&
+      String(displayRec?.estimated_output_raw) === String(directRoute?.estimated_output_raw);
+
+    if (directRoute && !directMatchesRecommended) {
+      compareSummary += " • Direct route available";
     }
 
     if (broaderSearchTierBlocked) {
-      compareBits.push(
-        "Note: Broader search not available in current Jupiter tier; showing checked restricted variants only."
-      );
+      compareSummary += " • Broader search limited";
     }
 
     $("swapRecommendation").textContent = recommendationText;
-    $("swapCompareSummary").textContent = compareBits.join(" | ");
+    $("swapCompareSummary").textContent = compareSummary;
 
-    $("swapRecommendedBox").innerHTML = renderSwapOptionCard(displayRec);
+    const alternativesHtml = otherOptions.length
+      ? otherOptions
+          .map((opt, idx) => renderCompactAlternativeCard(opt, idx))
+          .join("")
+      : "";
 
-    if (otherOptions.length) {
-      $("swapAlternativesBox").innerHTML = otherOptions
-        .map((opt, idx) =>
-          renderSwapOptionCard(opt, {
-            title: "Alternative " + (idx + 1)
-          })
-        )
-        .join("");
-    } else {
-      $("swapAlternativesBox").innerHTML =
-        "<div class='muted'>No additional ranked alternatives returned.</div>";
-    }
+    $("swapRecommendedBox").innerHTML = renderSwapOptionCard(displayRec, {
+      alternativesHtml
+    });
+    
+
+    $("swapAlternativesBox").style.display = "none";
+    $("swapAlternativesBox").innerHTML = "";
 
     let directNote = "";
     let directMatchesAlternative = false;
 
     if (directRoute) {
+      const directMatchesRecommended =
+        displayRec?.route_label === directRoute?.route_label &&
+        String(displayRec?.estimated_output_raw) === String(directRoute?.estimated_output_raw);
+
       directMatchesAlternative = otherOptions.some((opt) => {
         return (
           opt?.route_label === directRoute?.route_label &&
@@ -1117,20 +1116,23 @@ async function previewSwap() {
         );
       });
 
-      if (displayRec?.variant_id === "direct_route_check") {
-        directNote =
-          "Direct route is also the current recommendation. This is the simplest route shape in the current comparison.";
-      } else if (directMatchesAlternative) {
-        directNote =
-          "This direct route matches one of the ranked alternatives. It is still useful as a simpler, easier-to-inspect execution path.";
+      if (displayRec?.variant_id === "direct_route_check" || directMatchesRecommended) {
+        $("swapDirectBox").innerHTML =
+          "<div class='muted'>Direct route is also the current recommendation.</div>";
       } else {
-        directNote =
-          "This direct route is shown as a simpler comparison lens: fewer steps, easier inspection, and lower route complexity — but not always the highest-output option in the current comparison.";
-      }
+        if (directMatchesAlternative) {
+          directNote =
+            "This direct route also appears in the alternatives.";
+        } else {
+          directNote =
+            "Simpler route, not the best output.";
+        }
 
-      $("swapDirectBox").innerHTML = renderSwapOptionCard(directRoute, {
-        note: directNote
-      });
+        $("swapDirectBox").innerHTML = renderSwapOptionCard(directRoute, {
+          note: directNote,
+          compactDirect: true
+        });
+      }
     } else {
       $("swapDirectBox").innerHTML =
         "<div class='muted'>No direct-route check was returned for this request.</div>";
@@ -1149,7 +1151,6 @@ async function previewSwap() {
     });
   }
 }
-
 
 
 
@@ -2046,7 +2047,16 @@ async function signMessageWithPhantom() {
     return n.toFixed(2);
   }
 
+function fmtUsdCost(x) {
+  if (x === null || x === undefined) return "n/a";
 
+  const n = Number(x);
+  if (!Number.isFinite(n)) return "n/a";
+
+  if (n === 0) return "$0.00";
+  if (n < 0.01) return "$" + n.toFixed(4);
+  return "$" + n.toFixed(2);
+}
 
   function renderHistory(resp) {
     const history = resp?.history || [];
