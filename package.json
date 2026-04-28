@@ -1,0 +1,11 @@
+{
+  "name": "web3-digest",
+  "private": true,
+  "description": "Local Node helpers for web3-digest.",
+  "type": "module",
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@meteora-ag/dlmm": "^1.9.7",
+    "@solana/web3.js": "^1.98.4"
+  }
+}

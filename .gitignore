@@ -5,6 +5,9 @@
 __pycache__/
 *.pyc
 
+# Node helper dependencies
+node_modules/
+
 # Local databases
 wallet.db
 *.db

@@ -34,7 +34,67 @@ COINGECKO_IDS = {
     "USDC": "usd-coin",
 }
 
-def _fetch_fresh_reference_prices_usd(tokens: list[str]) -> dict:
+def _fetch_jupiter_price_v3_reference_prices_usd(tokens: list[str]) -> dict:
+    token_to_mint = {}
+    for token in tokens:
+        token = (token or "").strip().upper()
+        meta = TOKEN_META.get(token) or {}
+        mint = (meta.get("mint") or "").strip()
+        if mint:
+            token_to_mint[token] = mint
+
+    if not token_to_mint:
+        return {}
+
+    url = "https://lite-api.jup.ag/price/v3?" + urllib.parse.urlencode(
+        {"ids": ",".join(sorted(set(token_to_mint.values())))}
+    )
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "web3-digest/0.1",
+    }
+
+    jup_api_key = os.getenv("JUP_API_KEY")
+    if jup_api_key:
+        headers["x-api-key"] = jup_api_key
+
+    req = urllib.request.Request(
+        url,
+        headers=headers,
+        method="GET",
+    )
+
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    out = {}
+    for token, mint in token_to_mint.items():
+        row = data.get(mint) or {}
+        usd = row.get("usdPrice")
+        if usd is None:
+            continue
+
+        pricing_ts = row.get("createdAt")
+        block_id = row.get("blockId")
+        if not pricing_ts and block_id is not None:
+            pricing_ts = str(block_id)
+
+        out[token] = {
+            "usd": float(usd),
+            "pricing_source": "jupiter_price_v3",
+            "pricing_ts": pricing_ts,
+            "pricing_source_detail": {
+                "mint": mint,
+                "block_id": block_id,
+                "created_at": row.get("createdAt"),
+                "decimals": row.get("decimals"),
+                "price_change_24h": row.get("priceChange24h"),
+            },
+        }
+
+    return out
+
+def _fetch_coingecko_reference_prices_usd(tokens: list[str]) -> dict:
     """
     Fetch fresh USD reference prices from CoinGecko for quote-time comparison.
     Returns:
@@ -93,7 +153,157 @@ def _fetch_fresh_reference_prices_usd(tokens: list[str]) -> dict:
             ),
         }
 
+    for token in list(out.keys()):
+        out[token]["pricing_source"] = "coingecko_simple_price"
+        out[token]["pricing_ts"] = out[token].get("last_updated_iso")
+        out[token]["pricing_source_detail"] = {
+            "from_token_coingecko_id": out[token].get("coingecko_id"),
+            "from_token_last_updated_at": out[token].get("last_updated_iso"),
+        }
+
     return out
+
+
+def _fetch_sqlite_reference_prices_usd(tokens: list[str]) -> dict:
+    out = {}
+
+    for token in tokens:
+        token = (token or "").strip().upper()
+        if not token:
+            continue
+
+        if token == "USDC":
+            out[token] = {
+                "usd": 1.0,
+                "pricing_source": "sqlite_usd_snapshots",
+                "pricing_ts": None,
+                "pricing_source_detail": {"asset": "usdc"},
+            }
+            continue
+
+        row = call_with_supported_kwargs(
+            db.get_latest_price,
+            asset=token.lower(),
+            currency="usd",
+        )
+        if not row:
+            continue
+
+        price = _extract_price_number(row)
+        if price is None:
+            continue
+
+        pricing_ts = None
+        if isinstance(row, dict):
+            pricing_ts = row.get("ts") or row.get("timestamp")
+        elif isinstance(row, (list, tuple)) and row:
+            head = row[0]
+            if isinstance(head, str):
+                pricing_ts = head
+
+        out[token] = {
+            "usd": price,
+            "pricing_source": "sqlite_usd_snapshots",
+            "pricing_ts": pricing_ts,
+            "pricing_source_detail": {"asset": token.lower()},
+        }
+
+    return out
+
+
+def _resolve_from_major_benchmark_source(tokens: list[str]) -> dict:
+    return _fetch_coingecko_reference_prices_usd(tokens)
+
+
+def _resolve_from_solana_native_benchmark_source(tokens: list[str]) -> dict:
+    return _fetch_jupiter_price_v3_reference_prices_usd(tokens)
+
+
+def _resolve_from_long_tail_benchmark_source(tokens: list[str]) -> dict:
+    return {}
+
+
+def _resolve_from_sqlite_fallback(tokens: list[str]) -> dict:
+    return _fetch_sqlite_reference_prices_usd(tokens)
+
+
+def _resolve_quote_benchmark_prices_usd(tokens: list[str]) -> dict:
+    resolved = {}
+
+    for resolver in (
+        _resolve_from_solana_native_benchmark_source,
+        _resolve_from_major_benchmark_source,
+        _resolve_from_long_tail_benchmark_source,
+        _resolve_from_sqlite_fallback,
+    ):
+        missing = [token for token in tokens if token not in resolved]
+        if not missing:
+            break
+
+        try:
+            resolved.update(resolver(missing))
+        except Exception:
+            pass
+
+    return resolved
+
+
+def _resolve_quote_reference_prices_usd(tokens: list[str]) -> dict:
+    return _resolve_quote_benchmark_prices_usd(tokens)
+
+
+def _build_reference_baseline_from_resolved_prices(
+    from_token: str,
+    to_token: str,
+    amount: float,
+    best_output_amount: float | None,
+    from_row: dict | None,
+    to_row: dict | None,
+):
+    if not from_row or not to_row or to_row["usd"] <= 0:
+        return None, None
+
+    input_usd_price = float(from_row["usd"])
+    output_usd_price = float(to_row["usd"])
+    input_usd_value = amount * input_usd_price
+    ideal_output_amount = input_usd_value / output_usd_price
+
+    baseline = {
+        "label": "Theoretical reference baseline",
+        "is_executable": False,
+        "input_amount": amount,
+        "input_token": from_token,
+        "input_usd_price": input_usd_price,
+        "input_usd_value": input_usd_value,
+        "ideal_output_amount": ideal_output_amount,
+        "output_token": to_token,
+        "output_usd_price": output_usd_price,
+        "output_usd_value": ideal_output_amount * output_usd_price,
+        "pricing_source": (
+            from_row.get("pricing_source")
+            or to_row.get("pricing_source")
+            or "coingecko_simple_price"
+        ),
+        "pricing_ts": from_row.get("pricing_ts") or to_row.get("pricing_ts"),
+        "pricing_source_detail": {
+            "from_token": from_row.get("pricing_source_detail"),
+            "to_token": to_row.get("pricing_source_detail"),
+        },
+        "note": "Fresh market reference for quote comparison. Not an executable quote.",
+    }
+
+    baseline_vs_recommended = None
+    if best_output_amount is not None and ideal_output_amount:
+        diff_abs = best_output_amount - ideal_output_amount
+        diff_pct = (diff_abs / ideal_output_amount) * 100
+
+        baseline_vs_recommended = {
+            "output_diff_abs": diff_abs,
+            "output_diff_pct": diff_pct,
+            "note": "Difference between the fresh theoretical reference and the current recommended executable route.",
+        }
+
+    return baseline, baseline_vs_recommended
 
 
 def _build_fresh_quote_reference_baseline(
@@ -102,56 +312,23 @@ def _build_fresh_quote_reference_baseline(
     amount: float,
     best_output_amount: float | None,
     fallback_input_usd_value: float | None,
+    reference_prices: dict | None = None,
 ):
     """
-    Try to build a fresh quote-time theoretical reference baseline from CoinGecko.
+    Try to build a quote-time theoretical reference baseline from resolved prices.
     If that fails, fall back to the existing cached/sqlite baseline helper.
     """
     try:
-        fresh_prices = _fetch_fresh_reference_prices_usd([from_token, to_token])
-
-        from_row = fresh_prices.get(from_token)
-        to_row = fresh_prices.get(to_token)
-
-        if from_row and to_row and to_row["usd"] > 0:
-            input_usd_price = float(from_row["usd"])
-            output_usd_price = float(to_row["usd"])
-            input_usd_value = amount * input_usd_price
-            ideal_output_amount = input_usd_value / output_usd_price
-
-            baseline = {
-                "label": "Theoretical reference baseline",
-                "is_executable": False,
-                "input_amount": amount,
-                "input_token": from_token,
-                "input_usd_price": input_usd_price,
-                "input_usd_value": input_usd_value,
-                "ideal_output_amount": ideal_output_amount,
-                "output_token": to_token,
-                "output_usd_price": output_usd_price,
-                "output_usd_value": ideal_output_amount * output_usd_price,
-                "pricing_source": "coingecko_simple_price",
-                "pricing_ts": from_row.get("last_updated_iso") or to_row.get("last_updated_iso"),
-                "pricing_source_detail": {
-                    "from_token_coingecko_id": from_row.get("coingecko_id"),
-                    "to_token_coingecko_id": to_row.get("coingecko_id"),
-                    "from_token_last_updated_at": from_row.get("last_updated_iso"),
-                    "to_token_last_updated_at": to_row.get("last_updated_iso"),
-                },
-                "note": "Fresh market reference for quote comparison. Not an executable quote.",
-            }
-
-            baseline_vs_recommended = None
-            if best_output_amount is not None and ideal_output_amount:
-                diff_abs = best_output_amount - ideal_output_amount
-                diff_pct = (diff_abs / ideal_output_amount) * 100
-
-                baseline_vs_recommended = {
-                    "output_diff_abs": diff_abs,
-                    "output_diff_pct": diff_pct,
-                    "note": "Difference between the fresh theoretical reference and the current recommended executable route.",
-                }
-
+        fresh_prices = reference_prices or {}
+        baseline, baseline_vs_recommended = _build_reference_baseline_from_resolved_prices(
+            from_token=from_token,
+            to_token=to_token,
+            amount=amount,
+            best_output_amount=best_output_amount,
+            from_row=fresh_prices.get(from_token),
+            to_row=fresh_prices.get(to_token),
+        )
+        if baseline:
             return baseline, baseline_vs_recommended
 
     except Exception:
@@ -707,6 +884,66 @@ def _try_fetch_jupiter_quote(params: dict) -> dict:
         }
 
 
+def _build_raydium_quote_params(
+    *,
+    input_mint: str,
+    output_mint: str,
+    amount_raw: int,
+    slippage_bps: int = 50,
+    tx_version: str = "V0",
+) -> dict:
+    return {
+        "inputMint": input_mint,
+        "outputMint": output_mint,
+        "amount": str(amount_raw),
+        "slippageBps": str(slippage_bps),
+        "txVersion": tx_version,
+    }
+
+
+def _fetch_raydium_quote(params: dict) -> dict:
+    url = "https://transaction-v1.raydium.io/compute/swap-base-in?" + urllib.parse.urlencode(
+        params
+    )
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "*/*",
+            "User-Agent": "Mozilla/5.0",
+        },
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+
+            if payload.get("success") is False:
+                detail = payload.get("msg") or "Raydium quote request was not successful"
+                raise HTTPException(status_code=502, detail=f"Raydium quote failed: {detail}")
+
+            return payload
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=e.code, detail=f"Raydium HTTP error: {body}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Raydium request failed: {e}")
+
+
+def _try_fetch_raydium_quote(params: dict) -> dict:
+    try:
+        return {"ok": True, "data": _fetch_raydium_quote(params)}
+    except HTTPException as e:
+        return {
+            "ok": False,
+            "error": {
+                "status_code": e.status_code,
+                "detail": e.detail,
+            },
+        }
+
+
 
 TOKEN_META_BY_MINT = {
     (meta.get("mint") or "").strip(): {"symbol": symbol, **meta}
@@ -756,6 +993,58 @@ def _extract_explicit_route_fees(quote: dict) -> dict:
         "platform_fee": platform_fee,
         "route_fee_items": route_fee_items,
         "has_explicit_fees": bool(platform_fee) or bool(route_fee_items),
+    }
+
+
+def _raydium_route_steps(route_plan: list[dict]) -> list[dict]:
+    steps = []
+    for leg in route_plan or []:
+        steps.append(
+            {
+                "label": "Raydium",
+                "percent": leg.get("percent"),
+                "input_mint": leg.get("inputMint"),
+                "output_mint": leg.get("outputMint"),
+                "in_amount_raw": leg.get("inputAmount"),
+                "out_amount_raw": leg.get("outputAmount"),
+            }
+        )
+    return steps
+
+
+def _extract_raydium_route_fees(quote_data: dict) -> dict:
+    route_plan = quote_data.get("routePlan") or []
+    route_fee_items = []
+
+    for leg in route_plan:
+        fee_amount_raw = leg.get("feeAmount")
+        fee_mint = leg.get("feeMint")
+
+        if fee_amount_raw in (None, "", "0", 0):
+            continue
+
+        mint_meta = _mint_meta(fee_mint)
+        decimals = mint_meta.get("decimals") if mint_meta else None
+        fee_token = mint_meta.get("symbol") if mint_meta else None
+
+        route_fee_items.append(
+            {
+                "label": "Raydium",
+                "fee_amount_raw": str(fee_amount_raw),
+                "fee_amount": (
+                    _ui_amount(fee_amount_raw, decimals)
+                    if decimals is not None
+                    else None
+                ),
+                "fee_mint": fee_mint,
+                "fee_token": fee_token,
+            }
+        )
+
+    return {
+        "platform_fee": None,
+        "route_fee_items": route_fee_items,
+        "has_explicit_fees": bool(route_fee_items),
     }
 
 
@@ -818,6 +1107,8 @@ def _sum_disclosed_route_fees_usd(
 ) -> dict:
     """
     Sum only explicitly disclosed route fees that we can price in USD.
+    Disclosure means the quote/provider exposed fee evidence, even if this
+    backend cannot normalize or price every disclosed fee item.
 
     Returns:
         {
@@ -831,11 +1122,11 @@ def _sum_disclosed_route_fees_usd(
     reference_prices = reference_prices or {}
 
     route_fee_items = explicit_route_fees.get("route_fee_items") or []
+    route_fees_disclosed = bool(explicit_route_fees.get("has_explicit_fees"))
 
     total_usd = 0.0
     priced_fee_items = []
     unpriced_fee_items = []
-    saw_any_disclosed_fee = False
 
     for item in route_fee_items:
         fee_amount = _safe_float(item.get("fee_amount"))
@@ -844,8 +1135,6 @@ def _sum_disclosed_route_fees_usd(
         if fee_amount is None or not fee_token:
             unpriced_fee_items.append(item)
             continue
-
-        saw_any_disclosed_fee = True
 
         token_price_row = reference_prices.get(fee_token) or {}
         token_usd_price = _safe_float(token_price_row.get("usd"))
@@ -862,7 +1151,7 @@ def _sum_disclosed_route_fees_usd(
             "fee_usd": fee_usd,
         })
 
-    if not saw_any_disclosed_fee:
+    if not route_fees_disclosed:
         return {
             "route_fees_usd": None,
             "route_fees_disclosed": False,
@@ -871,7 +1160,7 @@ def _sum_disclosed_route_fees_usd(
         }
 
     return {
-        "route_fees_usd": total_usd,
+        "route_fees_usd": total_usd if priced_fee_items else None,
         "route_fees_disclosed": True,
         "priced_fee_items": priced_fee_items,
         "unpriced_fee_items": unpriced_fee_items,
@@ -897,8 +1186,15 @@ def _build_recommended_swap_cost_summary(
 
     reference_prices = reference_prices or {}
 
-    execution_cost_usd = _safe_float(
-        ((option.get("estimated_trade_execution_cost") or {}).get("amount"))
+    execution_cost = option.get("estimated_trade_execution_cost") or {}
+    execution_cost_amount = _safe_float(execution_cost.get("amount"))
+    execution_cost_token = execution_cost.get("token") or option.get("to_token")
+    execution_price_row = reference_prices.get(execution_cost_token) or {}
+    execution_token_usd_price = _safe_float(execution_price_row.get("usd"))
+    execution_cost_usd = (
+        execution_cost_amount * execution_token_usd_price
+        if execution_cost_amount is not None and execution_token_usd_price is not None
+        else None
     )
 
     network_fee = option.get("estimated_network_fee") or {}
@@ -985,12 +1281,16 @@ def _normalize_quote_option(
     restrict_intermediate_tokens = str(
         checked_params.get("restrictIntermediateTokens", "true")
     ).lower() == "true"
+    execution_surface_label = "Jupiter"
 
     option = {
         "variant_id": variant_id,
         "label": label,
         "kind": kind,
         "provider": "jupiter-metis",
+        "execution_surface_label": execution_surface_label,
+        "is_comparison_only": False,
+        "is_clickable": True,
         "is_jupiter_only": True,
         "from_token": from_token,
         "to_token": to_token,
@@ -1035,6 +1335,65 @@ def _normalize_quote_option(
     return option
 
 
+def _normalize_raydium_quote_option(
+    *,
+    variant_id: str,
+    label: str,
+    kind: str,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    input_amount: float,
+    input_amount_raw: int,
+    output_decimals: int,
+) -> dict:
+    quote_data = quote.get("data") or {}
+    route_plan = quote_data.get("routePlan") or []
+    out_amount_raw = quote_data.get("outputAmount")
+    threshold_raw = quote_data.get("otherAmountThreshold")
+
+    option = {
+        "variant_id": variant_id,
+        "label": label,
+        "kind": kind,
+        "provider": "raydium-trade-api",
+        "execution_surface_label": "Raydium",
+        "is_comparison_only": True,
+        "is_clickable": False,
+        "is_jupiter_only": False,
+        "from_token": from_token,
+        "to_token": to_token,
+        "input_amount": input_amount,
+        "input_amount_raw": str(input_amount_raw),
+        "estimated_output": _ui_amount(out_amount_raw, output_decimals),
+        "estimated_output_raw": out_amount_raw,
+        "min_received": _ui_amount(threshold_raw, output_decimals),
+        "min_received_raw": threshold_raw,
+        "estimated_total_swap_cost": None,
+        "estimated_trade_execution_cost": None,
+        "execution_cost": None,
+        "cost_scope": "not_computed_yet",
+        "explicit_route_fees": _extract_raydium_route_fees(quote_data),
+        "estimated_network_fee": None,
+        "network_fee_scope": "not_estimated_in_preview",
+        "network_fee_detail": "Raydium is quote-only in this preview path.",
+        "price_impact_pct": _safe_float(quote_data.get("priceImpactPct")),
+        "slippage_bps": quote_data.get("slippageBps"),
+        "route_label": "Raydium",
+        "route_labels": ["Raydium"],
+        "route_steps": _raydium_route_steps(route_plan),
+        "route_step_count": len(route_plan),
+        "route_shape": "single-path" if len(route_plan) == 1 else "multi-leg-or-split",
+        "protections": {
+            "slippage_bps": quote_data.get("slippageBps"),
+        },
+        "explanation": "Raydium routed quote. Comparison-only for now.",
+        "raw_quote": quote,
+        "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
+    }
+    return option
+
+
 def _dedupe_options(options: list[dict]) -> list[dict]:
     out = []
     seen = set()
@@ -1044,6 +1403,8 @@ def _dedupe_options(options: list[dict]) -> list[dict]:
             continue
 
         key = (
+            opt.get("provider"),
+            opt.get("execution_surface_label"),
             opt.get("estimated_output_raw"),
             tuple(opt.get("route_labels") or []),
             opt.get("protections", {}).get("only_direct_routes"),
@@ -1057,6 +1418,113 @@ def _dedupe_options(options: list[dict]) -> list[dict]:
         out.append(opt)
 
     return out
+
+
+def _rank_quote_options(options: list[dict]) -> list[dict]:
+    ranked = _dedupe_options(options)
+    ranked.sort(key=lambda x: x.get("_sort_out_amount_raw", -1), reverse=True)
+    return ranked
+
+
+def _is_executable_quote_option(option: dict | None) -> bool:
+    if not option:
+        return False
+
+    if option.get("is_comparison_only") is True:
+        return False
+
+    return option.get("is_clickable") is not False
+
+
+def _quote_option_output_key(option: dict | None) -> tuple:
+    if not option:
+        return tuple()
+
+    return (
+        option.get("provider"),
+        option.get("execution_surface_label"),
+        option.get("variant_id"),
+        option.get("estimated_output_raw"),
+        tuple(option.get("route_labels") or []),
+    )
+
+
+def _same_quote_option(left: dict | None, right: dict | None) -> bool:
+    return _quote_option_output_key(left) == _quote_option_output_key(right)
+
+
+def _quote_option_universe_key(option: dict | None) -> tuple:
+    if not option:
+        return tuple()
+
+    return (
+        option.get("provider"),
+        option.get("execution_surface_label"),
+    )
+
+
+def _select_diverse_other_options(
+    ranked_options: list[dict],
+    *,
+    best_quote: dict | None,
+    recommended: dict | None,
+    limit: int = 2,
+) -> list[dict]:
+    candidates = []
+    for opt in ranked_options:
+        if _same_quote_option(opt, best_quote):
+            continue
+        if _same_quote_option(opt, recommended):
+            continue
+        if opt.get("variant_id") == "direct_route_check":
+            continue
+        candidates.append(opt)
+
+    featured_universes = {
+        key for key in (
+            _quote_option_universe_key(best_quote),
+            _quote_option_universe_key(recommended),
+        )
+        if key
+    }
+
+    def universe_key(opt: dict) -> tuple:
+        return _quote_option_universe_key(opt)
+
+    # Prefer universes that are not already represented by the best quote or
+    # executable recommendation. Fall back to one internal option per universe.
+    ordered_candidates = [
+        opt for opt in candidates if universe_key(opt) not in featured_universes
+    ]
+    ordered_candidates.extend(
+        opt for opt in candidates if universe_key(opt) in featured_universes
+    )
+
+    selected = []
+    selected_universes = set()
+    for opt in ordered_candidates:
+        key = universe_key(opt)
+        if key in selected_universes:
+            continue
+
+        selected_universes.add(key)
+        selected.append(opt)
+
+        if len(selected) >= limit:
+            break
+
+    return selected
+
+
+def _with_quote_role(option: dict | None, *, kind: str, label: str) -> dict | None:
+    if not option:
+        return option
+
+    return {
+        **option,
+        "kind": kind,
+        "label": label,
+    }
 
 
 def _strip_internal_sort_key(option: dict | None) -> dict | None:
@@ -1240,6 +1708,7 @@ def swap_quote(
 
     diagnostics = []
     variant_candidates = []
+    external_other_options = []
 
     # 2) Broader search variant (relax intermediate-token restriction)
     broader_params = {
@@ -1316,35 +1785,91 @@ def swap_quote(
     else:
         diagnostics.append({"variant_id": "direct_route_check", **direct_result["error"]})
 
-    # Build the ranked candidate pool from all successful checked variants
-    ranked_candidates = [recommended, *variant_candidates]
+    raydium_params = _build_raydium_quote_params(
+        input_mint=input_meta["mint"],
+        output_mint=output_meta["mint"],
+        amount_raw=raw_amount,
+        slippage_bps=50,
+        tx_version="V0",
+    )
+    raydium_result = _try_fetch_raydium_quote(raydium_params)
+    if raydium_result["ok"]:
+        external_other_options.append(
+            _normalize_raydium_quote_option(
+                variant_id="raydium_quote",
+                label="Via Raydium",
+                kind="alternative",
+                quote=raydium_result["data"],
+                from_token=from_token,
+                to_token=to_token,
+                input_amount=amount,
+                input_amount_raw=raw_amount,
+                output_decimals=output_meta["decimals"],
+            )
+        )
+    else:
+        diagnostics.append({"variant_id": "raydium_quote", **raydium_result["error"]})
+
+    # Build the ranked Jupiter candidate pool from all successful checked variants.
+    # This remains the executable universe for now.
+    ranked_jupiter_candidates = [recommended, *variant_candidates]
     if direct_route_check:
-        ranked_candidates.append(direct_route_check)
+        ranked_jupiter_candidates.append(direct_route_check)
 
-    ranked_candidates = _dedupe_options(ranked_candidates)
-    ranked_candidates.sort(key=lambda x: x.get("_sort_out_amount_raw", -1), reverse=True)
+    ranked_jupiter_candidates = _rank_quote_options(ranked_jupiter_candidates)
 
-    # Best checked option becomes the true recommended option
-    best_option = ranked_candidates[0] if ranked_candidates else recommended
+    # Rank every normalized universe we can honestly compare. Raydium is allowed to
+    # win best quote, but it stays comparison-only until an execution path exists.
+    ranked_universe_options = _rank_quote_options(
+        [*ranked_jupiter_candidates, *external_other_options]
+    )
 
-    best_variant_id = best_option.get("variant_id")
-    best_option = {
-        **best_option,
-        "kind": "recommended",
-        "label": "Recommended",
-    }
+    best_quote_base = ranked_universe_options[0] if ranked_universe_options else recommended
+    best_quote_variant_id = best_quote_base.get("variant_id")
+    best_quote_option = _with_quote_role(
+        best_quote_base,
+        kind="recommended",
+        label=(
+            "Best quote (comparison-only)"
+            if best_quote_base.get("is_comparison_only") is True
+            else "Recommended"
+        ),
+    )
 
-    # Other options = next best checked variants, excluding the best one
+    executable_candidates = [
+        opt for opt in ranked_jupiter_candidates if _is_executable_quote_option(opt)
+    ]
+    recommended_base = executable_candidates[0] if executable_candidates else best_quote_base
+    recommended_variant_id = recommended_base.get("variant_id")
+    recommended_option = _with_quote_role(
+        recommended_base,
+        kind="recommended",
+        label=(
+            "Recommended executable"
+            if not _same_quote_option(recommended_base, best_quote_base)
+            else "Recommended"
+        ),
+    )
+
+    # Other options = meaningful remaining normalized universe options. Prefer
+    # execution surfaces not already represented by the visible best quote or
+    # selected executable recommendation, so internal Jupiter variants do not
+    # crowd out Raydium.
     ranked_other_options = []
-    for opt in ranked_candidates[1:]:
-        if opt.get("variant_id") == "direct_route_check":
-            continue
-
+    diverse_other_options = _select_diverse_other_options(
+        ranked_universe_options,
+        best_quote=best_quote_base,
+        recommended=recommended_base,
+        limit=2,
+    )
+    for opt in diverse_other_options:
         variant_id = opt.get("variant_id")
         alt_label = opt.get("label") or "Alternative"
 
         if variant_id == "recommended_default":
             alt_label = "Default Jupiter route"
+        elif variant_id == "raydium_quote":
+            alt_label = "Via Raydium"
         elif variant_id == "exclude_recommended_dexes":
             alt_label = "Alternate venue mix"
         elif variant_id == "broader_search":
@@ -1355,8 +1880,6 @@ def swap_quote(
             "kind": "alternative",
             "label": alt_label,
         })
-
-    ranked_other_options = ranked_other_options[:2]
 
     # Keep direct route available as its own block too
     direct_route_output = None
@@ -1372,12 +1895,17 @@ def swap_quote(
         "exclude_recommended_dexes": "An alternate venue mix produced the best checked output for this request.",
         "direct_route_check": "The direct-route-only check produced the best checked output for this request.",
         "broader_search": "A broader routing search produced the best checked output for this request.",
+        "raydium_quote": "Raydium produced the best checked quote for this request, but it is comparison-only in this preview path.",
     }.get(
-        best_variant_id,
-        "The recommended option had the strongest checked output among the currently available variants."
+        best_quote_variant_id,
+        "The best quote had the strongest checked output among the currently available variants."
     )
 
-    best_output_amount = _safe_float(best_option.get("estimated_output"))
+    best_output_amount = _safe_float(best_quote_option.get("estimated_output"))
+    try:
+        reference_prices = _resolve_quote_reference_prices_usd([from_token, to_token, "SOL"])
+    except Exception:
+        reference_prices = {}
 
     inline_baseline, inline_baseline_vs_recommended = _build_fresh_quote_reference_baseline(
         from_token=from_token,
@@ -1385,24 +1913,48 @@ def swap_quote(
         amount=amount,
         fallback_input_usd_value=_safe_float(recommended_raw.get("swapUsdValue")),
         best_output_amount=best_output_amount,
+        reference_prices=reference_prices,
     )
 
     reference_output_amount = _safe_float((inline_baseline or {}).get("ideal_output_amount"))
 
-    best_option = _attach_cost_fields(best_option, reference_output_amount)
+    best_quote_option = _attach_cost_fields(best_quote_option, reference_output_amount)
+    recommended_option = _attach_cost_fields(recommended_option, reference_output_amount)
     ranked_other_options = [
         _attach_cost_fields(opt, reference_output_amount) for opt in ranked_other_options
     ] 
     direct_route_output = _attach_cost_fields(direct_route_output, reference_output_amount)
 
-    best_option = _attach_backend_network_fee_estimate(
-        best_option,
-        user_public_key=user_public_key,
-        rpc_url=SOLANA_MAINNET_RPC_URL,
-    )
+    if _is_executable_quote_option(best_quote_option):
+        best_quote_option = _attach_backend_network_fee_estimate(
+            best_quote_option,
+            user_public_key=user_public_key,
+            rpc_url=SOLANA_MAINNET_RPC_URL,
+        )
+    else:
+        best_quote_option["estimated_network_fee"] = None
+        best_quote_option["network_fee_scope"] = "not_estimated_in_preview"
+        best_quote_option["network_fee_detail"] = (
+            "This quote is comparison-only and cannot be executed from this preview path."
+        )
+
+    if _same_quote_option(recommended_option, best_quote_option):
+        recommended_option = best_quote_option
+    elif _is_executable_quote_option(recommended_option):
+        recommended_option = _attach_backend_network_fee_estimate(
+            recommended_option,
+            user_public_key=user_public_key,
+            rpc_url=SOLANA_MAINNET_RPC_URL,
+        )
 
     for opt in ranked_other_options:
-        if not user_public_key:
+        if opt.get("is_comparison_only") is True:
+            opt["estimated_network_fee"] = None
+            opt["network_fee_scope"] = "not_estimated_in_preview"
+            opt["network_fee_detail"] = (
+                "This quote is comparison-only and cannot be executed from this preview path."
+            )
+        elif not user_public_key:
             opt["estimated_network_fee"] = None
             opt["network_fee_scope"] = "wallet_not_connected"
             opt["network_fee_detail"] = None
@@ -1426,51 +1978,74 @@ def swap_quote(
             )
     
 
-    fresh_reference_prices = _fetch_fresh_reference_prices_usd(["SOL", "USDC"])
-
-    best_option = _attach_recommended_swap_cost_summary(
-        best_option,
-        reference_prices=fresh_reference_prices,
+    best_quote_option = _attach_recommended_swap_cost_summary(
+        best_quote_option,
+        reference_prices=reference_prices,
     )
+    if _same_quote_option(recommended_option, best_quote_option):
+        recommended_option = best_quote_option
+    else:
+        recommended_option = _attach_recommended_swap_cost_summary(
+            recommended_option,
+            reference_prices=reference_prices,
+        )
 
+    ranked_jupiter_variant_debug = [
+        {
+            "variant_id": opt.get("variant_id"),
+            "execution_surface_label": opt.get("execution_surface_label"),
+            "estimated_output_raw": opt.get("estimated_output_raw"),
+            "route_labels": opt.get("route_labels"),
+        }
+        for opt in ranked_jupiter_candidates
+        if opt.get("variant_id") != "direct_route_check"
+    ]
 
-
-    best_option = _strip_internal_sort_key(best_option)
+    best_quote_option = _strip_internal_sort_key(best_quote_option)
+    recommended_option = _strip_internal_sort_key(recommended_option)
     ranked_other_options = [_strip_internal_sort_key(x) for x in ranked_other_options]
     direct_route_output = _strip_internal_sort_key(direct_route_output)
 
     return {
         "ok": True,
         "network": network,
-        "provider": "jupiter-metis",
+        "provider": best_quote_option.get("provider") or "jupiter-metis",
         "from_token": from_token,
         "to_token": to_token,
         "input_amount": amount,
         "inline_baseline": inline_baseline,
         "inline_baseline_vs_recommended": inline_baseline_vs_recommended,
         "input_amount_raw": raw_amount,
-        "recommended": best_option,
+        "best_quote_option": best_quote_option,
+        "recommended_option": recommended_option,
+        "recommended": recommended_option,
         "other_options": ranked_other_options,
         "direct_route_check": direct_route_output,
         "summary": {
-            "selection_basis": "highest_output_amount_among_checked_variants",
+            "selection_basis": "highest_output_amount_among_normalized_universe_options",
             "headline_label": "Estimated trade execution cost",
             "cost_scope": "benchmark_shortfall_vs_fresh_reference",
             "recommended_reason": recommended_reason,
+            "best_quote_variant_id": best_quote_variant_id,
+            "recommended_variant_id": recommended_variant_id,
+            "best_quote_is_executable": _is_executable_quote_option(best_quote_option),
             "checked_variants": [
                 "recommended_default",
                 "broader_search",
                 "exclude_recommended_dexes",
                 "direct_route_check",
+                "raydium_quote",
             ],
             "available_other_options": len(ranked_other_options),
             "direct_route_available": direct_route_output is not None,
         },
         "debug": {
             "route_debug": recommended_raw.get("mostReliableAmmsQuoteReport"),
+            "ranked_jupiter_variants": ranked_jupiter_variant_debug,
             "variant_errors": diagnostics,
             "notes": [
-                "This is a Jupiter-first comparison surface, not a full multi-provider ranking engine yet.",
+                "Best quote is ranked across normalized Jupiter and Raydium options by checked output amount.",
+                "Raydium is comparison-only in this preview path and is not executable yet.",
                 "Estimated trade execution cost is computed as benchmark shortfall vs fresh reference; explicit route fees and network fee are shown separately when available.",
             ],
         },

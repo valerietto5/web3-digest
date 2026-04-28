@@ -205,13 +205,14 @@ def build_ui_html() -> str:
       <div class="muted" id="swapRecommendedBox">No quote yet.</div>
     </div>
 
-    <div id="swapAlternativesCard" style="display:none;">
-      <div id="swapAlternativesBox"></div>
-    </div>
-
     <div class="card" id="swapDirectCard" style="margin-top:10px;">
       <h4 style="margin: 0 0 6px 0;">Direct route check</h4>
       <div class="muted" id="swapDirectBox">No direct-route check yet.</div>
+    </div>
+
+    <div class="card" id="swapAlternativesCard" style="display:none; margin-top:10px;">
+      <h4 style="margin: 0 0 6px 0;">Alternatives</h4>
+      <div id="swapAlternativesBox"></div>
     </div>
 
     <details id="swapDebugWrap" class="card" style="margin-top:10px; display:none;">
@@ -491,9 +492,13 @@ function renderSwapInlineBaseline(baseline, delta = null) {
   if (ideal) {
     const source = baseline.pricing_source;
     const baselineLabel =
-      source === "coingecko_simple_price"
+      source === "jupiter_price_v3"
+        ? "Jupiter reference"
+        : source === "coingecko_simple_price"
         ? "CoinGecko reference"
-        : "Cached reference";
+        : source === "sqlite_usd_snapshots"
+          ? "SQLite cached reference"
+          : "Cached reference";
 
     ideal.textContent =
       baselineLabel +
@@ -533,12 +538,18 @@ function renderSwapInlineBaseline(baseline, delta = null) {
     const ts = baseline.pricing_ts;
     const tsUtc = formatUtcTimestamp(ts);
 
-    if (source === "coingecko_simple_price") {
+    if (source === "jupiter_price_v3") {
+      note.textContent = tsUtc
+        ? "Source: Jupiter Price V3 market price at " + tsUtc + ". Not an executable quote."
+        : "Source: Jupiter Price V3 market price. Not an executable quote.";
+    } else if (source === "coingecko_simple_price") {
       note.textContent = tsUtc
         ? "Source: fresh CoinGecko market price at " + tsUtc + ". Not an executable quote."
         : "Source: fresh CoinGecko market price. Not an executable quote.";
     } else if (source === "sqlite_usd_snapshots") {
-      note.textContent = "Source: latest cached USD price snapshots. Not executable.";
+      note.textContent = tsUtc
+        ? "Source: cached SQLite USD price snapshot at " + tsUtc + ". Not an executable quote."
+        : "Source: cached SQLite USD price snapshot. Not an executable quote.";
     }
   }
 }
@@ -546,10 +557,12 @@ function renderSwapInlineBaseline(baseline, delta = null) {
 
 
 function resetSwapQuoteDisplay() {
-  $("swapRecommendation").textContent = "recommendation: —";
-  $("swapCompareSummary").textContent = "comparison summary: —";
+  $("swapRecommendation").textContent = "";
+  $("swapCompareSummary").textContent = "";
+  $("swapRecommendation").style.display = "none";
+  $("swapCompareSummary").style.display = "none";
   $("swapRecommendedBox").innerHTML = "<div class='muted'>No quote yet.</div>";
-  $("swapAlternativesBox").style.display = "block";
+  $("swapAlternativesCard").style.display = "none";
   $("swapAlternativesBox").innerHTML = "<div class='muted'>No alternatives yet.</div>";
   $("swapDirectBox").innerHTML = "<div class='muted'>No direct-route check yet.</div>";
   $("swapDebugWrap").style.display = "none";
@@ -683,20 +696,42 @@ function getSwapThrownErrorInfo(err) {
 
 
 
+function renderRouteActionButton(label, buttonId) {
+  return `
+    <button
+      id="${escapeHtml(buttonId)}"
+      type="button"
+      class="secondary"
+      style="min-width:160px;"
+    >
+      ${escapeHtml(label)}
+    </button>
+  `;
+}
+
+function surfaceRouteLabel(opt) {
+  return opt?.execution_surface_label
+    ? `Via ${opt.execution_surface_label}`
+    : (opt?.route_label || "unknown-route");
+}
+
 function renderSwapOptionCard(opt, opts = {}) {
   if (!opt) {
     return "<div class='muted'>No data.</div>";
   }
 
-  const title = opts.title || (opt.label || "Route");
+  const title = opts.title || (opt.label || opt.execution_surface_label || "Route");
   const note = opts.note || "";
-  const alternativesHtml = opts.alternativesHtml || "";
   const compactDirect = !!opts.compactDirect;
+  const showRecommendedAction = !!opts.showRecommendedAction;
+  const showDirectAction = !!opts.showDirectAction;
+  const isComparisonOnly = opt.is_comparison_only === true;
+  const isClickable = opt.is_clickable !== false && !isComparisonOnly;
   const estOut = fmtNum(Number(opt.estimated_output || 0), 6);
   const minReceived = opt.min_received == null ? "n/a" : fmtNum(Number(opt.min_received), 6);
   const impact = formatImpactPct(opt.price_impact_pct);
   const slippage = formatSettingPctFromBps(opt?.protections?.slippage_bps ?? opt?.slippage_bps);
-  const routeLabel = opt.route_label || "unknown-route";
+  const routeLabel = surfaceRouteLabel(opt);
   const routeShape = opt.route_shape || "unknown";
   const routeSteps = Array.isArray(opt.route_steps) ? opt.route_steps.length : 0;
 
@@ -737,7 +772,7 @@ function renderSwapOptionCard(opt, opts = {}) {
     Number.isFinite(networkCostUsd) ? fmtUsdCost(networkCostUsd) : "n/a";
 
   const routeFeesUsdText = routeFeesDisclosed
-    ? (Number.isFinite(routeFeesUsd) ? fmtUsdCost(routeFeesUsd) : "n/a")
+    ? (Number.isFinite(routeFeesUsd) ? fmtUsdCost(routeFeesUsd) : "disclosed, USD not available")
     : "not disclosed for this swap";
 
   const estimatedTotalSwapCostUsdText =
@@ -817,22 +852,37 @@ function renderSwapOptionCard(opt, opts = {}) {
 
 
   return `
-    <div class="card" style="margin-top:8px;">
+    <div class="card" style="margin-top:8px; position:relative;">
       <div><strong>${escapeHtml(title)}</strong></div>
-      <div class="muted" style="margin-top:6px;">
+      ${
+        isComparisonOnly
+          ? `
+            <div class="muted" style="margin-top:4px;">
+              Comparison-only - no swap action available yet.
+            </div>
+          `
+          : ""
+      }
+      ${
+        isRecommendedCard && showRecommendedAction && isClickable
+          ? `
+            <div style="position:absolute; top:12px; right:12px;">
+              ${renderRouteActionButton("Swap this route", "btnSwapRecommended")}
+            </div>
+          `
+          : (compactDirect && showDirectAction && isClickable
+              ? `
+                <div style="position:absolute; top:12px; right:12px;">
+                  ${renderRouteActionButton("Try direct route", "btnSwapDirect")}
+                </div>
+              `
+              : "")
+      }
+      <div class="muted" style="margin-top:6px; padding-right:220px;">
         Receive (est.): ${escapeHtml(estOut)} ${escapeHtml(opt.to_token || "")}
       </div>
       <div class="muted" style="margin-top:4px;">
-        Min received: ${escapeHtml(minReceived)} ${escapeHtml(opt.to_token || "")}
-      </div>
-      <div class="muted" style="margin-top:4px;">
-        Route: ${escapeHtml(routeLabel)} | Shape: ${escapeHtml(routeShape)} | Steps: ${escapeHtml(String(routeSteps))}
-      </div>
-      <div class="muted" style="margin-top:4px;">
-        Path: ${escapeHtml(routePath)}
-      </div>
-      <div class="muted" style="margin-top:4px;">
-        Impact: ${escapeHtml(impact)} | Slippage setting: ${escapeHtml(slippage)}
+        Route: ${escapeHtml(routeLabel)} | Steps: ${escapeHtml(String(routeSteps))} 
       </div>
       ${
   isRecommendedCard
@@ -852,18 +902,6 @@ function renderSwapOptionCard(opt, opts = {}) {
           Route fees: ${escapeHtml(routeFeesUsdText)}
         </div>
       </details>
-      ${
-        alternativesHtml
-          ? `
-            <details style="margin-top:8px;">
-              <summary class="muted" style="cursor:pointer;">Alternatives</summary>
-              <div style="margin-top:6px;">
-                ${alternativesHtml}
-              </div>
-            </details>
-          `
-          : ""
-      }
     `
     : `
       <div class="muted" style="margin-top:4px;">
@@ -915,7 +953,8 @@ function renderSwapOptionCard(opt, opts = {}) {
 function renderCompactAlternativeCard(opt, idx = 0) {
   if (!opt) return "";
 
-  const routeLabel = opt?.route_label || "unknown-route";
+  const routeLabel = surfaceRouteLabel(opt);
+  const isComparisonOnly = opt.is_comparison_only === true;
   const estOut = fmtNum(Number(opt?.estimated_output || 0), 6);
   const outToken = opt?.to_token || "";
   const executionCostUsd = Number(opt?.execution_cost_usd);
@@ -938,8 +977,17 @@ function renderCompactAlternativeCard(opt, idx = 0) {
         : (opt?.route_shape || "unknown");
 
   return `
-    <div class="card" style="margin-top:8px;">
+    <div class="card" style="margin-top:8px; position:relative;">
       <div><strong>Alternative ${idx + 1} — ${escapeHtml(routeLabel)}</strong></div>
+      ${
+        isComparisonOnly
+          ? `
+            <div class="muted" style="margin-top:4px;">
+              Comparison-only - no swap action available yet.
+            </div>
+          `
+          : ""
+      }
       <div class="muted" style="margin-top:4px;">
         Receive: ${escapeHtml(estOut)} ${escapeHtml(outToken)}
       </div>
@@ -1027,11 +1075,12 @@ async function previewSwap() {
     quote.inline_baseline_vs_recommended
   );
 
-  const recommended = quote?.recommended || null;
+  const bestQuote = quote?.best_quote_option || null;
+  const recommended = quote?.recommended_option || quote?.recommended || null;
   const otherOptions = Array.isArray(quote?.other_options) ? quote.other_options : [];
   const directRoute = quote?.direct_route_check || null;
 
-  if (!quote?.ok || !recommended) {
+  if (!quote?.ok || !(bestQuote || recommended)) {
     resetSwapQuoteDisplay();
     setSwapPhase("Failed", "No swap route was found for this request.");
     showSwapStatus("warn", "No route found", { quote });
@@ -1049,11 +1098,31 @@ async function previewSwap() {
     return fmtNum(n, digits);
   }
 
-  const displayRec = recommended;
+  const displayRec = bestQuote || recommended;
+  const executableRec = recommended || displayRec;
+
+  function sameOption(a, b) {
+    if (!a || !b) return false;
+    return (
+      a?.provider === b?.provider &&
+      a?.execution_surface_label === b?.execution_surface_label &&
+      a?.variant_id === b?.variant_id &&
+      String(a?.estimated_output_raw) === String(b?.estimated_output_raw)
+    );
+  }
+
+  function outputsAreComparable(a, b) {
+    const aRaw = Number(a?.estimated_output_raw);
+    const bRaw = Number(b?.estimated_output_raw);
+    if (!Number.isFinite(aRaw) || !Number.isFinite(bRaw) || bRaw <= 0) return false;
+
+    const diffPct = Math.abs(aRaw - bRaw) / bRaw;
+    return diffPct <= 0.0001;
+  }
 
   const recommendationText =
-    "Recommended: " +
-    (displayRec.route_label || "unknown-route") +
+    (displayRec?.is_comparison_only === true ? "Best quote: " : "Recommended: ") +
+    (surfaceRouteLabel(displayRec) || "unknown-route") +
     " • ~" +
     fmtTokenAmount(displayRec.estimated_output) +
     " " +
@@ -1069,12 +1138,16 @@ async function previewSwap() {
       return detail.includes("restrict_intermediate_tokens") && detail.includes("free tier");
     });
 
-    let compareSummary = "Other options: " + otherOptions.length;
+    const filteredOtherOptions = otherOptions.filter((opt) => !sameOption(opt, displayRec));
+    const defaultAlternativeOptions = filteredOtherOptions.filter((opt) => {
+      return opt?.provider !== "jupiter-metis" && opt?.execution_surface_label !== "Jupiter";
+    });
 
     const directMatchesRecommended =
       directRoute &&
-      displayRec?.route_label === directRoute?.route_label &&
-      String(displayRec?.estimated_output_raw) === String(directRoute?.estimated_output_raw);
+      sameOption(executableRec, directRoute);
+
+    let compareSummary = "Other options: " + defaultAlternativeOptions.length;
 
     if (directRoute && !directMatchesRecommended) {
       compareSummary += " • Direct route available";
@@ -1084,53 +1157,63 @@ async function previewSwap() {
       compareSummary += " • Broader search limited";
     }
 
-    $("swapRecommendation").textContent = recommendationText;
-    $("swapCompareSummary").textContent = compareSummary;
+    $("swapRecommendation").textContent = "";
+    $("swapCompareSummary").textContent = "";
+    $("swapRecommendation").style.display = "none";
+    $("swapCompareSummary").style.display = "none";
 
-    const alternativesHtml = otherOptions.length
-      ? otherOptions
+    const alternativesHtml = defaultAlternativeOptions.length
+      ? defaultAlternativeOptions
           .map((opt, idx) => renderCompactAlternativeCard(opt, idx))
           .join("")
       : "";
 
-    $("swapRecommendedBox").innerHTML = renderSwapOptionCard(displayRec, {
-      alternativesHtml
-    });
-    
+    const showExecutableRecommendation =
+      executableRec && !sameOption(displayRec, executableRec);
 
-    $("swapAlternativesBox").style.display = "none";
-    $("swapAlternativesBox").innerHTML = "";
+    $("swapRecommendedBox").innerHTML = renderSwapOptionCard(displayRec, {
+      showRecommendedAction: displayRec?.is_comparison_only !== true
+    }) + (
+      showExecutableRecommendation
+        ? renderSwapOptionCard(executableRec, {
+            title: executableRec.label || "Recommended executable",
+            note: "Best executable Jupiter route available from this preview.",
+            showRecommendedAction: true
+          })
+        : ""
+    );
+
+    $("swapAlternativesCard").style.display = "block";
+    $("swapAlternativesBox").innerHTML = alternativesHtml ||
+      "<div class='muted'>No non-Jupiter alternatives returned for this quote.</div>";
 
     let directNote = "";
     let directMatchesAlternative = false;
 
     if (directRoute) {
-      const directMatchesRecommended =
-        displayRec?.route_label === directRoute?.route_label &&
-        String(displayRec?.estimated_output_raw) === String(directRoute?.estimated_output_raw);
-
-      directMatchesAlternative = otherOptions.some((opt) => {
+      directMatchesAlternative = defaultAlternativeOptions.some((opt) => {
         return (
           opt?.route_label === directRoute?.route_label &&
           String(opt?.estimated_output_raw) === String(directRoute?.estimated_output_raw)
         );
       });
 
-      if (displayRec?.variant_id === "direct_route_check" || directMatchesRecommended) {
+      if (executableRec?.variant_id === "direct_route_check" || directMatchesRecommended) {
         $("swapDirectBox").innerHTML =
           "<div class='muted'>Direct route is also the current recommendation.</div>";
       } else {
         if (directMatchesAlternative) {
-          directNote =
-            "This direct route also appears in the alternatives.";
+          directNote = "This direct route also appears in the alternatives.";
+        } else if (outputsAreComparable(directRoute, executableRec)) {
+          directNote = "Simpler route with comparable output.";
         } else {
-          directNote =
-            "Simpler route, not the best output.";
+          directNote = "Simpler route, not the best output.";
         }
 
         $("swapDirectBox").innerHTML = renderSwapOptionCard(directRoute, {
           note: directNote,
-          compactDirect: true
+          compactDirect: true,
+          showDirectAction: true
         });
       }
     } else {
@@ -1151,7 +1234,6 @@ async function previewSwap() {
     });
   }
 }
-
 
 
 
