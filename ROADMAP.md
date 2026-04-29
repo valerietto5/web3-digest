@@ -1018,3 +1018,17 @@ Start from:
 This should happen before adding Phantom or PumpSwap live cards.
 
 The goal is to make the current Jupiter + Raydium + Meteora engine easier to extend without messy special cases.
+
+## Future comparison surfaces to evaluate
+
+Potential next surfaces to research after PumpSwap:
+
+### Venue / liquidity routes
+- Orca
+- Phoenix
+
+### Wallet / UX comparison surfaces
+- Solflare
+- Fuse
+
+These should not be added as fake quote cards. Each surface should only enter the comparison engine if we can identify an honest quote path, SDK/API, or clearly labeled wallet-handoff model.
