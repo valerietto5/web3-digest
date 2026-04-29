@@ -944,6 +944,105 @@ def _try_fetch_raydium_quote(params: dict) -> dict:
         }
 
 
+METEORA_DLMM_SOL_MINT = "So11111111111111111111111111111111111111112"
+METEORA_DLMM_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+METEORA_DLMM_SOL_USDC_CANDIDATE = {
+    "address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+    "name": "SOL-USDC",
+    "token_x": METEORA_DLMM_SOL_MINT,
+    "token_y": METEORA_DLMM_USDC_MINT,
+    "bin_step": 4,
+}
+
+
+def _build_meteora_dlmm_quote_payload(
+    *,
+    input_mint: str,
+    output_mint: str,
+    amount_raw: int,
+    slippage_bps: int = 50,
+    rpc_url: str | None = None,
+) -> dict:
+    pool_candidates = []
+    mint_pair = {input_mint, output_mint}
+    if mint_pair == {METEORA_DLMM_SOL_MINT, METEORA_DLMM_USDC_MINT}:
+        pool_candidates.append(dict(METEORA_DLMM_SOL_USDC_CANDIDATE))
+
+    return {
+        "rpc_url": rpc_url or os.getenv("SOLANA_RPC_URL") or "https://api.mainnet-beta.solana.com",
+        "input_mint": input_mint,
+        "output_mint": output_mint,
+        "amount_raw": str(amount_raw),
+        "slippage_bps": int(slippage_bps),
+        "pool_candidates": pool_candidates,
+    }
+
+
+def _fetch_meteora_dlmm_quote(payload: dict) -> dict:
+    helper_path = project_root() / "tools" / "meteora_dlmm_quote.mjs"
+    if not helper_path.exists():
+        raise HTTPException(status_code=502, detail=f"Meteora DLMM helper missing: {helper_path}")
+
+    try:
+        proc = subprocess.run(
+            [os.getenv("NODE_BINARY") or "node", str(helper_path)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            cwd=project_root(),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=502, detail=f"Meteora DLMM helper runtime missing: {e}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Meteora DLMM helper timed out")
+
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        stderr = (proc.stderr or "").strip()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Meteora DLMM helper returned no JSON output: {stderr[-500:]}",
+        )
+
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Meteora DLMM helper returned invalid JSON: {e}")
+
+    if proc.returncode != 0 and parsed.get("ok") is not False:
+        detail = parsed.get("error") or (proc.stderr or "").strip()
+        raise HTTPException(status_code=502, detail=f"Meteora DLMM helper failed: {detail}")
+
+    return parsed
+
+
+def _try_fetch_meteora_dlmm_quote(payload: dict) -> dict:
+    try:
+        data = _fetch_meteora_dlmm_quote(payload)
+        if data.get("ok") is True:
+            return {"ok": True, "data": data}
+
+        error = data.get("error") if isinstance(data, dict) else None
+        return {
+            "ok": False,
+            "error": {
+                "status_code": 502,
+                "detail": error.get("message") if isinstance(error, dict) else "Meteora DLMM quote failed",
+                "code": error.get("code") if isinstance(error, dict) else None,
+                "helper_error": error,
+            },
+        }
+    except HTTPException as e:
+        return {
+            "ok": False,
+            "error": {
+                "status_code": e.status_code,
+                "detail": e.detail,
+            },
+        }
+
+
 
 TOKEN_META_BY_MINT = {
     (meta.get("mint") or "").strip(): {"symbol": symbol, **meta}
@@ -1030,6 +1129,42 @@ def _extract_raydium_route_fees(quote_data: dict) -> dict:
         route_fee_items.append(
             {
                 "label": "Raydium",
+                "fee_amount_raw": str(fee_amount_raw),
+                "fee_amount": (
+                    _ui_amount(fee_amount_raw, decimals)
+                    if decimals is not None
+                    else None
+                ),
+                "fee_mint": fee_mint,
+                "fee_token": fee_token,
+            }
+        )
+
+    return {
+        "platform_fee": None,
+        "route_fee_items": route_fee_items,
+        "has_explicit_fees": bool(route_fee_items),
+    }
+
+
+def _extract_meteora_dlmm_route_fees(quote: dict) -> dict:
+    route_fee_items = []
+    fee_mint = quote.get("input_mint")
+    mint_meta = _mint_meta(fee_mint)
+    decimals = mint_meta.get("decimals") if mint_meta else None
+    fee_token = mint_meta.get("symbol") if mint_meta else None
+
+    for raw_key, label in (
+        ("fee_raw", "Meteora DLMM swap fee"),
+        ("protocol_fee_raw", "Meteora DLMM protocol fee"),
+    ):
+        fee_amount_raw = quote.get(raw_key)
+        if fee_amount_raw in (None, "", "0", 0):
+            continue
+
+        route_fee_items.append(
+            {
+                "label": label,
                 "fee_amount_raw": str(fee_amount_raw),
                 "fee_amount": (
                     _ui_amount(fee_amount_raw, decimals)
@@ -1257,6 +1392,17 @@ def _attach_recommended_swap_cost_summary(
 
 
 
+def _build_cost_transparency(*, network_fee_scope: str) -> dict:
+    return {
+        "ranking_basis": "highest_receive_amount",
+        "benchmark_gap_scope": "reference_comparison_not_fee",
+        "explicit_fee_scope": "provider_disclosed_fee_evidence",
+        "explicit_fees_may_be_reflected_in_output": True,
+        "network_fee_scope": network_fee_scope,
+        "cost_completeness": "partial",
+    }
+
+
 
 
 def _normalize_quote_option(
@@ -1289,6 +1435,10 @@ def _normalize_quote_option(
         "kind": kind,
         "provider": "jupiter-metis",
         "execution_surface_label": execution_surface_label,
+        "quote_status": "live",
+        "execution_status": "executable_capable",
+        "supports_current_pair": True,
+        "quote_source_type": "aggregator",
         "is_comparison_only": False,
         "is_clickable": True,
         "is_jupiter_only": True,
@@ -1304,6 +1454,9 @@ def _normalize_quote_option(
         "estimated_trade_execution_cost": None,
         "execution_cost": None,
         "cost_scope": "not_computed_yet",
+        "cost_transparency": _build_cost_transparency(
+            network_fee_scope="estimated_for_executable_when_available",
+        ),
         "explicit_route_fees": _extract_explicit_route_fees(quote),
         "estimated_network_fee": None,
         "network_fee_scope": "not_estimated_yet",
@@ -1358,6 +1511,10 @@ def _normalize_raydium_quote_option(
         "kind": kind,
         "provider": "raydium-trade-api",
         "execution_surface_label": "Raydium",
+        "quote_status": "live",
+        "execution_status": "quote_only",
+        "supports_current_pair": True,
+        "quote_source_type": "venue_trade_api",
         "is_comparison_only": True,
         "is_clickable": False,
         "is_jupiter_only": False,
@@ -1373,6 +1530,9 @@ def _normalize_raydium_quote_option(
         "estimated_trade_execution_cost": None,
         "execution_cost": None,
         "cost_scope": "not_computed_yet",
+        "cost_transparency": _build_cost_transparency(
+            network_fee_scope="unavailable_for_quote_only_preview",
+        ),
         "explicit_route_fees": _extract_raydium_route_fees(quote_data),
         "estimated_network_fee": None,
         "network_fee_scope": "not_estimated_in_preview",
@@ -1392,6 +1552,81 @@ def _normalize_raydium_quote_option(
         "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
     }
     return option
+
+
+def _normalize_meteora_dlmm_quote_option(
+    *,
+    variant_id: str,
+    label: str,
+    kind: str,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    input_amount: float,
+    input_amount_raw: int,
+    output_decimals: int,
+) -> dict:
+    pool = quote.get("pool") or {}
+    out_amount_raw = quote.get("out_amount_raw")
+    threshold_raw = quote.get("min_out_amount_raw")
+    route_step = {
+        "label": "Meteora DLMM",
+        "pool_address": pool.get("address"),
+        "pool_name": pool.get("name"),
+        "bin_step": pool.get("bin_step"),
+        "input_mint": quote.get("input_mint"),
+        "output_mint": quote.get("output_mint"),
+        "in_amount_raw": quote.get("in_amount_raw"),
+        "out_amount_raw": out_amount_raw,
+        "bin_arrays": quote.get("bin_arrays") or [],
+    }
+
+    return {
+        "variant_id": variant_id,
+        "label": label,
+        "kind": kind,
+        "provider": "meteora-dlmm",
+        "execution_surface_label": "Meteora",
+        "quote_status": "live",
+        "execution_status": "quote_only",
+        "supports_current_pair": True,
+        "quote_source_type": "venue_native_pool",
+        "is_comparison_only": True,
+        "is_clickable": False,
+        "is_jupiter_only": False,
+        "from_token": from_token,
+        "to_token": to_token,
+        "input_amount": input_amount,
+        "input_amount_raw": str(input_amount_raw),
+        "estimated_output": _ui_amount(out_amount_raw, output_decimals),
+        "estimated_output_raw": out_amount_raw,
+        "min_received": _ui_amount(threshold_raw, output_decimals),
+        "min_received_raw": threshold_raw,
+        "estimated_total_swap_cost": None,
+        "estimated_trade_execution_cost": None,
+        "execution_cost": None,
+        "cost_scope": "not_computed_yet",
+        "cost_transparency": _build_cost_transparency(
+            network_fee_scope="unavailable_for_quote_only_preview",
+        ),
+        "explicit_route_fees": _extract_meteora_dlmm_route_fees(quote),
+        "estimated_network_fee": None,
+        "network_fee_scope": "not_estimated_in_preview",
+        "network_fee_detail": "Meteora DLMM is quote-only in this preview path.",
+        "price_impact_pct": _safe_float(quote.get("price_impact")),
+        "slippage_bps": quote.get("slippage_bps"),
+        "route_label": "Meteora DLMM",
+        "route_labels": ["Meteora DLMM"],
+        "route_steps": [route_step],
+        "route_step_count": 1,
+        "route_shape": "single-pool",
+        "protections": {
+            "slippage_bps": quote.get("slippage_bps"),
+        },
+        "explanation": "Meteora DLMM single-pool quote. Comparison-only for now.",
+        "raw_quote": quote,
+        "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
+    }
 
 
 def _dedupe_options(options: list[dict]) -> list[dict]:
@@ -1424,6 +1659,44 @@ def _rank_quote_options(options: list[dict]) -> list[dict]:
     ranked = _dedupe_options(options)
     ranked.sort(key=lambda x: x.get("_sort_out_amount_raw", -1), reverse=True)
     return ranked
+
+
+def _route_simplicity_rank(option: dict | None) -> tuple:
+    if not option or option.get("supports_current_pair") is False:
+        return (999, -1)
+
+    route_shape = option.get("route_shape")
+    route_step_count = option.get("route_step_count")
+    if route_step_count is None:
+        route_step_count = len(option.get("route_steps") or [])
+    try:
+        route_step_count = int(route_step_count)
+    except Exception:
+        route_step_count = 999
+
+    shape_rank = {
+        "single-pool": 0,
+        "direct": 1,
+        "single-path": 2,
+        "multi-leg-or-split": 5,
+    }.get(route_shape, 4)
+
+    output_raw = option.get("_sort_out_amount_raw")
+    if output_raw is None:
+        try:
+            output_raw = int(option.get("estimated_output_raw"))
+        except Exception:
+            output_raw = -1
+
+    return (shape_rank + route_step_count, -int(output_raw))
+
+
+def _select_direct_route_option(options: list[dict]) -> dict | None:
+    candidates = [opt for opt in _dedupe_options(options) if opt.get("supports_current_pair") is not False]
+    if not candidates:
+        return None
+
+    return sorted(candidates, key=_route_simplicity_rank)[0]
 
 
 def _is_executable_quote_option(option: dict | None) -> bool:
@@ -1468,6 +1741,7 @@ def _select_diverse_other_options(
     *,
     best_quote: dict | None,
     recommended: dict | None,
+    direct: dict | None = None,
     limit: int = 2,
 ) -> list[dict]:
     candidates = []
@@ -1476,7 +1750,7 @@ def _select_diverse_other_options(
             continue
         if _same_quote_option(opt, recommended):
             continue
-        if opt.get("variant_id") == "direct_route_check":
+        if _same_quote_option(opt, direct):
             continue
         candidates.append(opt)
 
@@ -1810,6 +2084,31 @@ def swap_quote(
     else:
         diagnostics.append({"variant_id": "raydium_quote", **raydium_result["error"]})
 
+    meteora_payload = _build_meteora_dlmm_quote_payload(
+        input_mint=input_meta["mint"],
+        output_mint=output_meta["mint"],
+        amount_raw=raw_amount,
+        slippage_bps=50,
+        rpc_url=SOLANA_MAINNET_RPC_URL,
+    )
+    meteora_result = _try_fetch_meteora_dlmm_quote(meteora_payload)
+    if meteora_result["ok"]:
+        external_other_options.append(
+            _normalize_meteora_dlmm_quote_option(
+                variant_id="meteora_dlmm_quote",
+                label="Via Meteora",
+                kind="alternative",
+                quote=meteora_result["data"],
+                from_token=from_token,
+                to_token=to_token,
+                input_amount=amount,
+                input_amount_raw=raw_amount,
+                output_decimals=output_meta["decimals"],
+            )
+        )
+    else:
+        diagnostics.append({"variant_id": "meteora_dlmm_quote", **meteora_result["error"]})
+
     # Build the ranked Jupiter candidate pool from all successful checked variants.
     # This remains the executable universe for now.
     ranked_jupiter_candidates = [recommended, *variant_candidates]
@@ -1818,35 +2117,34 @@ def swap_quote(
 
     ranked_jupiter_candidates = _rank_quote_options(ranked_jupiter_candidates)
 
-    # Rank every normalized universe we can honestly compare. Raydium is allowed to
-    # win best quote, but it stays comparison-only until an execution path exists.
+    # Rank every normalized universe we can honestly compare. External DEX helpers
+    # can win best quote, but they stay comparison-only until execution paths exist.
     ranked_universe_options = _rank_quote_options(
         [*ranked_jupiter_candidates, *external_other_options]
     )
+    direct_route_base = _select_direct_route_option(ranked_universe_options)
 
     best_quote_base = ranked_universe_options[0] if ranked_universe_options else recommended
     best_quote_variant_id = best_quote_base.get("variant_id")
     best_quote_option = _with_quote_role(
         best_quote_base,
         kind="recommended",
-        label=(
-            "Best quote (comparison-only)"
-            if best_quote_base.get("is_comparison_only") is True
-            else "Recommended"
-        ),
+        label="Recommended",
     )
 
     executable_candidates = [
         opt for opt in ranked_jupiter_candidates if _is_executable_quote_option(opt)
     ]
-    recommended_base = executable_candidates[0] if executable_candidates else best_quote_base
-    recommended_variant_id = recommended_base.get("variant_id")
-    recommended_option = _with_quote_role(
-        recommended_base,
+    recommended_executable_base = executable_candidates[0] if executable_candidates else None
+    recommended_executable_variant_id = (
+        recommended_executable_base.get("variant_id") if recommended_executable_base else None
+    )
+    recommended_executable_option = _with_quote_role(
+        recommended_executable_base,
         kind="recommended",
         label=(
             "Recommended executable"
-            if not _same_quote_option(recommended_base, best_quote_base)
+            if not _same_quote_option(recommended_executable_base, best_quote_base)
             else "Recommended"
         ),
     )
@@ -1859,7 +2157,8 @@ def swap_quote(
     diverse_other_options = _select_diverse_other_options(
         ranked_universe_options,
         best_quote=best_quote_base,
-        recommended=recommended_base,
+        recommended=recommended_executable_base,
+        direct=direct_route_base,
         limit=2,
     )
     for opt in diverse_other_options:
@@ -1870,6 +2169,8 @@ def swap_quote(
             alt_label = "Default Jupiter route"
         elif variant_id == "raydium_quote":
             alt_label = "Via Raydium"
+        elif variant_id == "meteora_dlmm_quote":
+            alt_label = "Via Meteora"
         elif variant_id == "exclude_recommended_dexes":
             alt_label = "Alternate venue mix"
         elif variant_id == "broader_search":
@@ -1881,21 +2182,20 @@ def swap_quote(
             "label": alt_label,
         })
 
-    # Keep direct route available as its own block too
-    direct_route_output = None
-    if direct_route_check:
-        direct_route_output = {
-            **direct_route_check,
-            "kind": "direct",
-            "label": "Direct route check",
-        }
+    direct_route_variant_id = direct_route_base.get("variant_id") if direct_route_base else None
+    direct_route_output = _with_quote_role(
+        direct_route_base,
+        kind="direct",
+        label="Direct / simple route",
+    )
 
     recommended_reason = {
         "recommended_default": "The default Jupiter quote had the best checked output for this request.",
         "exclude_recommended_dexes": "An alternate venue mix produced the best checked output for this request.",
-        "direct_route_check": "The direct-route-only check produced the best checked output for this request.",
+        "direct_route_check": "The selected direct/simple route produced the best checked output for this request.",
         "broader_search": "A broader routing search produced the best checked output for this request.",
         "raydium_quote": "Raydium produced the best checked quote for this request, but it is comparison-only in this preview path.",
+        "meteora_dlmm_quote": "Meteora DLMM produced the best checked quote for this request, but it is comparison-only in this preview path.",
     }.get(
         best_quote_variant_id,
         "The best quote had the strongest checked output among the currently available variants."
@@ -1919,7 +2219,10 @@ def swap_quote(
     reference_output_amount = _safe_float((inline_baseline or {}).get("ideal_output_amount"))
 
     best_quote_option = _attach_cost_fields(best_quote_option, reference_output_amount)
-    recommended_option = _attach_cost_fields(recommended_option, reference_output_amount)
+    recommended_executable_option = _attach_cost_fields(
+        recommended_executable_option,
+        reference_output_amount,
+    )
     ranked_other_options = [
         _attach_cost_fields(opt, reference_output_amount) for opt in ranked_other_options
     ] 
@@ -1938,11 +2241,11 @@ def swap_quote(
             "This quote is comparison-only and cannot be executed from this preview path."
         )
 
-    if _same_quote_option(recommended_option, best_quote_option):
-        recommended_option = best_quote_option
-    elif _is_executable_quote_option(recommended_option):
-        recommended_option = _attach_backend_network_fee_estimate(
-            recommended_option,
+    if _same_quote_option(recommended_executable_option, best_quote_option):
+        recommended_executable_option = best_quote_option
+    elif _is_executable_quote_option(recommended_executable_option):
+        recommended_executable_option = _attach_backend_network_fee_estimate(
+            recommended_executable_option,
             user_public_key=user_public_key,
             rpc_url=SOLANA_MAINNET_RPC_URL,
         )
@@ -1982,11 +2285,11 @@ def swap_quote(
         best_quote_option,
         reference_prices=reference_prices,
     )
-    if _same_quote_option(recommended_option, best_quote_option):
-        recommended_option = best_quote_option
+    if _same_quote_option(recommended_executable_option, best_quote_option):
+        recommended_executable_option = best_quote_option
     else:
-        recommended_option = _attach_recommended_swap_cost_summary(
-            recommended_option,
+        recommended_executable_option = _attach_recommended_swap_cost_summary(
+            recommended_executable_option,
             reference_prices=reference_prices,
         )
 
@@ -2002,7 +2305,8 @@ def swap_quote(
     ]
 
     best_quote_option = _strip_internal_sort_key(best_quote_option)
-    recommended_option = _strip_internal_sort_key(recommended_option)
+    recommended_executable_option = _strip_internal_sort_key(recommended_executable_option)
+    recommended_option = best_quote_option
     ranked_other_options = [_strip_internal_sort_key(x) for x in ranked_other_options]
     direct_route_output = _strip_internal_sort_key(direct_route_output)
 
@@ -2018,6 +2322,7 @@ def swap_quote(
         "input_amount_raw": raw_amount,
         "best_quote_option": best_quote_option,
         "recommended_option": recommended_option,
+        "recommended_executable_option": recommended_executable_option,
         "recommended": recommended_option,
         "other_options": ranked_other_options,
         "direct_route_check": direct_route_output,
@@ -2027,26 +2332,36 @@ def swap_quote(
             "cost_scope": "benchmark_shortfall_vs_fresh_reference",
             "recommended_reason": recommended_reason,
             "best_quote_variant_id": best_quote_variant_id,
-            "recommended_variant_id": recommended_variant_id,
+            "recommended_variant_id": best_quote_variant_id,
+            "recommended_executable_variant_id": recommended_executable_variant_id,
+            "direct_route_variant_id": direct_route_variant_id,
             "best_quote_is_executable": _is_executable_quote_option(best_quote_option),
+            "recommended_is_executable": _is_executable_quote_option(recommended_option),
             "checked_variants": [
                 "recommended_default",
                 "broader_search",
                 "exclude_recommended_dexes",
                 "direct_route_check",
                 "raydium_quote",
+                "meteora_dlmm_quote",
             ],
             "available_other_options": len(ranked_other_options),
             "direct_route_available": direct_route_output is not None,
+            "ranking_basis": "highest_receive_amount",
+            "direct_route_selection_basis": "simplest_meaningful_candidate_across_live_quote_universes",
+            "cost_model_scope": "partial_transparency_not_ranking_input",
+            "recommendation_scope": "highest_receive_amount_across_live_quote_universes",
+            "execution_availability_scope": "separate_from_recommendation",
         },
         "debug": {
             "route_debug": recommended_raw.get("mostReliableAmmsQuoteReport"),
             "ranked_jupiter_variants": ranked_jupiter_variant_debug,
             "variant_errors": diagnostics,
             "notes": [
-                "Best quote is ranked across normalized Jupiter and Raydium options by checked output amount.",
-                "Raydium is comparison-only in this preview path and is not executable yet.",
-                "Estimated trade execution cost is computed as benchmark shortfall vs fresh reference; explicit route fees and network fee are shown separately when available.",
+                "Recommended is selected by highest receive amount across live quote universes, not by estimated total swap cost.",
+                "Execution availability is separate from recommendation. Quote-only routes are not clickable yet.",
+                "Direct/simple route is selected across available live quote universes. The Jupiter direct-route quote remains one candidate in that model.",
+                "Benchmark gap is a reference comparison, not a fee. Explicit route fees are provider-disclosed fee evidence and may already be reflected in quoted output.",
             ],
         },
     }

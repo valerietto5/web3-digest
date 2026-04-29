@@ -1,11 +1,22 @@
 import unittest
 import tempfile
+import json
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 from api.main import (
+    METEORA_DLMM_SOL_MINT,
+    METEORA_DLMM_USDC_MINT,
+    _build_meteora_dlmm_quote_payload,
+    _fetch_meteora_dlmm_quote,
     _is_executable_quote_option,
+    _normalize_meteora_dlmm_quote_option,
     _normalize_raydium_quote_option,
     _rank_quote_options,
+    _select_direct_route_option,
     _select_diverse_other_options,
+    _try_fetch_meteora_dlmm_quote,
+    swap_quote,
 )
 
 from db import (
@@ -99,6 +110,16 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(option["provider"], "raydium-trade-api")
         self.assertEqual(option["execution_surface_label"], "Raydium")
+        self.assertEqual(option["quote_status"], "live")
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["supports_current_pair"])
+        self.assertEqual(option["quote_source_type"], "venue_trade_api")
+        self.assertEqual(option["cost_transparency"]["ranking_basis"], "highest_receive_amount")
+        self.assertEqual(
+            option["cost_transparency"]["network_fee_scope"],
+            "unavailable_for_quote_only_preview",
+        )
+        self.assertTrue(option["cost_transparency"]["explicit_fees_may_be_reflected_in_output"])
         self.assertTrue(option["is_comparison_only"])
         self.assertFalse(option["is_clickable"])
         self.assertEqual(option["route_label"], "Raydium")
@@ -194,6 +215,549 @@ class TestSanity(unittest.TestCase):
             len({(opt["provider"], opt["execution_surface_label"]) for opt in other_options}),
             len(other_options),
         )
+
+    def test_build_meteora_dlmm_quote_payload_adds_sol_usdc_candidate(self):
+        payload = _build_meteora_dlmm_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=METEORA_DLMM_USDC_MINT,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+        )
+
+        self.assertEqual(payload["rpc_url"], "https://example.invalid")
+        self.assertEqual(payload["amount_raw"], "1000000000")
+        self.assertEqual(len(payload["pool_candidates"]), 1)
+        self.assertEqual(
+            payload["pool_candidates"][0]["address"],
+            "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+        )
+
+    def test_fetch_meteora_dlmm_quote_uses_subprocess_json_contract(self):
+        helper_output = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "out_amount_raw": "84000000",
+        }
+
+        def fake_run(cmd, **kwargs):
+            self.assertIn("tools/meteora_dlmm_quote.mjs", cmd[1])
+            self.assertEqual(json.loads(kwargs["input"])["amount_raw"], "1000000000")
+            self.assertFalse(kwargs.get("shell", False))
+            self.assertGreater(kwargs["timeout"], 0)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(helper_output), "")
+
+        with patch("api.main.subprocess.run", side_effect=fake_run):
+            result = _fetch_meteora_dlmm_quote({"amount_raw": "1000000000"})
+
+        self.assertEqual(result, helper_output)
+
+    def test_try_fetch_meteora_dlmm_quote_handles_timeout(self):
+        with patch("api.main.subprocess.run", side_effect=subprocess.TimeoutExpired("node", 20)):
+            result = _try_fetch_meteora_dlmm_quote({"amount_raw": "1000000000"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["status_code"], 504)
+
+    def test_normalize_meteora_dlmm_quote_option_marks_comparison_only(self):
+        quote = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "pool": {
+                "address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+                "name": "SOL-USDC",
+                "bin_step": 4,
+            },
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "84019465",
+            "min_out_amount_raw": "83599367",
+            "fee_raw": "401920",
+            "protocol_fee_raw": "40192",
+            "price_impact": "0",
+            "bin_arrays": ["8CRkBdY5RkDRDBAZFKwRBpfe2JSWoPqM8jfr14KUXMpF"],
+        }
+
+        option = _normalize_meteora_dlmm_quote_option(
+            variant_id="meteora_dlmm_quote",
+            label="Via Meteora",
+            kind="alternative",
+            quote=quote,
+            from_token="SOL",
+            to_token="USDC",
+            input_amount=1.0,
+            input_amount_raw=1000000000,
+            output_decimals=6,
+        )
+
+        self.assertEqual(option["provider"], "meteora-dlmm")
+        self.assertEqual(option["execution_surface_label"], "Meteora")
+        self.assertEqual(option["quote_status"], "live")
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["supports_current_pair"])
+        self.assertEqual(option["quote_source_type"], "venue_native_pool")
+        self.assertEqual(option["cost_transparency"]["benchmark_gap_scope"], "reference_comparison_not_fee")
+        self.assertEqual(option["cost_transparency"]["cost_completeness"], "partial")
+        self.assertTrue(option["is_comparison_only"])
+        self.assertFalse(option["is_clickable"])
+        self.assertEqual(option["route_label"], "Meteora DLMM")
+        self.assertEqual(option["route_shape"], "single-pool")
+        self.assertEqual(option["estimated_output"], 84.019465)
+        self.assertEqual(option["min_received"], 83.599367)
+        self.assertEqual(option["explicit_route_fees"]["route_fee_items"][0]["fee_token"], "SOL")
+        self.assertEqual(option["route_steps"][0]["pool_address"], quote["pool"]["address"])
+        self.assertEqual(option["_sort_out_amount_raw"], 84019465)
+
+    def test_diverse_other_options_can_include_raydium_and_meteora(self):
+        recommended_jupiter = {
+            "variant_id": "recommended_default",
+            "provider": "jupiter-metis",
+            "execution_surface_label": "Jupiter",
+            "estimated_output_raw": "120",
+            "route_labels": ["Orca"],
+            "protections": {"restrict_intermediate_tokens": True},
+            "_sort_out_amount_raw": 120,
+        }
+        raydium_option = {
+            "variant_id": "raydium_quote",
+            "provider": "raydium-trade-api",
+            "execution_surface_label": "Raydium",
+            "estimated_output_raw": "118",
+            "route_labels": ["Raydium"],
+            "protections": {"slippage_bps": 50},
+            "_sort_out_amount_raw": 118,
+        }
+        meteora_option = {
+            "variant_id": "meteora_dlmm_quote",
+            "provider": "meteora-dlmm",
+            "execution_surface_label": "Meteora",
+            "estimated_output_raw": "117",
+            "route_labels": ["Meteora DLMM"],
+            "protections": {"slippage_bps": 50},
+            "_sort_out_amount_raw": 117,
+        }
+
+        ranked = _rank_quote_options([recommended_jupiter, raydium_option, meteora_option])
+        other_options = _select_diverse_other_options(
+            ranked,
+            best_quote=recommended_jupiter,
+            recommended=recommended_jupiter,
+            limit=2,
+        )
+
+        self.assertEqual(
+            [opt["variant_id"] for opt in other_options],
+            ["raydium_quote", "meteora_dlmm_quote"],
+        )
+
+    def test_select_direct_route_prefers_simpler_shape_then_output(self):
+        meteora_option = {
+            "variant_id": "meteora_dlmm_quote",
+            "provider": "meteora-dlmm",
+            "execution_surface_label": "Meteora",
+            "supports_current_pair": True,
+            "route_shape": "single-pool",
+            "route_step_count": 1,
+            "estimated_output_raw": "90",
+            "_sort_out_amount_raw": 90,
+        }
+        jupiter_direct_option = {
+            "variant_id": "direct_route_check",
+            "provider": "jupiter-metis",
+            "execution_surface_label": "Jupiter",
+            "supports_current_pair": True,
+            "route_shape": "direct",
+            "route_step_count": 1,
+            "estimated_output_raw": "100",
+            "_sort_out_amount_raw": 100,
+        }
+
+        selected = _select_direct_route_option([jupiter_direct_option, meteora_option])
+
+        self.assertEqual(selected["variant_id"], "meteora_dlmm_quote")
+
+    def test_swap_quote_adds_meteora_as_comparison_only_other_option(self):
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "85000000",
+            "otherAmountThreshold": "84575000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Orca",
+                        "inputMint": METEORA_DLMM_SOL_MINT,
+                        "outputMint": METEORA_DLMM_USDC_MINT,
+                        "inAmount": "1000000000",
+                        "outAmount": "85000000",
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": METEORA_DLMM_SOL_MINT,
+                "inputAmount": "1000000000",
+                "outputMint": METEORA_DLMM_USDC_MINT,
+                "outputAmount": "83000000",
+                "otherAmountThreshold": "82585000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+        meteora_quote = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "pool": {
+                "address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+                "name": "SOL-USDC",
+                "bin_step": 4,
+            },
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "84000000",
+            "min_out_amount_raw": "83580000",
+            "fee_raw": "400000",
+            "protocol_fee_raw": "40000",
+            "price_impact": "0",
+            "bin_arrays": ["8CRkBdY5RkDRDBAZFKwRBpfe2JSWoPqM8jfr14KUXMpF"],
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token="USDC", amount=1.0)
+
+        self.assertEqual(response["recommended_option"]["provider"], "jupiter-metis")
+        self.assertEqual(response["recommended_option"]["quote_status"], "live")
+        self.assertEqual(response["recommended_option"]["execution_status"], "executable_capable")
+        self.assertTrue(response["recommended_option"]["supports_current_pair"])
+        self.assertEqual(response["recommended_option"]["quote_source_type"], "aggregator")
+        self.assertEqual(response["recommended_option"]["cost_transparency"]["ranking_basis"], "highest_receive_amount")
+        self.assertEqual(
+            response["recommended_option"]["cost_transparency"]["network_fee_scope"],
+            "estimated_for_executable_when_available",
+        )
+        self.assertEqual(response["recommended_executable_option"], response["recommended_option"])
+        self.assertEqual(response["summary"]["ranking_basis"], "highest_receive_amount")
+        self.assertEqual(response["summary"]["cost_model_scope"], "partial_transparency_not_ranking_input")
+        other_providers = [opt["provider"] for opt in response["other_options"]]
+        self.assertIn("raydium-trade-api", other_providers)
+
+        meteora_option = response["direct_route_check"]
+        self.assertEqual(meteora_option["provider"], "meteora-dlmm")
+        self.assertTrue(meteora_option["is_comparison_only"])
+        self.assertFalse(meteora_option["is_clickable"])
+        self.assertEqual(meteora_option["route_shape"], "single-pool")
+        self.assertIn("meteora_dlmm_quote", response["summary"]["checked_variants"])
+
+    def test_swap_quote_recommends_meteora_when_it_has_best_output(self):
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "85000000",
+            "otherAmountThreshold": "84575000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Orca",
+                        "inputMint": METEORA_DLMM_SOL_MINT,
+                        "outputMint": METEORA_DLMM_USDC_MINT,
+                        "inAmount": "1000000000",
+                        "outAmount": "85000000",
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+        broader_jupiter_quote = {
+            **jupiter_quote,
+            "outAmount": "84500000",
+            "otherAmountThreshold": "84077500",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Lifinity",
+                        "inputMint": METEORA_DLMM_SOL_MINT,
+                        "outputMint": METEORA_DLMM_USDC_MINT,
+                        "inAmount": "1000000000",
+                        "outAmount": "84500000",
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": METEORA_DLMM_SOL_MINT,
+                "inputAmount": "1000000000",
+                "outputMint": METEORA_DLMM_USDC_MINT,
+                "outputAmount": "83000000",
+                "otherAmountThreshold": "82585000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+        meteora_quote = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "pool": {
+                "address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+                "name": "SOL-USDC",
+                "bin_step": 4,
+            },
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "86000000",
+            "min_out_amount_raw": "85570000",
+            "fee_raw": "400000",
+            "protocol_fee_raw": "40000",
+            "price_impact": "0",
+            "bin_arrays": ["8CRkBdY5RkDRDBAZFKwRBpfe2JSWoPqM8jfr14KUXMpF"],
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                side_effect=[
+                    {"ok": True, "data": broader_jupiter_quote},
+                    {"ok": False, "error": {"status_code": 502, "detail": "mock exclude"}},
+                    {"ok": False, "error": {"status_code": 502, "detail": "mock direct"}},
+                ],
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token="USDC", amount=1.0)
+
+        self.assertEqual(response["best_quote_option"]["provider"], "meteora-dlmm")
+        self.assertEqual(response["recommended_option"]["provider"], "meteora-dlmm")
+        self.assertEqual(response["recommended"]["provider"], "meteora-dlmm")
+        self.assertTrue(response["recommended_option"]["is_comparison_only"])
+        self.assertFalse(response["recommended_option"]["is_clickable"])
+        self.assertEqual(response["recommended_option"]["execution_status"], "quote_only")
+        self.assertEqual(response["recommended_executable_option"]["provider"], "jupiter-metis")
+        self.assertEqual(
+            response["recommended_executable_option"]["execution_status"],
+            "executable_capable",
+        )
+        self.assertEqual(response["summary"]["recommended_variant_id"], "meteora_dlmm_quote")
+        self.assertEqual(
+            response["summary"]["recommended_executable_variant_id"],
+            "recommended_default",
+        )
+        self.assertEqual(
+            response["summary"]["recommendation_scope"],
+            "highest_receive_amount_across_live_quote_universes",
+        )
+        self.assertEqual(
+            response["summary"]["execution_availability_scope"],
+            "separate_from_recommendation",
+        )
+
+        other_providers = [opt["provider"] for opt in response["other_options"]]
+        self.assertIn("raydium-trade-api", other_providers)
+        self.assertIn("jupiter-metis", other_providers)
+
+    def test_swap_quote_selects_meteora_single_pool_as_direct_route(self):
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "85000000",
+            "otherAmountThreshold": "84575000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Orca",
+                        "inputMint": METEORA_DLMM_SOL_MINT,
+                        "outputMint": METEORA_DLMM_USDC_MINT,
+                        "inAmount": "1000000000",
+                        "outAmount": "85000000",
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+        jupiter_direct_quote = {
+            **jupiter_quote,
+            "outAmount": "84900000",
+            "otherAmountThreshold": "84475500",
+        }
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": METEORA_DLMM_SOL_MINT,
+                "inputAmount": "1000000000",
+                "outputMint": METEORA_DLMM_USDC_MINT,
+                "outputAmount": "83000000",
+                "otherAmountThreshold": "82585000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+        meteora_quote = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "pool": {
+                "address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+                "name": "SOL-USDC",
+                "bin_step": 4,
+            },
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "84000000",
+            "min_out_amount_raw": "83580000",
+            "fee_raw": "400000",
+            "protocol_fee_raw": "40000",
+            "price_impact": "0",
+            "bin_arrays": ["8CRkBdY5RkDRDBAZFKwRBpfe2JSWoPqM8jfr14KUXMpF"],
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                side_effect=[
+                    {"ok": False, "error": {"status_code": 502, "detail": "mock broader"}},
+                    {"ok": False, "error": {"status_code": 502, "detail": "mock exclude"}},
+                    {"ok": True, "data": jupiter_direct_quote},
+                ],
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token="USDC", amount=1.0)
+
+        self.assertEqual(response["direct_route_check"]["provider"], "meteora-dlmm")
+        self.assertEqual(response["direct_route_check"]["route_shape"], "single-pool")
+        self.assertTrue(response["direct_route_check"]["is_comparison_only"])
+        self.assertFalse(response["direct_route_check"]["is_clickable"])
+        self.assertEqual(response["summary"]["direct_route_variant_id"], "meteora_dlmm_quote")
+        self.assertEqual(
+            response["summary"]["direct_route_selection_basis"],
+            "simplest_meaningful_candidate_across_live_quote_universes",
+        )
+
+    def test_swap_quote_allows_jupiter_direct_to_win_simple_route_tiebreak(self):
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "85000000",
+            "otherAmountThreshold": "84575000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Orca",
+                        "inputMint": METEORA_DLMM_SOL_MINT,
+                        "outputMint": METEORA_DLMM_USDC_MINT,
+                        "inAmount": "1000000000",
+                        "outAmount": "85000000",
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+        jupiter_direct_quote = {
+            **jupiter_quote,
+            "outAmount": "88000000",
+            "otherAmountThreshold": "87560000",
+        }
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": METEORA_DLMM_SOL_MINT,
+                "inputAmount": "1000000000",
+                "outputMint": METEORA_DLMM_USDC_MINT,
+                "outputAmount": "83000000",
+                "otherAmountThreshold": "82585000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                side_effect=[
+                    {"ok": False, "error": {"status_code": 502, "detail": "mock broader"}},
+                    {"ok": False, "error": {"status_code": 502, "detail": "mock exclude"}},
+                    {"ok": True, "data": jupiter_direct_quote},
+                ],
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
+            patch(
+                "api.main._try_fetch_meteora_dlmm_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock meteora"}},
+            ),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token="USDC", amount=1.0)
+
+        self.assertEqual(response["direct_route_check"]["provider"], "jupiter-metis")
+        self.assertEqual(response["direct_route_check"]["variant_id"], "direct_route_check")
+        self.assertEqual(response["summary"]["direct_route_variant_id"], "direct_route_check")
 
 if __name__ == "__main__":
     unittest.main()

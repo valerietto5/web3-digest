@@ -1077,6 +1077,7 @@ async function previewSwap() {
 
   const bestQuote = quote?.best_quote_option || null;
   const recommended = quote?.recommended_option || quote?.recommended || null;
+  const recommendedExecutable = quote?.recommended_executable_option || null;
   const otherOptions = Array.isArray(quote?.other_options) ? quote.other_options : [];
   const directRoute = quote?.direct_route_check || null;
 
@@ -1098,8 +1099,8 @@ async function previewSwap() {
     return fmtNum(n, digits);
   }
 
-  const displayRec = bestQuote || recommended;
-  const executableRec = recommended || displayRec;
+  const displayRec = recommended || bestQuote;
+  const executableRec = recommendedExecutable || displayRec;
 
   function sameOption(a, b) {
     if (!a || !b) return false;
@@ -1145,7 +1146,7 @@ async function previewSwap() {
 
     const directMatchesRecommended =
       directRoute &&
-      sameOption(executableRec, directRoute);
+      sameOption(displayRec, directRoute);
 
     let compareSummary = "Other options: " + defaultAlternativeOptions.length;
 
@@ -1177,7 +1178,7 @@ async function previewSwap() {
       showExecutableRecommendation
         ? renderSwapOptionCard(executableRec, {
             title: executableRec.label || "Recommended executable",
-            note: "Best executable Jupiter route available from this preview.",
+            note: "Best executable-capable route available from this preview.",
             showRecommendedAction: true
           })
         : ""
@@ -1198,16 +1199,16 @@ async function previewSwap() {
         );
       });
 
-      if (executableRec?.variant_id === "direct_route_check" || directMatchesRecommended) {
+      if (directMatchesRecommended) {
         $("swapDirectBox").innerHTML =
           "<div class='muted'>Direct route is also the current recommendation.</div>";
       } else {
         if (directMatchesAlternative) {
-          directNote = "This direct route also appears in the alternatives.";
-        } else if (outputsAreComparable(directRoute, executableRec)) {
-          directNote = "Simpler route with comparable output.";
+          directNote = "This temporary direct candidate also appears in the alternatives.";
+        } else if (outputsAreComparable(directRoute, displayRec)) {
+          directNote = "Temporary direct candidate with comparable output.";
         } else {
-          directNote = "Simpler route, not the best output.";
+          directNote = "Temporary direct candidate, not the best output.";
         }
 
         $("swapDirectBox").innerHTML = renderSwapOptionCard(directRoute, {

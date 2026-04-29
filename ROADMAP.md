@@ -758,3 +758,263 @@ First implementation target:
 2. Raydium — quote-only comparison universe live locally
 3. Meteora DLMM — next planned quote-only comparison universe
 4. Phantom — later comparison anchor
+
+## Next macro sequence — comparison engine to execution product
+
+This is the current ordered plan after reaching the Jupiter + Raydium + Meteora comparison milestone.
+
+The goal is to keep moving fast technically while staying careful and honest about product meaning.
+
+---
+
+## Phase A — complete the comparison-engine foundation
+
+### Current live local universe set
+- **Jupiter**
+  - quote path live
+  - executable-capable path exists / closest to execution
+  - currently owns Recommended / Direct behavior
+- **Raydium**
+  - quote path live
+  - comparison-only
+  - non-clickable
+  - shown as an alternative universe
+- **Meteora DLMM**
+  - real Meteora-native quote path live
+  - quote-only
+  - comparison-only
+  - non-clickable
+  - shown as an alternative universe
+
+### Next goal
+Move from “quotes are visible” to a cleaner comparison engine that can scale to more universes.
+
+### Tasks
+1. Add explicit capability/status fields to every universe option:
+   - `quote_status`
+   - `execution_status`
+   - `supports_current_pair`
+   - `is_comparison_only`
+   - `is_clickable`
+   - `quote_source_type`
+   - `execution_surface_label`
+
+2. Make ranking output more explicit and stable:
+   - `best_quote_option`
+   - `recommended_executable_option`
+   - `direct_option`
+   - `alternative_options`
+
+3. Keep the card roles clear:
+   - **Recommended** = best executable route, or best quote clearly marked if non-executable
+   - **Direct** = simplest meaningful executable route
+   - **Alternatives** = distinct comparison universes, not duplicate internal route noise
+
+4. Keep quote-only universes honest:
+   - Raydium remains non-clickable until there is a real execution path
+   - Meteora remains non-clickable until there is a real execution path
+   - no fake execution buttons
+
+5. Research Phantom as a comparison anchor:
+   - only add if there is a measurable quote/proxy path
+   - do not invent Phantom fees or assume bad execution
+   - likely comparison-only at first
+
+6. Research Pump.fun / PumpSwap as a future meme-token-relevant comparison surface:
+   - likely more relevant for long-tail / meme-token pairs than SOL/USDC
+   - do not add live UI cards until the quote path is technically honest
+   - treat as future product identity expansion, not immediate core dependency
+
+### Product rule
+No fake universes.
+
+A universe should only appear as a live quote card if the backend can explain:
+- what it technically represents
+- how the quote was obtained
+- whether it is executable or comparison-only
+- whether it supports the current pair
+
+---
+
+## Phase B — improve cost model and fee truthfulness
+
+### Current issue
+The product currently shows useful cost lines, but the long-term model needs a cleaner split between:
+
+- benchmark/reference comparison
+- explicit route costs
+
+### Target model
+The left/top transparency layer should explain:
+
+- **You pay**
+- **Ideal reference**
+- **Real vs ideal gap**
+
+The route cards should explain known explicit costs:
+
+- network fee
+- route/protocol/platform fees when disclosed
+- venue-specific known costs where available
+
+### Tasks
+1. Revisit the current `Execution cost` wording.
+2. Separate benchmark shortfall from explicit fee language.
+3. Improve route-fee extraction for:
+   - Jupiter
+   - Raydium
+   - Meteora DLMM
+4. Improve network-fee handling and degraded-mode messaging.
+5. Decide whether route cards should move from:
+   - `Estimated total swap cost`
+   
+   toward wording such as:
+   - `Known explicit cost`
+   - `Estimated explicit cost`
+   - or another clearer label
+
+6. Keep the benchmark gap alive, but do not overload it as if it were a literal fee.
+7. Make sure every displayed cost number has a clear scope.
+
+### Product rule
+Do not invent precision.
+
+If a cost component is not known, say it is not disclosed or unavailable.  
+Do not guess fees or hide uncertainty.
+
+---
+
+## Phase C — make execution real
+
+### Goal
+After the comparison and cost model are trustworthy, start making selected routes executable.
+
+### Execution order
+1. **Jupiter execution first**
+   - make `Swap this route` real for the recommended executable Jupiter route
+   - preserve Phantom signing boundary
+   - keep user approval in wallet
+   - show pre-execution quote details clearly
+
+2. **Raydium execution later**
+   - only after Raydium transaction-building path is confirmed
+   - do not make Raydium clickable while it is quote-only
+
+3. **Meteora execution later**
+   - only after Meteora DLMM transaction-building path is confirmed
+   - likely requires deeper SDK handling
+   - do not make Meteora clickable while it is quote-only
+
+4. **Phantom / PumpSwap**
+   - only executable if there is a real technical path or honest handoff
+   - otherwise keep them as comparison anchors or research items
+
+### Tasks
+- implement quote confirmation state
+- connect selected executable quote to transaction instruction/build path
+- send through Phantom signing
+- add preflight checks
+- add error translation
+- log execution attempt details
+- keep comparison-only options non-clickable
+
+### Product rule
+A quote card should only have an execution CTA if the app can actually execute that path honestly.
+
+---
+
+## Phase D — final UI / UX route-choice redesign
+
+### Goal
+Once the engine is meaningful, redesign the interface around the real product structure.
+
+### Target structure
+The product should feel like:
+
+#### Build the swap
+- network
+- sell panel
+- buy panel
+- invert control
+- reference output
+- preview quote action
+
+#### Choose the route
+- Recommended
+- Direct
+- Alternatives
+
+### UI priorities
+1. Make user-facing surfaces clear:
+   - Via Jupiter
+   - Via Raydium
+   - Via Meteora
+   - Via Phantom / PumpSwap later only if honest
+
+2. Keep internal route details in inspect mode:
+   - BisonFi
+   - HumidiFi
+   - Scorch
+   - Quantum
+   - pool addresses
+   - bin arrays
+   - route steps
+
+3. Improve hierarchy:
+   - Recommended = strongest visual card
+   - Direct = special simpler route card
+   - Alternatives = smaller comparison cards
+
+4. Improve mobile friendliness:
+   - avoid accidental taps
+   - keep CTAs explicit
+   - separate expand/details from execute
+
+5. Improve trust language:
+   - comparison-only labels
+   - cost scope
+   - quote freshness
+   - unavailable/disclosed states
+
+### Product rule
+Do not over-polish before the engine is strong.
+
+The UI should become beautiful after:
+- comparison engine is coherent
+- cost model is truthful
+- execution path is safe
+
+---
+
+## Current strategic order
+
+1. **Comparison engine foundation**
+   - capability/status fields
+   - explicit ranking semantics
+   - Phantom/PumpSwap research only after current universe model is clean
+
+2. **Cost model truthfulness**
+   - benchmark gap vs explicit costs
+   - fee extraction
+   - better wording and scope
+
+3. **Execution**
+   - Jupiter first
+   - Raydium/Meteora later only when real
+
+4. **Final UI/UX**
+   - route-choice redesign
+   - polish
+   - mobile-aware product experience
+
+---
+
+## Next immediate coding sprint
+
+Start from:
+
+**Add explicit universe capability/status fields and clean ranking semantics.**
+
+This should happen before adding Phantom or PumpSwap live cards.
+
+The goal is to make the current Jupiter + Raydium + Meteora engine easier to extend without messy special cases.
