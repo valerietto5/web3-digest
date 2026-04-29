@@ -1044,6 +1044,118 @@ def _try_fetch_meteora_dlmm_quote(payload: dict) -> dict:
 
 
 
+PHANTOM_SOL_MINT = "So11111111111111111111111111111111111111112"
+PHANTOM_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+
+def _build_phantom_quote_payload(
+    *,
+    input_mint: str,
+    output_mint: str,
+    amount_raw: int,
+    slippage_bps: int = 50,
+    user_public_key: str | None = None,
+) -> dict:
+    payload = {
+        "sell_chain_id": "solana:mainnet",
+        "sell_token_is_native": input_mint == PHANTOM_SOL_MINT,
+        "buy_token_mint": output_mint,
+        "amount": str(amount_raw),
+        "amount_unit": "base",
+        "slippage_bps": int(slippage_bps),
+        "taker_address": user_public_key,
+    }
+
+    if input_mint != PHANTOM_SOL_MINT or output_mint != PHANTOM_USDC_MINT:
+        payload["unsupported_pair"] = True
+        payload["unsupported_pair_detail"] = (
+            "Phantom quote research helper currently supports SOL -> USDC only."
+        )
+
+    if not user_public_key:
+        payload["skip_reason"] = "wallet_public_key_required_for_phantom_quote"
+
+    return payload
+
+
+def _fetch_phantom_quote(payload: dict) -> dict:
+    if payload.get("unsupported_pair"):
+        raise HTTPException(
+            status_code=400,
+            detail=payload.get("unsupported_pair_detail") or "Unsupported Phantom quote pair",
+        )
+
+    if not payload.get("taker_address"):
+        raise HTTPException(
+            status_code=400,
+            detail="Phantom quote requires user_public_key as taker_address",
+        )
+
+    helper_path = project_root() / "tools" / "phantom_quote_research.mjs"
+    if not helper_path.exists():
+        raise HTTPException(status_code=502, detail=f"Phantom quote helper missing: {helper_path}")
+
+    try:
+        proc = subprocess.run(
+            [os.getenv("NODE_BINARY") or "node", str(helper_path)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            cwd=project_root(),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=502, detail=f"Phantom quote helper runtime missing: {e}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Phantom quote helper timed out")
+
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        stderr = (proc.stderr or "").strip()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Phantom quote helper returned no JSON output: {stderr[-500:]}",
+        )
+
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Phantom quote helper returned invalid JSON: {e}")
+
+    if proc.returncode != 0 and parsed.get("ok") is not False:
+        detail = parsed.get("error") or (proc.stderr or "").strip()
+        raise HTTPException(status_code=502, detail=f"Phantom quote helper failed: {detail}")
+
+    return parsed
+
+
+def _try_fetch_phantom_quote(payload: dict) -> dict:
+    try:
+        data = _fetch_phantom_quote(payload)
+        if data.get("ok") is True:
+            return {"ok": True, "data": data}
+
+        error = data.get("error") if isinstance(data, dict) else None
+        return {
+            "ok": False,
+            "error": {
+                "status_code": data.get("status_code") if isinstance(data, dict) else 502,
+                "detail": error.get("message") if isinstance(error, dict) else "Phantom quote failed",
+                "code": error.get("code") if isinstance(error, dict) else None,
+                "helper_error": error,
+                "helper_response": data,
+            },
+        }
+    except HTTPException as e:
+        return {
+            "ok": False,
+            "error": {
+                "status_code": e.status_code,
+                "detail": e.detail,
+            },
+        }
+
+
 TOKEN_META_BY_MINT = {
     (meta.get("mint") or "").strip(): {"symbol": symbol, **meta}
     for symbol, meta in TOKEN_META.items()
@@ -1173,6 +1285,45 @@ def _extract_meteora_dlmm_route_fees(quote: dict) -> dict:
                 ),
                 "fee_mint": fee_mint,
                 "fee_token": fee_token,
+            }
+        )
+
+    return {
+        "platform_fee": None,
+        "route_fee_items": route_fee_items,
+        "has_explicit_fees": bool(route_fee_items),
+    }
+
+
+def _extract_phantom_route_fees(quote: dict) -> dict:
+    first_quote = ((quote.get("quoteResponse") or {}).get("quotes") or [{}])[0] or {}
+    route_fee_items = []
+
+    for fee in first_quote.get("fees") or []:
+        token = fee.get("token") or {}
+        fee_mint = token.get("address")
+        if not fee_mint and token.get("resourceType") == "nativeToken" and token.get("slip44") == "501":
+            fee_mint = PHANTOM_SOL_MINT
+
+        mint_meta = _mint_meta(fee_mint)
+        decimals = mint_meta.get("decimals") if mint_meta else None
+        fee_token = mint_meta.get("symbol") if mint_meta else None
+        fee_amount_raw = fee.get("amount")
+
+        route_fee_items.append(
+            {
+                "label": fee.get("name") or fee.get("type") or "Phantom disclosed fee",
+                "fee_amount_raw": str(fee_amount_raw) if fee_amount_raw is not None else None,
+                "fee_amount": (
+                    _ui_amount(fee_amount_raw, decimals)
+                    if fee_amount_raw is not None and decimals is not None
+                    else None
+                ),
+                "fee_mint": fee_mint,
+                "fee_token": fee_token,
+                "fee_type": fee.get("type"),
+                "percentage": fee.get("percentage"),
+                "raw_fee": fee,
             }
         )
 
@@ -1629,6 +1780,93 @@ def _normalize_meteora_dlmm_quote_option(
     }
 
 
+def _normalize_phantom_quote_option(
+    *,
+    variant_id: str,
+    label: str,
+    kind: str,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    input_amount: float,
+    input_amount_raw: int,
+    output_decimals: int,
+) -> dict:
+    quote_response = quote.get("quoteResponse") or {}
+    quotes = quote_response.get("quotes") or []
+    first_quote = quotes[0] if quotes else {}
+    out_amount_raw = quote.get("first_quote_buyAmount") or first_quote.get("buyAmount")
+    base_provider = first_quote.get("baseProvider") or {}
+    sources = first_quote.get("sources") or []
+    route_label = base_provider.get("name") or "Phantom"
+    route_labels = [
+        source.get("name")
+        for source in sources
+        if isinstance(source, dict) and source.get("name")
+    ] or [route_label]
+    route_steps = [
+        {
+            "label": source.get("name"),
+            "proportion": source.get("proportion"),
+        }
+        for source in sources
+        if isinstance(source, dict)
+    ]
+    if not route_steps:
+        route_steps = [{"label": route_label}]
+
+    return {
+        "variant_id": variant_id,
+        "label": label,
+        "kind": kind,
+        "provider": "phantom-routing-api",
+        "execution_surface_label": "Phantom",
+        "quote_status": "live",
+        "execution_status": "quote_only",
+        "supports_current_pair": True,
+        "quote_source_type": "wallet_routing_api",
+        "is_comparison_only": True,
+        "is_clickable": False,
+        "is_official_quote": True,
+        "is_jupiter_only": False,
+        "from_token": from_token,
+        "to_token": to_token,
+        "input_amount": input_amount,
+        "input_amount_raw": str(input_amount_raw),
+        "estimated_output": _ui_amount(out_amount_raw, output_decimals),
+        "estimated_output_raw": out_amount_raw,
+        "min_received": None,
+        "min_received_raw": None,
+        "estimated_total_swap_cost": None,
+        "estimated_trade_execution_cost": None,
+        "execution_cost": None,
+        "cost_scope": "not_computed_yet",
+        "cost_transparency": _build_cost_transparency(
+            network_fee_scope="unavailable_for_quote_only_preview",
+        ),
+        "explicit_route_fees": _extract_phantom_route_fees(quote),
+        "estimated_network_fee": None,
+        "network_fee_scope": "not_estimated_in_preview",
+        "network_fee_detail": "Phantom routing API is quote-only in this preview path.",
+        "price_impact_pct": _safe_float(first_quote.get("priceImpact")),
+        "slippage_bps": None,
+        "route_label": route_label,
+        "route_labels": route_labels,
+        "route_steps": route_steps,
+        "route_step_count": len(route_steps),
+        "route_shape": "wallet-routing",
+        "protections": {
+            "slippage_tolerance": first_quote.get("slippageTolerance")
+            or quote_response.get("slippageTolerance"),
+            "simulation_failed": first_quote.get("simulationFailed"),
+            "base_provider": base_provider,
+        },
+        "explanation": "Phantom routing API quote. Comparison-only for now.",
+        "raw_quote": quote,
+        "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
+    }
+
+
 def _dedupe_options(options: list[dict]) -> list[dict]:
     out = []
     seen = set()
@@ -1679,6 +1917,7 @@ def _route_simplicity_rank(option: dict | None) -> tuple:
         "direct": 1,
         "single-path": 2,
         "multi-leg-or-split": 5,
+        "wallet-routing": 8,
     }.get(route_shape, 4)
 
     output_raw = option.get("_sort_out_amount_raw")
@@ -2109,6 +2348,31 @@ def swap_quote(
     else:
         diagnostics.append({"variant_id": "meteora_dlmm_quote", **meteora_result["error"]})
 
+    phantom_payload = _build_phantom_quote_payload(
+        input_mint=input_meta["mint"],
+        output_mint=output_meta["mint"],
+        amount_raw=raw_amount,
+        slippage_bps=50,
+        user_public_key=user_public_key,
+    )
+    phantom_result = _try_fetch_phantom_quote(phantom_payload)
+    if phantom_result["ok"]:
+        external_other_options.append(
+            _normalize_phantom_quote_option(
+                variant_id="phantom_quote",
+                label="Via Phantom",
+                kind="alternative",
+                quote=phantom_result["data"],
+                from_token=from_token,
+                to_token=to_token,
+                input_amount=amount,
+                input_amount_raw=raw_amount,
+                output_decimals=output_meta["decimals"],
+            )
+        )
+    else:
+        diagnostics.append({"variant_id": "phantom_quote", **phantom_result["error"]})
+
     # Build the ranked Jupiter candidate pool from all successful checked variants.
     # This remains the executable universe for now.
     ranked_jupiter_candidates = [recommended, *variant_candidates]
@@ -2171,6 +2435,8 @@ def swap_quote(
             alt_label = "Via Raydium"
         elif variant_id == "meteora_dlmm_quote":
             alt_label = "Via Meteora"
+        elif variant_id == "phantom_quote":
+            alt_label = "Via Phantom"
         elif variant_id == "exclude_recommended_dexes":
             alt_label = "Alternate venue mix"
         elif variant_id == "broader_search":
@@ -2196,6 +2462,7 @@ def swap_quote(
         "broader_search": "A broader routing search produced the best checked output for this request.",
         "raydium_quote": "Raydium produced the best checked quote for this request, but it is comparison-only in this preview path.",
         "meteora_dlmm_quote": "Meteora DLMM produced the best checked quote for this request, but it is comparison-only in this preview path.",
+        "phantom_quote": "Phantom routing API produced the best checked quote for this request, but it is comparison-only in this preview path.",
     }.get(
         best_quote_variant_id,
         "The best quote had the strongest checked output among the currently available variants."
@@ -2344,6 +2611,7 @@ def swap_quote(
                 "direct_route_check",
                 "raydium_quote",
                 "meteora_dlmm_quote",
+                "phantom_quote",
             ],
             "available_other_options": len(ranked_other_options),
             "direct_route_available": direct_route_output is not None,
@@ -2362,6 +2630,7 @@ def swap_quote(
                 "Execution availability is separate from recommendation. Quote-only routes are not clickable yet.",
                 "Direct/simple route is selected across available live quote universes. The Jupiter direct-route quote remains one candidate in that model.",
                 "Benchmark gap is a reference comparison, not a fee. Explicit route fees are provider-disclosed fee evidence and may already be reflected in quoted output.",
+                "Phantom uses the official Phantom routing API quote surface. It is quote-only and non-clickable in this preview path.",
             ],
         },
     }

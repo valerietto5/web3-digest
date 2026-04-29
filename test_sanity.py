@@ -8,14 +8,18 @@ from api.main import (
     METEORA_DLMM_SOL_MINT,
     METEORA_DLMM_USDC_MINT,
     _build_meteora_dlmm_quote_payload,
+    _build_phantom_quote_payload,
     _fetch_meteora_dlmm_quote,
+    _fetch_phantom_quote,
     _is_executable_quote_option,
     _normalize_meteora_dlmm_quote_option,
+    _normalize_phantom_quote_option,
     _normalize_raydium_quote_option,
     _rank_quote_options,
     _select_direct_route_option,
     _select_diverse_other_options,
     _try_fetch_meteora_dlmm_quote,
+    _try_fetch_phantom_quote,
     swap_quote,
 )
 
@@ -258,6 +262,154 @@ class TestSanity(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["status_code"], 504)
+
+    def test_build_phantom_quote_payload_uses_wallet_as_taker(self):
+        payload = _build_phantom_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=METEORA_DLMM_USDC_MINT,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertEqual(payload["sell_chain_id"], "solana:mainnet")
+        self.assertTrue(payload["sell_token_is_native"])
+        self.assertEqual(payload["buy_token_mint"], METEORA_DLMM_USDC_MINT)
+        self.assertEqual(payload["amount"], "1000000000")
+        self.assertEqual(payload["amount_unit"], "base")
+        self.assertEqual(payload["slippage_bps"], 50)
+        self.assertEqual(payload["taker_address"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
+        self.assertNotIn("unsupported_pair", payload)
+        self.assertNotIn("skip_reason", payload)
+
+    def test_fetch_phantom_quote_uses_subprocess_json_contract(self):
+        helper_output = {
+            "ok": True,
+            "status_code": 200,
+            "quoteRequest": {"sellAmount": "1000000000"},
+            "quoteResponse": {
+                "quotes": [
+                    {
+                        "buyAmount": "83843388",
+                        "baseProvider": {"id": "okx", "name": "OKX"},
+                    }
+                ]
+            },
+            "first_quote_buyAmount": "83843388",
+        }
+
+        def fake_run(cmd, **kwargs):
+            self.assertIn("tools/phantom_quote_research.mjs", cmd[1])
+            self.assertEqual(json.loads(kwargs["input"])["taker_address"], "wallet")
+            self.assertFalse(kwargs.get("shell", False))
+            self.assertGreater(kwargs["timeout"], 0)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(helper_output), "")
+
+        with patch("api.main.subprocess.run", side_effect=fake_run):
+            result = _fetch_phantom_quote(
+                {
+                    "sell_chain_id": "solana:mainnet",
+                    "sell_token_is_native": True,
+                    "buy_token_mint": METEORA_DLMM_USDC_MINT,
+                    "amount": "1000000000",
+                    "amount_unit": "base",
+                    "slippage_bps": 50,
+                    "taker_address": "wallet",
+                }
+            )
+
+        self.assertEqual(result["first_quote_buyAmount"], "83843388")
+        self.assertEqual(result["quoteResponse"]["quotes"][0]["baseProvider"]["name"], "OKX")
+
+    def test_try_fetch_phantom_quote_skips_without_wallet(self):
+        payload = _build_phantom_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=METEORA_DLMM_USDC_MINT,
+            amount_raw=1000000000,
+            user_public_key=None,
+        )
+
+        result = _try_fetch_phantom_quote(payload)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["status_code"], 400)
+        self.assertIn("user_public_key", result["error"]["detail"])
+
+    def test_try_fetch_phantom_quote_handles_timeout(self):
+        payload = {
+            "sell_chain_id": "solana:mainnet",
+            "sell_token_is_native": True,
+            "buy_token_mint": METEORA_DLMM_USDC_MINT,
+            "amount": "1000000000",
+            "amount_unit": "base",
+            "slippage_bps": 50,
+            "taker_address": "wallet",
+        }
+
+        with patch("api.main.subprocess.run", side_effect=subprocess.TimeoutExpired("node", 20)):
+            result = _try_fetch_phantom_quote(payload)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["status_code"], 504)
+
+    def test_normalize_phantom_quote_option_marks_quote_only_non_clickable(self):
+        quote = {
+            "ok": True,
+            "status_code": 200,
+            "first_quote_buyAmount": "83843388",
+            "quoteResponse": {
+                "quotes": [
+                    {
+                        "buyAmount": "83843388",
+                        "sellAmount": "1000000000",
+                        "priceImpact": 0,
+                        "baseProvider": {"id": "okx", "name": "OKX"},
+                        "sources": [{"name": "ZeroFi via OKX", "proportion": "1"}],
+                        "fees": [
+                            {
+                                "amount": 718778,
+                                "name": "Phantom fee",
+                                "percentage": 0.0085,
+                                "type": "phantom",
+                                "token": {
+                                    "address": METEORA_DLMM_USDC_MINT,
+                                    "chainId": "solana:101",
+                                    "resourceType": "address",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+
+        option = _normalize_phantom_quote_option(
+            variant_id="phantom_quote",
+            label="Via Phantom",
+            kind="alternative",
+            quote=quote,
+            from_token="SOL",
+            to_token="USDC",
+            input_amount=1.0,
+            input_amount_raw=1000000000,
+            output_decimals=6,
+        )
+
+        self.assertEqual(option["provider"], "phantom-routing-api")
+        self.assertEqual(option["execution_surface_label"], "Phantom")
+        self.assertEqual(option["quote_status"], "live")
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["supports_current_pair"])
+        self.assertEqual(option["quote_source_type"], "wallet_routing_api")
+        self.assertTrue(option["is_comparison_only"])
+        self.assertFalse(option["is_clickable"])
+        self.assertTrue(option["is_official_quote"])
+        self.assertEqual(option["estimated_output_raw"], "83843388")
+        self.assertEqual(option["estimated_output"], 83.843388)
+        self.assertEqual(option["route_label"], "OKX")
+        self.assertEqual(option["route_labels"], ["ZeroFi via OKX"])
+        self.assertEqual(option["route_shape"], "wallet-routing")
+        self.assertTrue(option["explicit_route_fees"]["has_explicit_fees"])
 
     def test_normalize_meteora_dlmm_quote_option_marks_comparison_only(self):
         quote = {
@@ -758,6 +910,157 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(response["direct_route_check"]["provider"], "jupiter-metis")
         self.assertEqual(response["direct_route_check"]["variant_id"], "direct_route_check")
         self.assertEqual(response["summary"]["direct_route_variant_id"], "direct_route_check")
+
+    def test_swap_quote_recommends_phantom_when_it_has_best_output(self):
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "85000000",
+            "otherAmountThreshold": "84575000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Orca",
+                        "inputMint": METEORA_DLMM_SOL_MINT,
+                        "outputMint": METEORA_DLMM_USDC_MINT,
+                        "inAmount": "1000000000",
+                        "outAmount": "85000000",
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": METEORA_DLMM_SOL_MINT,
+                "inputAmount": "1000000000",
+                "outputMint": METEORA_DLMM_USDC_MINT,
+                "outputAmount": "83000000",
+                "otherAmountThreshold": "82585000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+        phantom_quote = {
+            "ok": True,
+            "status_code": 200,
+            "first_quote_buyAmount": "90000000",
+            "quoteResponse": {
+                "quotes": [
+                    {
+                        "buyAmount": "90000000",
+                        "sellAmount": "1000000000",
+                        "priceImpact": 0,
+                        "baseProvider": {"id": "okx", "name": "OKX"},
+                        "sources": [{"name": "ZeroFi via OKX", "proportion": "1"}],
+                        "fees": [
+                            {
+                                "amount": 765000,
+                                "name": "Phantom fee",
+                                "percentage": 0.0085,
+                                "type": "phantom",
+                                "token": {
+                                    "address": METEORA_DLMM_USDC_MINT,
+                                    "chainId": "solana:101",
+                                    "resourceType": "address",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
+            patch(
+                "api.main._try_fetch_meteora_dlmm_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock meteora"}},
+            ),
+            patch("api.main._try_fetch_phantom_quote", return_value={"ok": True, "data": phantom_quote}),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(
+                from_token="SOL",
+                to_token="USDC",
+                amount=1.0,
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(response["recommended_option"]["provider"], "phantom-routing-api")
+        self.assertEqual(response["recommended_option"]["variant_id"], "phantom_quote")
+        self.assertTrue(response["recommended_option"]["is_comparison_only"])
+        self.assertFalse(response["recommended_option"]["is_clickable"])
+        self.assertEqual(response["recommended_option"]["execution_status"], "quote_only")
+        self.assertEqual(response["recommended_option"]["estimated_output_raw"], "90000000")
+        self.assertEqual(response["summary"]["recommended_variant_id"], "phantom_quote")
+        self.assertFalse(response["summary"]["recommended_is_executable"])
+        self.assertEqual(response["recommended_executable_option"]["provider"], "jupiter-metis")
+        self.assertTrue(response["recommended_executable_option"]["is_clickable"])
+        self.assertIn("phantom_quote", response["summary"]["checked_variants"])
+
+    def test_swap_quote_missing_user_public_key_adds_phantom_diagnostic(self):
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "85000000",
+            "otherAmountThreshold": "84575000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [],
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch(
+                "api.main._try_fetch_raydium_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock raydium"}},
+            ),
+            patch(
+                "api.main._try_fetch_meteora_dlmm_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock meteora"}},
+            ),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token="USDC", amount=1.0)
+
+        self.assertEqual(response["recommended_option"]["provider"], "jupiter-metis")
+        phantom_errors = [
+            err for err in response["debug"]["variant_errors"]
+            if err.get("variant_id") == "phantom_quote"
+        ]
+        self.assertEqual(len(phantom_errors), 1)
+        self.assertEqual(phantom_errors[0]["status_code"], 400)
+        self.assertIn("user_public_key", phantom_errors[0]["detail"])
 
 if __name__ == "__main__":
     unittest.main()
