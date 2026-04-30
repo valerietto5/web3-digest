@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
+    "@ellipsis-labs/phoenix-sdk": "^2.0.3",
     "@meteora-ag/dlmm": "^1.9.7",
     "@orca-so/whirlpools": "^7.0.2",
     "@pump-fun/pump-swap-sdk": "^1.15.0",
