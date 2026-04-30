@@ -8,18 +8,26 @@ from api.main import (
     METEORA_DLMM_SOL_MINT,
     METEORA_DLMM_USDC_MINT,
     _build_meteora_dlmm_quote_payload,
+    _build_orca_whirlpool_quote_payload,
     _build_phantom_quote_payload,
+    _build_phoenix_quote_payload,
     _fetch_meteora_dlmm_quote,
+    _fetch_orca_whirlpool_quote,
     _fetch_phantom_quote,
+    _fetch_phoenix_quote,
     _is_executable_quote_option,
     _normalize_meteora_dlmm_quote_option,
+    _normalize_orca_whirlpool_quote_option,
     _normalize_phantom_quote_option,
+    _normalize_phoenix_quote_option,
     _normalize_raydium_quote_option,
     _rank_quote_options,
     _select_direct_route_option,
     _select_diverse_other_options,
     _try_fetch_meteora_dlmm_quote,
+    _try_fetch_orca_whirlpool_quote,
     _try_fetch_phantom_quote,
+    _try_fetch_phoenix_quote,
     swap_quote,
 )
 
@@ -263,6 +271,105 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["status_code"], 504)
 
+    def test_build_orca_whirlpool_quote_payload_supports_sol_usdc_only(self):
+        payload = _build_orca_whirlpool_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=METEORA_DLMM_USDC_MINT,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+        )
+
+        self.assertEqual(payload["rpc_url"], "https://example.invalid")
+        self.assertEqual(payload["amount_raw"], "1000000000")
+        self.assertEqual(payload["pool_candidates"], [])
+        self.assertNotIn("unsupported_pair", payload)
+
+    def test_fetch_orca_whirlpool_quote_uses_subprocess_json_contract(self):
+        helper_output = {
+            "ok": True,
+            "provider": "orca_whirlpool",
+            "out_amount_raw": "84000000",
+        }
+
+        def fake_run(cmd, **kwargs):
+            self.assertIn("tools/orca_whirlpool_quote_research.mjs", cmd[1])
+            self.assertEqual(json.loads(kwargs["input"])["amount_raw"], "1000000000")
+            self.assertFalse(kwargs.get("shell", False))
+            self.assertGreater(kwargs["timeout"], 0)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(helper_output), "")
+
+        with patch("api.main.subprocess.run", side_effect=fake_run):
+            result = _fetch_orca_whirlpool_quote({"amount_raw": "1000000000"})
+
+        self.assertEqual(result, helper_output)
+
+    def test_try_fetch_orca_whirlpool_quote_handles_timeout(self):
+        with patch("api.main.subprocess.run", side_effect=subprocess.TimeoutExpired("node", 20)):
+            result = _try_fetch_orca_whirlpool_quote({"amount_raw": "1000000000"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["status_code"], 504)
+
+    def test_try_fetch_orca_whirlpool_quote_handles_missing_helper(self):
+        with patch("api.main.Path.exists", return_value=False):
+            result = _try_fetch_orca_whirlpool_quote({"amount_raw": "1000000000"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["status_code"], 502)
+        self.assertIn("helper missing", result["error"]["detail"])
+
+    def test_build_phoenix_quote_payload_adds_sol_usdc_market(self):
+        payload = _build_phoenix_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=METEORA_DLMM_USDC_MINT,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+        )
+
+        self.assertEqual(payload["rpc_url"], "https://example.invalid")
+        self.assertEqual(payload["amount_raw"], "1000000000")
+        self.assertEqual(len(payload["market_candidates"]), 1)
+        self.assertEqual(
+            payload["market_candidates"][0]["address"],
+            "4DoNfFBfF7UokCC2FQzriy7yHK6DY6NVdYpuekQ5pRgg",
+        )
+
+    def test_fetch_phoenix_quote_uses_subprocess_json_contract(self):
+        helper_output = {
+            "ok": True,
+            "provider": "phoenix",
+            "out_amount_raw": "83000000",
+        }
+
+        def fake_run(cmd, **kwargs):
+            self.assertIn("tools/phoenix_quote_research.mjs", cmd[1])
+            self.assertEqual(json.loads(kwargs["input"])["amount_raw"], "1000000000")
+            self.assertFalse(kwargs.get("shell", False))
+            self.assertGreater(kwargs["timeout"], 0)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(helper_output), "")
+
+        with patch("api.main.subprocess.run", side_effect=fake_run):
+            result = _fetch_phoenix_quote({"amount_raw": "1000000000"})
+
+        self.assertEqual(result, helper_output)
+
+    def test_try_fetch_phoenix_quote_handles_timeout(self):
+        with patch("api.main.subprocess.run", side_effect=subprocess.TimeoutExpired("node", 20)):
+            result = _try_fetch_phoenix_quote({"amount_raw": "1000000000"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["status_code"], 504)
+
+    def test_try_fetch_phoenix_quote_handles_missing_helper(self):
+        with patch("api.main.Path.exists", return_value=False):
+            result = _try_fetch_phoenix_quote({"amount_raw": "1000000000"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["status_code"], 502)
+        self.assertIn("helper missing", result["error"]["detail"])
+
     def test_build_phantom_quote_payload_uses_wallet_as_taker(self):
         payload = _build_phantom_quote_payload(
             input_mint=METEORA_DLMM_SOL_MINT,
@@ -461,6 +568,102 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["route_steps"][0]["pool_address"], quote["pool"]["address"])
         self.assertEqual(option["_sort_out_amount_raw"], 84019465)
 
+    def test_normalize_orca_whirlpool_quote_option_marks_quote_only_non_clickable(self):
+        quote = {
+            "ok": True,
+            "provider": "orca_whirlpool",
+            "pool": {
+                "address": "FpCMFDFGYotvufJ7HrFHsWEiiQCGbkLCtwHiDnh7o28Q",
+                "tick_spacing": 2,
+                "fee_rate": 200,
+            },
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "84050000",
+            "min_out_amount_raw": "83629750",
+            "fee_raw": "200002",
+            "slippage_bps": 50,
+        }
+
+        option = _normalize_orca_whirlpool_quote_option(
+            variant_id="orca_whirlpool_quote",
+            label="Via Orca",
+            kind="alternative",
+            quote=quote,
+            from_token="SOL",
+            to_token="USDC",
+            input_amount=1.0,
+            input_amount_raw=1000000000,
+            output_decimals=6,
+        )
+
+        self.assertEqual(option["provider"], "orca-whirlpool")
+        self.assertEqual(option["execution_surface_label"], "Orca")
+        self.assertEqual(option["quote_status"], "live")
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["supports_current_pair"])
+        self.assertEqual(option["quote_source_type"], "venue_native_pool_sdk")
+        self.assertTrue(option["is_comparison_only"])
+        self.assertFalse(option["is_clickable"])
+        self.assertEqual(option["estimated_output"], 84.05)
+        self.assertEqual(option["min_received"], 83.62975)
+        self.assertEqual(option["route_shape"], "single-pool")
+        self.assertEqual(option["route_steps"][0]["pool_address"], quote["pool"]["address"])
+        self.assertEqual(option["route_steps"][0]["tick_spacing"], 2)
+        self.assertTrue(option["explicit_route_fees"]["has_explicit_fees"])
+
+    def test_normalize_phoenix_quote_option_marks_quote_only_non_clickable(self):
+        quote = {
+            "ok": True,
+            "provider": "phoenix",
+            "market": {
+                "address": "4DoNfFBfF7UokCC2FQzriy7yHK6DY6NVdYpuekQ5pRgg",
+                "name": "SOL/USDC",
+                "base_mint": METEORA_DLMM_SOL_MINT,
+                "quote_mint": METEORA_DLMM_USDC_MINT,
+                "taker_fee_bps": 2,
+            },
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "83008055",
+            "min_out_amount_raw": "82593014",
+            "slippage_bps": 50,
+            "taker_fee_bps": 2,
+            "top_bid": {"price": 83.039, "quantity": 0.1},
+            "top_ask": {"price": 83.069, "quantity": 0.005},
+            "fill_status": "full",
+            "fully_filled": True,
+        }
+
+        option = _normalize_phoenix_quote_option(
+            variant_id="phoenix_quote",
+            label="Via Phoenix",
+            kind="alternative",
+            quote=quote,
+            from_token="SOL",
+            to_token="USDC",
+            input_amount=1.0,
+            input_amount_raw=1000000000,
+            output_decimals=6,
+        )
+
+        self.assertEqual(option["provider"], "phoenix-clob")
+        self.assertEqual(option["execution_surface_label"], "Phoenix")
+        self.assertEqual(option["quote_status"], "live")
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["supports_current_pair"])
+        self.assertEqual(option["quote_source_type"], "venue_clob_sdk")
+        self.assertTrue(option["is_comparison_only"])
+        self.assertFalse(option["is_clickable"])
+        self.assertEqual(option["estimated_output"], 83.008055)
+        self.assertEqual(option["min_received"], 82.593014)
+        self.assertEqual(option["route_shape"], "single-clob-market")
+        self.assertEqual(option["route_steps"][0]["market_address"], quote["market"]["address"])
+        self.assertEqual(option["route_steps"][0]["fill_status"], "full")
+        self.assertTrue(option["explicit_route_fees"]["has_explicit_fees"])
+
     def test_diverse_other_options_can_include_raydium_and_meteora(self):
         recommended_jupiter = {
             "variant_id": "recommended_default",
@@ -593,6 +796,14 @@ class TestSanity(unittest.TestCase):
             patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
             patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}),
             patch(
+                "api.main._try_fetch_orca_whirlpool_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock orca"}},
+            ),
+            patch(
+                "api.main._try_fetch_phoenix_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock phoenix"}},
+            ),
+            patch(
                 "api.main._resolve_quote_reference_prices_usd",
                 return_value={
                     "SOL": {"usd": 84.0},
@@ -710,6 +921,14 @@ class TestSanity(unittest.TestCase):
             patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
             patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}),
             patch(
+                "api.main._try_fetch_orca_whirlpool_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock orca"}},
+            ),
+            patch(
+                "api.main._try_fetch_phoenix_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock phoenix"}},
+            ),
+            patch(
                 "api.main._resolve_quote_reference_prices_usd",
                 return_value={
                     "SOL": {"usd": 84.0},
@@ -747,6 +966,205 @@ class TestSanity(unittest.TestCase):
         other_providers = [opt["provider"] for opt in response["other_options"]]
         self.assertIn("raydium-trade-api", other_providers)
         self.assertIn("jupiter-metis", other_providers)
+
+    def test_swap_quote_recommends_orca_when_it_has_best_output(self):
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "85000000",
+            "otherAmountThreshold": "84575000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Raydium",
+                        "inputMint": METEORA_DLMM_SOL_MINT,
+                        "outputMint": METEORA_DLMM_USDC_MINT,
+                        "inAmount": "1000000000",
+                        "outAmount": "85000000",
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": METEORA_DLMM_SOL_MINT,
+                "inputAmount": "1000000000",
+                "outputMint": METEORA_DLMM_USDC_MINT,
+                "outputAmount": "83000000",
+                "otherAmountThreshold": "82585000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+        meteora_quote = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "pool": {"address": "meteora_pool", "name": "SOL-USDC", "bin_step": 4},
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "84000000",
+            "min_out_amount_raw": "83580000",
+            "fee_raw": "400000",
+            "protocol_fee_raw": "40000",
+        }
+        orca_quote = {
+            "ok": True,
+            "provider": "orca_whirlpool",
+            "pool": {"address": "orca_pool", "tick_spacing": 2, "fee_rate": 200},
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "86000000",
+            "min_out_amount_raw": "85570000",
+            "fee_raw": "200000",
+            "slippage_bps": 50,
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value={"ok": True, "data": orca_quote}),
+            patch(
+                "api.main._try_fetch_phoenix_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock phoenix"}},
+            ),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token="USDC", amount=1.0)
+
+        self.assertEqual(response["recommended_option"]["provider"], "orca-whirlpool")
+        self.assertEqual(response["recommended_option"]["variant_id"], "orca_whirlpool_quote")
+        self.assertTrue(response["recommended_option"]["is_comparison_only"])
+        self.assertFalse(response["recommended_option"]["is_clickable"])
+        self.assertEqual(response["summary"]["recommended_variant_id"], "orca_whirlpool_quote")
+        self.assertIn("orca_whirlpool_quote", response["summary"]["checked_variants"])
+
+    def test_swap_quote_can_show_phoenix_as_alternative(self):
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "90000000",
+            "otherAmountThreshold": "89550000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Raydium",
+                        "inputMint": METEORA_DLMM_SOL_MINT,
+                        "outputMint": METEORA_DLMM_USDC_MINT,
+                        "inAmount": "1000000000",
+                        "outAmount": "90000000",
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": METEORA_DLMM_SOL_MINT,
+                "inputAmount": "1000000000",
+                "outputMint": METEORA_DLMM_USDC_MINT,
+                "outputAmount": "83000000",
+                "otherAmountThreshold": "82585000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+        meteora_quote = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "pool": {"address": "meteora_pool", "name": "SOL-USDC", "bin_step": 4},
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "82000000",
+            "min_out_amount_raw": "81590000",
+            "fee_raw": "400000",
+            "protocol_fee_raw": "40000",
+        }
+        orca_quote = {
+            "ok": True,
+            "provider": "orca_whirlpool",
+            "pool": {"address": "orca_pool", "tick_spacing": 2, "fee_rate": 200},
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "88000000",
+            "min_out_amount_raw": "87560000",
+            "fee_raw": "200000",
+            "slippage_bps": 50,
+        }
+        phoenix_quote = {
+            "ok": True,
+            "provider": "phoenix",
+            "market": {
+                "address": "4DoNfFBfF7UokCC2FQzriy7yHK6DY6NVdYpuekQ5pRgg",
+                "name": "SOL/USDC",
+            },
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "87000000",
+            "min_out_amount_raw": "86565000",
+            "slippage_bps": 50,
+            "taker_fee_bps": 2,
+            "top_bid": {"price": 87, "quantity": 10},
+            "top_ask": {"price": 87.1, "quantity": 10},
+            "fill_status": "full",
+            "fully_filled": True,
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value={"ok": True, "data": orca_quote}),
+            patch("api.main._try_fetch_phoenix_quote", return_value={"ok": True, "data": phoenix_quote}),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token="USDC", amount=1.0)
+
+        other_providers = [opt["provider"] for opt in response["other_options"]]
+        self.assertIn("phoenix-clob", other_providers)
+        phoenix_option = next(opt for opt in response["other_options"] if opt["provider"] == "phoenix-clob")
+        self.assertEqual(phoenix_option["label"], "Via Phoenix")
+        self.assertTrue(phoenix_option["is_comparison_only"])
+        self.assertFalse(phoenix_option["is_clickable"])
+        self.assertIn("phoenix_quote", response["summary"]["checked_variants"])
 
     def test_swap_quote_selects_meteora_single_pool_as_direct_route(self):
         jupiter_quote = {
@@ -820,6 +1238,14 @@ class TestSanity(unittest.TestCase):
             ),
             patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
             patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}),
+            patch(
+                "api.main._try_fetch_orca_whirlpool_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock orca"}},
+            ),
+            patch(
+                "api.main._try_fetch_phoenix_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock phoenix"}},
+            ),
             patch(
                 "api.main._resolve_quote_reference_prices_usd",
                 return_value={
@@ -896,6 +1322,14 @@ class TestSanity(unittest.TestCase):
             patch(
                 "api.main._try_fetch_meteora_dlmm_quote",
                 return_value={"ok": False, "error": {"status_code": 502, "detail": "mock meteora"}},
+            ),
+            patch(
+                "api.main._try_fetch_orca_whirlpool_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock orca"}},
+            ),
+            patch(
+                "api.main._try_fetch_phoenix_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock phoenix"}},
             ),
             patch(
                 "api.main._resolve_quote_reference_prices_usd",
@@ -988,6 +1422,14 @@ class TestSanity(unittest.TestCase):
                 "api.main._try_fetch_meteora_dlmm_quote",
                 return_value={"ok": False, "error": {"status_code": 502, "detail": "mock meteora"}},
             ),
+            patch(
+                "api.main._try_fetch_orca_whirlpool_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock orca"}},
+            ),
+            patch(
+                "api.main._try_fetch_phoenix_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock phoenix"}},
+            ),
             patch("api.main._try_fetch_phantom_quote", return_value={"ok": True, "data": phantom_quote}),
             patch(
                 "api.main._resolve_quote_reference_prices_usd",
@@ -1042,6 +1484,14 @@ class TestSanity(unittest.TestCase):
             patch(
                 "api.main._try_fetch_meteora_dlmm_quote",
                 return_value={"ok": False, "error": {"status_code": 502, "detail": "mock meteora"}},
+            ),
+            patch(
+                "api.main._try_fetch_orca_whirlpool_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock orca"}},
+            ),
+            patch(
+                "api.main._try_fetch_phoenix_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock phoenix"}},
             ),
             patch(
                 "api.main._resolve_quote_reference_prices_usd",

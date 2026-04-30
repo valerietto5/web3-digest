@@ -954,6 +954,18 @@ METEORA_DLMM_SOL_USDC_CANDIDATE = {
     "bin_step": 4,
 }
 
+ORCA_WHIRLPOOL_SOL_MINT = "So11111111111111111111111111111111111111112"
+ORCA_WHIRLPOOL_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+PHOENIX_SOL_MINT = "So11111111111111111111111111111111111111112"
+PHOENIX_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+PHOENIX_SOL_USDC_MARKET = {
+    "address": "4DoNfFBfF7UokCC2FQzriy7yHK6DY6NVdYpuekQ5pRgg",
+    "name": "SOL/USDC",
+    "base_mint": PHOENIX_SOL_MINT,
+    "quote_mint": PHOENIX_USDC_MINT,
+}
+
 
 def _build_meteora_dlmm_quote_payload(
     *,
@@ -1029,6 +1041,204 @@ def _try_fetch_meteora_dlmm_quote(payload: dict) -> dict:
             "error": {
                 "status_code": 502,
                 "detail": error.get("message") if isinstance(error, dict) else "Meteora DLMM quote failed",
+                "code": error.get("code") if isinstance(error, dict) else None,
+                "helper_error": error,
+            },
+        }
+    except HTTPException as e:
+        return {
+            "ok": False,
+            "error": {
+                "status_code": e.status_code,
+                "detail": e.detail,
+            },
+        }
+
+
+def _build_orca_whirlpool_quote_payload(
+    *,
+    input_mint: str,
+    output_mint: str,
+    amount_raw: int,
+    slippage_bps: int = 50,
+    rpc_url: str | None = None,
+) -> dict:
+    payload = {
+        "rpc_url": rpc_url or os.getenv("SOLANA_RPC_URL") or "https://api.mainnet-beta.solana.com",
+        "input_mint": input_mint,
+        "output_mint": output_mint,
+        "amount_raw": str(amount_raw),
+        "slippage_bps": int(slippage_bps),
+        "pool_candidates": [],
+    }
+
+    if input_mint != ORCA_WHIRLPOOL_SOL_MINT or output_mint != ORCA_WHIRLPOOL_USDC_MINT:
+        payload["unsupported_pair"] = True
+        payload["unsupported_pair_detail"] = (
+            "Orca Whirlpool quote helper currently supports SOL -> USDC only."
+        )
+
+    return payload
+
+
+def _fetch_orca_whirlpool_quote(payload: dict) -> dict:
+    if payload.get("unsupported_pair"):
+        raise HTTPException(
+            status_code=400,
+            detail=payload.get("unsupported_pair_detail") or "Unsupported Orca Whirlpool quote pair",
+        )
+
+    helper_path = project_root() / "tools" / "orca_whirlpool_quote_research.mjs"
+    if not helper_path.exists():
+        raise HTTPException(status_code=502, detail=f"Orca Whirlpool helper missing: {helper_path}")
+
+    try:
+        proc = subprocess.run(
+            [os.getenv("NODE_BINARY") or "node", str(helper_path)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            cwd=project_root(),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=502, detail=f"Orca Whirlpool helper runtime missing: {e}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Orca Whirlpool helper timed out")
+
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        stderr = (proc.stderr or "").strip()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Orca Whirlpool helper returned no JSON output: {stderr[-500:]}",
+        )
+
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Orca Whirlpool helper returned invalid JSON: {e}")
+
+    if proc.returncode != 0 and parsed.get("ok") is not False:
+        detail = parsed.get("error") or (proc.stderr or "").strip()
+        raise HTTPException(status_code=502, detail=f"Orca Whirlpool helper failed: {detail}")
+
+    return parsed
+
+
+def _try_fetch_orca_whirlpool_quote(payload: dict) -> dict:
+    try:
+        data = _fetch_orca_whirlpool_quote(payload)
+        if data.get("ok") is True:
+            return {"ok": True, "data": data}
+
+        error = data.get("error") if isinstance(data, dict) else None
+        return {
+            "ok": False,
+            "error": {
+                "status_code": 502,
+                "detail": error.get("message") if isinstance(error, dict) else "Orca Whirlpool quote failed",
+                "code": error.get("code") if isinstance(error, dict) else None,
+                "helper_error": error,
+            },
+        }
+    except HTTPException as e:
+        return {
+            "ok": False,
+            "error": {
+                "status_code": e.status_code,
+                "detail": e.detail,
+            },
+        }
+
+
+def _build_phoenix_quote_payload(
+    *,
+    input_mint: str,
+    output_mint: str,
+    amount_raw: int,
+    slippage_bps: int = 50,
+    rpc_url: str | None = None,
+) -> dict:
+    market_candidates = []
+    if input_mint == PHOENIX_SOL_MINT and output_mint == PHOENIX_USDC_MINT:
+        market_candidates.append(dict(PHOENIX_SOL_USDC_MARKET))
+
+    payload = {
+        "rpc_url": rpc_url or os.getenv("SOLANA_RPC_URL") or "https://api.mainnet-beta.solana.com",
+        "input_mint": input_mint,
+        "output_mint": output_mint,
+        "amount_raw": str(amount_raw),
+        "slippage_bps": int(slippage_bps),
+        "market_candidates": market_candidates,
+    }
+
+    if input_mint != PHOENIX_SOL_MINT or output_mint != PHOENIX_USDC_MINT:
+        payload["unsupported_pair"] = True
+        payload["unsupported_pair_detail"] = (
+            "Phoenix quote helper currently supports SOL -> USDC only."
+        )
+
+    return payload
+
+
+def _fetch_phoenix_quote(payload: dict) -> dict:
+    if payload.get("unsupported_pair"):
+        raise HTTPException(
+            status_code=400,
+            detail=payload.get("unsupported_pair_detail") or "Unsupported Phoenix quote pair",
+        )
+
+    helper_path = project_root() / "tools" / "phoenix_quote_research.mjs"
+    if not helper_path.exists():
+        raise HTTPException(status_code=502, detail=f"Phoenix helper missing: {helper_path}")
+
+    try:
+        proc = subprocess.run(
+            [os.getenv("NODE_BINARY") or "node", str(helper_path)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            cwd=project_root(),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=502, detail=f"Phoenix helper runtime missing: {e}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Phoenix helper timed out")
+
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        stderr = (proc.stderr or "").strip()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Phoenix helper returned no JSON output: {stderr[-500:]}",
+        )
+
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"Phoenix helper returned invalid JSON: {e}")
+
+    if proc.returncode != 0 and parsed.get("ok") is not False:
+        detail = parsed.get("error") or (proc.stderr or "").strip()
+        raise HTTPException(status_code=502, detail=f"Phoenix helper failed: {detail}")
+
+    return parsed
+
+
+def _try_fetch_phoenix_quote(payload: dict) -> dict:
+    try:
+        data = _fetch_phoenix_quote(payload)
+        if data.get("ok") is True:
+            return {"ok": True, "data": data}
+
+        error = data.get("error") if isinstance(data, dict) else None
+        return {
+            "ok": False,
+            "error": {
+                "status_code": 502,
+                "detail": error.get("message") if isinstance(error, dict) else "Phoenix quote failed",
                 "code": error.get("code") if isinstance(error, dict) else None,
                 "helper_error": error,
             },
@@ -1285,6 +1495,59 @@ def _extract_meteora_dlmm_route_fees(quote: dict) -> dict:
                 ),
                 "fee_mint": fee_mint,
                 "fee_token": fee_token,
+            }
+        )
+
+    return {
+        "platform_fee": None,
+        "route_fee_items": route_fee_items,
+        "has_explicit_fees": bool(route_fee_items),
+    }
+
+
+def _extract_orca_whirlpool_route_fees(quote: dict) -> dict:
+    route_fee_items = []
+    fee_amount_raw = quote.get("fee_raw")
+    fee_mint = quote.get("input_mint")
+    mint_meta = _mint_meta(fee_mint)
+    decimals = mint_meta.get("decimals") if mint_meta else None
+    fee_token = mint_meta.get("symbol") if mint_meta else None
+
+    if fee_amount_raw not in (None, "", "0", 0):
+        route_fee_items.append(
+            {
+                "label": "Orca Whirlpool trade fee",
+                "fee_amount_raw": str(fee_amount_raw),
+                "fee_amount": (
+                    _ui_amount(fee_amount_raw, decimals)
+                    if decimals is not None
+                    else None
+                ),
+                "fee_mint": fee_mint,
+                "fee_token": fee_token,
+            }
+        )
+
+    return {
+        "platform_fee": None,
+        "route_fee_items": route_fee_items,
+        "has_explicit_fees": bool(route_fee_items),
+    }
+
+
+def _extract_phoenix_route_fees(quote: dict) -> dict:
+    route_fee_items = []
+    taker_fee_bps = quote.get("taker_fee_bps")
+
+    if taker_fee_bps not in (None, ""):
+        route_fee_items.append(
+            {
+                "label": "Phoenix taker fee",
+                "fee_bps": taker_fee_bps,
+                "fee_amount_raw": None,
+                "fee_amount": None,
+                "fee_mint": quote.get("output_mint"),
+                "fee_token": "USDC",
             }
         )
 
@@ -1780,6 +2043,161 @@ def _normalize_meteora_dlmm_quote_option(
     }
 
 
+def _normalize_orca_whirlpool_quote_option(
+    *,
+    variant_id: str,
+    label: str,
+    kind: str,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    input_amount: float,
+    input_amount_raw: int,
+    output_decimals: int,
+) -> dict:
+    pool = quote.get("pool") or {}
+    out_amount_raw = quote.get("out_amount_raw")
+    threshold_raw = quote.get("min_out_amount_raw")
+    route_step = {
+        "label": "Orca Whirlpool",
+        "pool_address": pool.get("address"),
+        "pool_name": pool.get("name"),
+        "tick_spacing": pool.get("tick_spacing") or pool.get("tickSpacing"),
+        "fee_rate": pool.get("fee_rate") or pool.get("feeRate"),
+        "input_mint": quote.get("input_mint"),
+        "output_mint": quote.get("output_mint"),
+        "in_amount_raw": quote.get("in_amount_raw"),
+        "out_amount_raw": out_amount_raw,
+    }
+
+    return {
+        "variant_id": variant_id,
+        "label": label,
+        "kind": kind,
+        "provider": "orca-whirlpool",
+        "execution_surface_label": "Orca",
+        "quote_status": "live",
+        "execution_status": "quote_only",
+        "supports_current_pair": True,
+        "quote_source_type": "venue_native_pool_sdk",
+        "is_comparison_only": True,
+        "is_clickable": False,
+        "is_jupiter_only": False,
+        "from_token": from_token,
+        "to_token": to_token,
+        "input_amount": input_amount,
+        "input_amount_raw": str(input_amount_raw),
+        "estimated_output": _ui_amount(out_amount_raw, output_decimals),
+        "estimated_output_raw": out_amount_raw,
+        "min_received": _ui_amount(threshold_raw, output_decimals),
+        "min_received_raw": threshold_raw,
+        "estimated_total_swap_cost": None,
+        "estimated_trade_execution_cost": None,
+        "execution_cost": None,
+        "cost_scope": "not_computed_yet",
+        "cost_transparency": _build_cost_transparency(
+            network_fee_scope="unavailable_for_quote_only_preview",
+        ),
+        "explicit_route_fees": _extract_orca_whirlpool_route_fees(quote),
+        "estimated_network_fee": None,
+        "network_fee_scope": "not_estimated_in_preview",
+        "network_fee_detail": "Orca Whirlpool is quote-only in this preview path.",
+        "price_impact_pct": _safe_float(quote.get("price_impact")),
+        "slippage_bps": quote.get("slippage_bps"),
+        "route_label": "Orca Whirlpool",
+        "route_labels": ["Orca"],
+        "route_steps": [route_step],
+        "route_step_count": 1,
+        "route_shape": "single-pool",
+        "protections": {
+            "slippage_bps": quote.get("slippage_bps"),
+        },
+        "explanation": "Orca Whirlpool single-pool SDK quote. Comparison-only for now.",
+        "raw_quote": quote,
+        "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
+    }
+
+
+def _normalize_phoenix_quote_option(
+    *,
+    variant_id: str,
+    label: str,
+    kind: str,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    input_amount: float,
+    input_amount_raw: int,
+    output_decimals: int,
+) -> dict:
+    market = quote.get("market") or {}
+    out_amount_raw = quote.get("out_amount_raw")
+    threshold_raw = quote.get("min_out_amount_raw")
+    route_step = {
+        "label": "Phoenix CLOB",
+        "market_address": market.get("address"),
+        "market_name": market.get("name"),
+        "top_bid": quote.get("top_bid"),
+        "top_ask": quote.get("top_ask"),
+        "fill_status": quote.get("fill_status"),
+        "fully_filled": quote.get("fully_filled"),
+        "input_mint": quote.get("input_mint"),
+        "output_mint": quote.get("output_mint"),
+        "in_amount_raw": quote.get("in_amount_raw"),
+        "out_amount_raw": out_amount_raw,
+    }
+
+    return {
+        "variant_id": variant_id,
+        "label": label,
+        "kind": kind,
+        "provider": "phoenix-clob",
+        "execution_surface_label": "Phoenix",
+        "quote_status": "live",
+        "execution_status": "quote_only",
+        "supports_current_pair": True,
+        "quote_source_type": "venue_clob_sdk",
+        "is_comparison_only": True,
+        "is_clickable": False,
+        "is_jupiter_only": False,
+        "from_token": from_token,
+        "to_token": to_token,
+        "input_amount": input_amount,
+        "input_amount_raw": str(input_amount_raw),
+        "estimated_output": _ui_amount(out_amount_raw, output_decimals),
+        "estimated_output_raw": out_amount_raw,
+        "min_received": _ui_amount(threshold_raw, output_decimals),
+        "min_received_raw": threshold_raw,
+        "estimated_total_swap_cost": None,
+        "estimated_trade_execution_cost": None,
+        "execution_cost": None,
+        "cost_scope": "not_computed_yet",
+        "cost_transparency": _build_cost_transparency(
+            network_fee_scope="unavailable_for_quote_only_preview",
+        ),
+        "explicit_route_fees": _extract_phoenix_route_fees(quote),
+        "estimated_network_fee": None,
+        "network_fee_scope": "not_estimated_in_preview",
+        "network_fee_detail": "Phoenix CLOB is quote-only in this preview path.",
+        "price_impact_pct": None,
+        "slippage_bps": quote.get("slippage_bps"),
+        "route_label": "Phoenix CLOB",
+        "route_labels": ["Phoenix"],
+        "route_steps": [route_step],
+        "route_step_count": 1,
+        "route_shape": "single-clob-market",
+        "protections": {
+            "slippage_bps": quote.get("slippage_bps"),
+            "fill_status": quote.get("fill_status"),
+            "fully_filled": quote.get("fully_filled"),
+            "taker_fee_bps": quote.get("taker_fee_bps"),
+        },
+        "explanation": "Phoenix single-market CLOB SDK quote. Comparison-only for now.",
+        "raw_quote": quote,
+        "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
+    }
+
+
 def _normalize_phantom_quote_option(
     *,
     variant_id: str,
@@ -1914,6 +2332,7 @@ def _route_simplicity_rank(option: dict | None) -> tuple:
 
     shape_rank = {
         "single-pool": 0,
+        "single-clob-market": 0,
         "direct": 1,
         "single-path": 2,
         "multi-leg-or-split": 5,
@@ -2348,6 +2767,56 @@ def swap_quote(
     else:
         diagnostics.append({"variant_id": "meteora_dlmm_quote", **meteora_result["error"]})
 
+    orca_payload = _build_orca_whirlpool_quote_payload(
+        input_mint=input_meta["mint"],
+        output_mint=output_meta["mint"],
+        amount_raw=raw_amount,
+        slippage_bps=50,
+        rpc_url=SOLANA_MAINNET_RPC_URL,
+    )
+    orca_result = _try_fetch_orca_whirlpool_quote(orca_payload)
+    if orca_result["ok"]:
+        external_other_options.append(
+            _normalize_orca_whirlpool_quote_option(
+                variant_id="orca_whirlpool_quote",
+                label="Via Orca",
+                kind="alternative",
+                quote=orca_result["data"],
+                from_token=from_token,
+                to_token=to_token,
+                input_amount=amount,
+                input_amount_raw=raw_amount,
+                output_decimals=output_meta["decimals"],
+            )
+        )
+    else:
+        diagnostics.append({"variant_id": "orca_whirlpool_quote", **orca_result["error"]})
+
+    phoenix_payload = _build_phoenix_quote_payload(
+        input_mint=input_meta["mint"],
+        output_mint=output_meta["mint"],
+        amount_raw=raw_amount,
+        slippage_bps=50,
+        rpc_url=SOLANA_MAINNET_RPC_URL,
+    )
+    phoenix_result = _try_fetch_phoenix_quote(phoenix_payload)
+    if phoenix_result["ok"]:
+        external_other_options.append(
+            _normalize_phoenix_quote_option(
+                variant_id="phoenix_quote",
+                label="Via Phoenix",
+                kind="alternative",
+                quote=phoenix_result["data"],
+                from_token=from_token,
+                to_token=to_token,
+                input_amount=amount,
+                input_amount_raw=raw_amount,
+                output_decimals=output_meta["decimals"],
+            )
+        )
+    else:
+        diagnostics.append({"variant_id": "phoenix_quote", **phoenix_result["error"]})
+
     phantom_payload = _build_phantom_quote_payload(
         input_mint=input_meta["mint"],
         output_mint=output_meta["mint"],
@@ -2435,6 +2904,10 @@ def swap_quote(
             alt_label = "Via Raydium"
         elif variant_id == "meteora_dlmm_quote":
             alt_label = "Via Meteora"
+        elif variant_id == "orca_whirlpool_quote":
+            alt_label = "Via Orca"
+        elif variant_id == "phoenix_quote":
+            alt_label = "Via Phoenix"
         elif variant_id == "phantom_quote":
             alt_label = "Via Phantom"
         elif variant_id == "exclude_recommended_dexes":
@@ -2462,6 +2935,8 @@ def swap_quote(
         "broader_search": "A broader routing search produced the best checked output for this request.",
         "raydium_quote": "Raydium produced the best checked quote for this request, but it is comparison-only in this preview path.",
         "meteora_dlmm_quote": "Meteora DLMM produced the best checked quote for this request, but it is comparison-only in this preview path.",
+        "orca_whirlpool_quote": "Orca Whirlpool produced the best checked quote for this request, but it is comparison-only in this preview path.",
+        "phoenix_quote": "Phoenix CLOB produced the best checked quote for this request, but it is comparison-only in this preview path.",
         "phantom_quote": "Phantom routing API produced the best checked quote for this request, but it is comparison-only in this preview path.",
     }.get(
         best_quote_variant_id,
@@ -2611,6 +3086,8 @@ def swap_quote(
                 "direct_route_check",
                 "raydium_quote",
                 "meteora_dlmm_quote",
+                "orca_whirlpool_quote",
+                "phoenix_quote",
                 "phantom_quote",
             ],
             "available_other_options": len(ranked_other_options),
@@ -2631,6 +3108,7 @@ def swap_quote(
                 "Direct/simple route is selected across available live quote universes. The Jupiter direct-route quote remains one candidate in that model.",
                 "Benchmark gap is a reference comparison, not a fee. Explicit route fees are provider-disclosed fee evidence and may already be reflected in quoted output.",
                 "Phantom uses the official Phantom routing API quote surface. It is quote-only and non-clickable in this preview path.",
+                "Orca and Phoenix use standalone SDK helpers. They are quote-only and non-clickable in this preview path.",
             ],
         },
     }
