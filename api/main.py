@@ -2416,26 +2416,17 @@ def _select_diverse_other_options(
         key for key in (
             _quote_option_universe_key(best_quote),
             _quote_option_universe_key(recommended),
+            _quote_option_universe_key(direct),
         )
         if key
     }
 
-    def universe_key(opt: dict) -> tuple:
-        return _quote_option_universe_key(opt)
-
-    # Prefer universes that are not already represented by the best quote or
-    # executable recommendation. Fall back to one internal option per universe.
-    ordered_candidates = [
-        opt for opt in candidates if universe_key(opt) not in featured_universes
-    ]
-    ordered_candidates.extend(
-        opt for opt in candidates if universe_key(opt) in featured_universes
-    )
-
     selected = []
     selected_universes = set()
-    for opt in ordered_candidates:
-        key = universe_key(opt)
+    for opt in candidates:
+        key = _quote_option_universe_key(opt)
+        if key in featured_universes:
+            continue
         if key in selected_universes:
             continue
 

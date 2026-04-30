@@ -741,6 +741,45 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("orca_whirlpool_quote", [opt["variant_id"] for opt in other_options])
         self.assertGreater(len(other_options), 2)
 
+    def test_diverse_other_options_excludes_featured_execution_surfaces(self):
+        def option(variant_id, provider, surface, output):
+            return {
+                "variant_id": variant_id,
+                "provider": provider,
+                "execution_surface_label": surface,
+                "supports_current_pair": True,
+                "estimated_output_raw": str(output),
+                "route_labels": [surface],
+                "_sort_out_amount_raw": output,
+            }
+
+        recommended = option("recommended_default", "jupiter-metis", "Jupiter", 900)
+        jupiter_broader = option("broader_search", "jupiter-metis", "Jupiter", 890)
+        direct = option("meteora_dlmm_quote", "meteora-dlmm", "Meteora", 880)
+        meteora_extra = option("meteora_backup", "meteora-dlmm", "Meteora", 875)
+        orca = option("orca_whirlpool_quote", "orca-whirlpool", "Orca", 870)
+        raydium = option("raydium_quote", "raydium-trade-api", "Raydium", 860)
+        phoenix = option("phoenix_quote", "phoenix-clob", "Phoenix", 850)
+        phantom = option("phantom_quote", "phantom-routing-api", "Phantom", 840)
+
+        ranked = _rank_quote_options(
+            [recommended, jupiter_broader, direct, meteora_extra, orca, raydium, phoenix, phantom]
+        )
+        other_options = _select_diverse_other_options(
+            ranked,
+            best_quote=recommended,
+            recommended=recommended,
+            direct=direct,
+        )
+
+        variant_ids = [opt["variant_id"] for opt in other_options]
+        self.assertNotIn("broader_search", variant_ids)
+        self.assertNotIn("meteora_backup", variant_ids)
+        self.assertEqual(
+            variant_ids,
+            ["orca_whirlpool_quote", "raydium_quote", "phoenix_quote", "phantom_quote"],
+        )
+
     def test_select_direct_route_prefers_simpler_shape_then_output(self):
         meteora_option = {
             "variant_id": "meteora_dlmm_quote",
@@ -1000,7 +1039,8 @@ class TestSanity(unittest.TestCase):
 
         other_providers = [opt["provider"] for opt in response["other_options"]]
         self.assertIn("raydium-trade-api", other_providers)
-        self.assertIn("jupiter-metis", other_providers)
+        self.assertNotIn("jupiter-metis", other_providers)
+        self.assertNotIn("meteora-dlmm", other_providers)
 
     def test_swap_quote_recommends_orca_when_it_has_best_output(self):
         jupiter_quote = {
