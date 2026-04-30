@@ -706,6 +706,41 @@ class TestSanity(unittest.TestCase):
             ["raydium_quote", "meteora_dlmm_quote"],
         )
 
+    def test_diverse_other_options_can_include_more_than_two_remaining_universes(self):
+        def option(variant_id, provider, surface, output):
+            return {
+                "variant_id": variant_id,
+                "provider": provider,
+                "execution_surface_label": surface,
+                "supports_current_pair": True,
+                "estimated_output_raw": str(output),
+                "route_labels": [surface],
+                "_sort_out_amount_raw": output,
+            }
+
+        recommended = option("recommended_default", "jupiter-metis", "Jupiter", 900)
+        direct = option("orca_whirlpool_quote", "orca-whirlpool", "Orca", 880)
+        raydium = option("raydium_quote", "raydium-trade-api", "Raydium", 870)
+        meteora = option("meteora_dlmm_quote", "meteora-dlmm", "Meteora", 860)
+        phantom = option("phantom_quote", "phantom-routing-api", "Phantom", 850)
+        phoenix = option("phoenix_quote", "phoenix-clob", "Phoenix", 840)
+
+        ranked = _rank_quote_options([recommended, direct, raydium, meteora, phantom, phoenix])
+        other_options = _select_diverse_other_options(
+            ranked,
+            best_quote=recommended,
+            recommended=recommended,
+            direct=direct,
+        )
+
+        self.assertEqual(
+            [opt["variant_id"] for opt in other_options],
+            ["raydium_quote", "meteora_dlmm_quote", "phantom_quote", "phoenix_quote"],
+        )
+        self.assertNotIn("recommended_default", [opt["variant_id"] for opt in other_options])
+        self.assertNotIn("orca_whirlpool_quote", [opt["variant_id"] for opt in other_options])
+        self.assertGreater(len(other_options), 2)
+
     def test_select_direct_route_prefers_simpler_shape_then_output(self):
         meteora_option = {
             "variant_id": "meteora_dlmm_quote",
@@ -1058,7 +1093,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(response["summary"]["recommended_variant_id"], "orca_whirlpool_quote")
         self.assertIn("orca_whirlpool_quote", response["summary"]["checked_variants"])
 
-    def test_swap_quote_can_show_phoenix_as_alternative(self):
+    def test_swap_quote_can_show_phantom_and_phoenix_as_alternatives(self):
         jupiter_quote = {
             "inputMint": METEORA_DLMM_SOL_MINT,
             "inAmount": "1000000000",
@@ -1137,6 +1172,23 @@ class TestSanity(unittest.TestCase):
             "fill_status": "full",
             "fully_filled": True,
         }
+        phantom_quote = {
+            "ok": True,
+            "status_code": 200,
+            "first_quote_buyAmount": "86500000",
+            "quoteResponse": {
+                "quotes": [
+                    {
+                        "buyAmount": "86500000",
+                        "sellAmount": "1000000000",
+                        "priceImpact": 0,
+                        "baseProvider": {"id": "okx", "name": "OKX"},
+                        "sources": [{"name": "ZeroFi via OKX", "proportion": "1"}],
+                        "fees": [],
+                    }
+                ]
+            },
+        }
 
         with (
             patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
@@ -1148,6 +1200,7 @@ class TestSanity(unittest.TestCase):
             patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}),
             patch("api.main._try_fetch_orca_whirlpool_quote", return_value={"ok": True, "data": orca_quote}),
             patch("api.main._try_fetch_phoenix_quote", return_value={"ok": True, "data": phoenix_quote}),
+            patch("api.main._try_fetch_phantom_quote", return_value={"ok": True, "data": phantom_quote}),
             patch(
                 "api.main._resolve_quote_reference_prices_usd",
                 return_value={
@@ -1160,11 +1213,23 @@ class TestSanity(unittest.TestCase):
 
         other_providers = [opt["provider"] for opt in response["other_options"]]
         self.assertIn("phoenix-clob", other_providers)
+        self.assertIn("phantom-routing-api", other_providers)
+        self.assertIn("raydium-trade-api", other_providers)
+        self.assertIn("meteora-dlmm", other_providers)
+        self.assertNotIn("jupiter-metis", other_providers)
+        self.assertNotIn("orca-whirlpool", other_providers)
+        self.assertGreater(len(response["other_options"]), 2)
         phoenix_option = next(opt for opt in response["other_options"] if opt["provider"] == "phoenix-clob")
         self.assertEqual(phoenix_option["label"], "Via Phoenix")
         self.assertTrue(phoenix_option["is_comparison_only"])
         self.assertFalse(phoenix_option["is_clickable"])
+        phantom_option = next(opt for opt in response["other_options"] if opt["provider"] == "phantom-routing-api")
+        self.assertEqual(phantom_option["label"], "Via Phantom")
+        self.assertTrue(phantom_option["is_comparison_only"])
+        self.assertFalse(phantom_option["is_clickable"])
+        self.assertTrue(response["summary"]["alternatives_show_all_remaining_universes"])
         self.assertIn("phoenix_quote", response["summary"]["checked_variants"])
+        self.assertIn("phantom_quote", response["summary"]["checked_variants"])
 
     def test_swap_quote_selects_meteora_single_pool_as_direct_route(self):
         jupiter_quote = {

@@ -1139,14 +1139,15 @@ async function previewSwap() {
       return detail.includes("restrict_intermediate_tokens") && detail.includes("free tier");
     });
 
-    const filteredOtherOptions = otherOptions.filter((opt) => !sameOption(opt, displayRec));
-    const defaultAlternativeOptions = filteredOtherOptions.filter((opt) => {
-      return opt?.provider !== "jupiter-metis" && opt?.execution_surface_label !== "Jupiter";
-    });
-
     const directMatchesRecommended =
       directRoute &&
       sameOption(displayRec, directRoute);
+
+    const defaultAlternativeOptions = otherOptions.filter((opt) => {
+      if (sameOption(opt, displayRec)) return false;
+      if (directRoute && !directMatchesRecommended && sameOption(opt, directRoute)) return false;
+      return true;
+    });
 
     let compareSummary = "Other options: " + defaultAlternativeOptions.length;
 
@@ -1186,7 +1187,7 @@ async function previewSwap() {
 
     $("swapAlternativesCard").style.display = "block";
     $("swapAlternativesBox").innerHTML = alternativesHtml ||
-      "<div class='muted'>No non-Jupiter alternatives returned for this quote.</div>";
+      "<div class='muted'>No remaining alternatives returned for this quote.</div>";
 
     let directNote = "";
     let directMatchesAlternative = false;

@@ -2400,7 +2400,7 @@ def _select_diverse_other_options(
     best_quote: dict | None,
     recommended: dict | None,
     direct: dict | None = None,
-    limit: int = 2,
+    limit: int | None = None,
 ) -> list[dict]:
     candidates = []
     for opt in ranked_options:
@@ -2442,7 +2442,7 @@ def _select_diverse_other_options(
         selected_universes.add(key)
         selected.append(opt)
 
-        if len(selected) >= limit:
+        if limit is not None and len(selected) >= limit:
             break
 
     return selected
@@ -2892,7 +2892,6 @@ def swap_quote(
         best_quote=best_quote_base,
         recommended=recommended_executable_base,
         direct=direct_route_base,
-        limit=2,
     )
     for opt in diverse_other_options:
         variant_id = opt.get("variant_id")
@@ -3091,6 +3090,7 @@ def swap_quote(
                 "phantom_quote",
             ],
             "available_other_options": len(ranked_other_options),
+            "alternatives_show_all_remaining_universes": True,
             "direct_route_available": direct_route_output is not None,
             "ranking_basis": "highest_receive_amount",
             "direct_route_selection_basis": "simplest_meaningful_candidate_across_live_quote_universes",
