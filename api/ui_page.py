@@ -493,16 +493,16 @@ function renderSwapInlineBaseline(baseline, delta = null) {
       "You spend: " + inputAmount + " " + inputToken + " ≈ " + inputUsd;
   }
 
+  function referenceSourceLabel(source) {
+    if (source === "dexscreener_solana") return "DexScreener reference";
+    if (source === "jupiter_price_v3") return "Jupiter reference";
+    if (source === "coingecko_simple_price") return "CoinGecko reference";
+    if (source === "sqlite_usd_snapshots") return "SQLite cached reference";
+    return "Cached reference";
+  }
+
   if (ideal) {
-    const source = baseline.pricing_source;
-    const baselineLabel =
-      source === "jupiter_price_v3"
-        ? "Jupiter reference"
-        : source === "coingecko_simple_price"
-        ? "CoinGecko reference"
-        : source === "sqlite_usd_snapshots"
-          ? "SQLite cached reference"
-          : "Cached reference";
+    const baselineLabel = referenceSourceLabel(baseline.pricing_source);
 
     ideal.textContent =
       baselineLabel +
@@ -518,22 +518,34 @@ function renderSwapInlineBaseline(baseline, delta = null) {
   if (deltaLine) {
     if (delta && (delta.output_diff_abs != null || delta.output_diff_pct != null)) {
       const rawAbs = Number(delta.output_diff_abs);
+      const rawUsd = Number(delta.output_diff_usd);
       const rawPct = Number(delta.output_diff_pct);
 
       const sign = Number.isFinite(rawAbs) && rawAbs > 0 ? "+" : "";
       const absTxt = Number.isFinite(rawAbs) ? sign + fmtNum(rawAbs, 6) : "n/a";
-      const pctTxt = Number.isFinite(rawPct) ? sign + fmtNum(rawPct, 2) + "%" : "n/a";
+      const usdSign = Number.isFinite(rawUsd) && rawUsd > 0 ? "+" : "";
+      const usdTxt = Number.isFinite(rawUsd)
+        ? " ≈ " + usdSign + fmtUsdCost(rawUsd)
+        : "";
+      const pctTxt = Number.isFinite(rawPct) ? sign + fmtNum(rawPct, 4) + "%" : "n/a";
+      const sourceLabel = referenceSourceLabel(delta.pricing_source || baseline.pricing_source);
 
       deltaLine.textContent =
-        "Executable output vs reference: " +
+        "Best executable output vs " +
+        sourceLabel +
+        ": " +
         absTxt +
         " " +
         outputToken +
+        usdTxt +
         " (" +
         pctTxt +
         ")";
     } else {
-      deltaLine.textContent = "Executable output vs reference: —";
+      deltaLine.textContent =
+        "Best executable output vs " +
+        referenceSourceLabel(baseline.pricing_source) +
+        ": —";
     }
   }
 
@@ -542,7 +554,11 @@ function renderSwapInlineBaseline(baseline, delta = null) {
     const ts = baseline.pricing_ts;
     const tsUtc = formatUtcTimestamp(ts);
 
-    if (source === "jupiter_price_v3") {
+    if (source === "dexscreener_solana") {
+      note.textContent = tsUtc
+        ? "Source: DexScreener Solana market pair at " + tsUtc + ". Not an executable quote."
+        : "Source: DexScreener Solana market pair. Not an executable quote.";
+    } else if (source === "jupiter_price_v3") {
       note.textContent = tsUtc
         ? "Source: Jupiter Price V3 market price at " + tsUtc + ". Not an executable quote."
         : "Source: Jupiter Price V3 market price. Not an executable quote.";
@@ -785,6 +801,7 @@ function renderSwapOptionCard(opt, opts = {}) {
       : "n/a";
   
       const tradeCostAmount = Number(opt?.estimated_trade_execution_cost?.amount);
+    const tradeCostUsd = Number(opt?.estimated_trade_execution_cost?.amount_usd);
     const tradeCostToken =
               opt?.estimated_trade_execution_cost?.token || opt?.to_token || "";
 
@@ -793,7 +810,8 @@ function renderSwapOptionCard(opt, opts = {}) {
                    ? "Execution gap vs reference: " +
                       fmtNum(tradeCostAmount, 6) +
                       " " +
-                      tradeCostToken
+                      tradeCostToken +
+                      (Number.isFinite(tradeCostUsd) ? " ≈ " + fmtUsdCost(tradeCostUsd) : "")
                       : "Quoted output meets or exceeds the reference";
 
           const explicitFees = opt?.explicit_route_fees || null;

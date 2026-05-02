@@ -22,6 +22,8 @@ from api.main import (
     _normalize_phoenix_quote_option,
     _normalize_raydium_quote_option,
     _rank_quote_options,
+    _build_reference_baseline_from_resolved_prices,
+    _resolve_quote_benchmark_prices_usd,
     _resolve_swap_token_meta,
     _select_direct_route_option,
     _select_diverse_other_options,
@@ -32,6 +34,7 @@ from api.main import (
     swap_quote,
     swap_tokens,
 )
+from api.ui_page import build_ui_html
 
 from db import (
     init_db,
@@ -76,6 +79,51 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(by_symbol["BONK"]["default_enabled"])
         self.assertTrue(by_symbol["BONK"]["verified"])
         self.assertNotIn("USDT", by_symbol)
+
+    def test_bonk_reference_prices_prefer_dexscreener(self):
+        class Pair:
+            price_usd = 0.000006
+            liquidity_usd = 100000.0
+            url = "https://dexscreener.com/solana/example"
+
+        with (
+            patch("dexscreener.fetch_best_pair_price_usd_solana", return_value=Pair()),
+            patch("api.main._fetch_jupiter_price_v3_reference_prices_usd", return_value={}),
+            patch("api.main._fetch_coingecko_reference_prices_usd", return_value={}),
+        ):
+            prices = _resolve_quote_benchmark_prices_usd(["BONK"])
+
+        self.assertEqual(prices["BONK"]["usd"], 0.000006)
+        self.assertEqual(prices["BONK"]["pricing_source"], "dexscreener_solana")
+
+    def test_reference_baseline_delta_includes_token_and_usd_difference(self):
+        baseline, delta = _build_reference_baseline_from_resolved_prices(
+            from_token="SOL",
+            to_token="BONK",
+            amount=10.0,
+            best_output_amount=134778455.36,
+            from_row={"usd": 83.61077, "pricing_source": "coingecko_simple_price"},
+            to_row={"usd": 0.00000619385, "pricing_source": "dexscreener_solana"},
+        )
+
+        self.assertEqual(baseline["pricing_source"], "dexscreener_solana")
+        self.assertEqual(delta["output_token"], "BONK")
+        self.assertEqual(delta["pricing_source"], "dexscreener_solana")
+        self.assertAlmostEqual(
+            delta["output_diff_usd"],
+            delta["output_diff_abs"] * 0.00000619385,
+            places=9,
+        )
+
+    def test_swap_ui_reference_delta_renders_source_token_and_usd_labels(self):
+        html = build_ui_html()
+
+        self.assertIn("Best executable output vs ", html)
+        self.assertIn("DexScreener reference", html)
+        self.assertIn("CoinGecko reference", html)
+        self.assertIn("Jupiter reference", html)
+        self.assertIn("fmtUsdCost(rawUsd)", html)
+        self.assertIn("fmtUsdCost(tradeCostUsd)", html)
 
     def test_insert_and_get_latest_prices_with_ts(self):
         t1 = "2026-02-25T00:00:00+00:00"
@@ -945,8 +993,8 @@ class TestSanity(unittest.TestCase):
             "inputMint": sol_mint,
             "inAmount": "1000000000",
             "outputMint": bonk_mint,
-            "outAmount": "1350000000",
-            "otherAmountThreshold": "1343250000",
+            "outAmount": "1350000000000",
+            "otherAmountThreshold": "1343250000000",
             "slippageBps": 50,
             "priceImpactPct": "0",
             "swapUsdValue": "84",
@@ -957,7 +1005,7 @@ class TestSanity(unittest.TestCase):
                         "inputMint": sol_mint,
                         "outputMint": bonk_mint,
                         "inAmount": "1000000000",
-                        "outAmount": "1350000000",
+                        "outAmount": "1350000000000",
                     },
                     "percent": 100,
                 }
@@ -969,8 +1017,8 @@ class TestSanity(unittest.TestCase):
                 "inputMint": sol_mint,
                 "inputAmount": "1000000000",
                 "outputMint": bonk_mint,
-                "outputAmount": "1340000000",
-                "otherAmountThreshold": "1333300000",
+                "outputAmount": "1340000000000",
+                "otherAmountThreshold": "1333300000000",
                 "slippageBps": 50,
                 "priceImpactPct": 0,
                 "routePlan": [],
@@ -1028,6 +1076,24 @@ class TestSanity(unittest.TestCase):
         self.assertIn("orca_whirlpool_quote", diagnostic_variants)
         self.assertIn("phoenix_quote", diagnostic_variants)
         self.assertIn("phantom_quote", diagnostic_variants)
+
+        self.assertAlmostEqual(
+            response["recommended_option"]["estimated_trade_execution_cost"]["amount"],
+            500000.0,
+        )
+        self.assertAlmostEqual(
+            response["recommended_option"]["estimated_trade_execution_cost"]["amount_usd"],
+            3.0,
+        )
+        raydium_option = next(
+            opt for opt in response["other_options"] if opt["provider"] == "raydium-trade-api"
+        )
+        self.assertAlmostEqual(raydium_option["estimated_trade_execution_cost"]["amount"], 600000.0)
+        self.assertAlmostEqual(raydium_option["estimated_trade_execution_cost"]["amount_usd"], 3.6)
+        self.assertNotEqual(
+            raydium_option["estimated_trade_execution_cost"]["amount"],
+            raydium_option["estimated_trade_execution_cost"]["amount_usd"],
+        )
 
     def test_swap_quote_sol_usdc_still_uses_registry_metadata(self):
         jupiter_quote = {

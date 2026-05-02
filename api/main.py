@@ -240,7 +240,44 @@ def _resolve_from_solana_native_benchmark_source(tokens: list[str]) -> dict:
 
 
 def _resolve_from_long_tail_benchmark_source(tokens: list[str]) -> dict:
-    return {}
+    out = {}
+
+    try:
+        from dexscreener import fetch_best_pair_price_usd_solana
+    except Exception:
+        return out
+
+    for token in tokens:
+        token = (token or "").strip().upper()
+        meta = _resolve_swap_token_meta(token)
+        if not meta:
+            continue
+
+        tags = {str(tag).lower() for tag in (meta.get("tags") or [])}
+        if "meme" not in tags:
+            continue
+
+        mint = meta.get("mint")
+        if not mint:
+            continue
+
+        pair = fetch_best_pair_price_usd_solana(mint, min_liquidity_usd=5_000.0)
+        if not pair:
+            continue
+
+        out[token] = {
+            "usd": float(pair.price_usd),
+            "pricing_source": "dexscreener_solana",
+            "pricing_ts": None,
+            "pricing_source_detail": {
+                "mint": mint,
+                "chain_id": meta.get("dexscreener_chain_id") or "solana",
+                "liquidity_usd": pair.liquidity_usd,
+                "url": pair.url,
+            },
+        }
+
+    return out
 
 
 def _resolve_from_sqlite_fallback(tokens: list[str]) -> dict:
@@ -251,9 +288,9 @@ def _resolve_quote_benchmark_prices_usd(tokens: list[str]) -> dict:
     resolved = {}
 
     for resolver in (
+        _resolve_from_long_tail_benchmark_source,
         _resolve_from_solana_native_benchmark_source,
         _resolve_from_major_benchmark_source,
-        _resolve_from_long_tail_benchmark_source,
         _resolve_from_sqlite_fallback,
     ):
         missing = [token for token in tokens if token not in resolved]
@@ -300,11 +337,11 @@ def _build_reference_baseline_from_resolved_prices(
         "output_usd_price": output_usd_price,
         "output_usd_value": ideal_output_amount * output_usd_price,
         "pricing_source": (
-            from_row.get("pricing_source")
-            or to_row.get("pricing_source")
+            to_row.get("pricing_source")
+            or from_row.get("pricing_source")
             or "coingecko_simple_price"
         ),
-        "pricing_ts": from_row.get("pricing_ts") or to_row.get("pricing_ts"),
+        "pricing_ts": to_row.get("pricing_ts") or from_row.get("pricing_ts"),
         "pricing_source_detail": {
             "from_token": from_row.get("pricing_source_detail"),
             "to_token": to_row.get("pricing_source_detail"),
@@ -315,11 +352,16 @@ def _build_reference_baseline_from_resolved_prices(
     baseline_vs_recommended = None
     if best_output_amount is not None and ideal_output_amount:
         diff_abs = best_output_amount - ideal_output_amount
+        diff_usd = diff_abs * output_usd_price
         diff_pct = (diff_abs / ideal_output_amount) * 100
 
         baseline_vs_recommended = {
             "output_diff_abs": diff_abs,
+            "output_diff_usd": diff_usd,
             "output_diff_pct": diff_pct,
+            "output_token": to_token,
+            "output_usd_price": output_usd_price,
+            "pricing_source": baseline.get("pricing_source"),
             "note": "Difference between the fresh theoretical reference and the current recommended executable route.",
         }
 
@@ -1664,6 +1706,7 @@ def _compute_trade_execution_cost(
 def _attach_cost_fields(
     option: dict | None,
     reference_output_amount: float | None,
+    reference_prices: dict | None = None,
 ) -> dict | None:
     if not option:
         return option
@@ -1678,6 +1721,22 @@ def _attach_cost_fields(
     option["estimated_trade_execution_cost"] = trade_cost
     option["execution_cost"] = trade_cost.get("amount")
     option["cost_scope"] = trade_cost.get("scope")
+
+    reference_prices = reference_prices or {}
+    output_token = option.get("to_token")
+    output_price_row = reference_prices.get(output_token) or {}
+    output_token_usd_price = _safe_float(output_price_row.get("usd"))
+    execution_cost_amount = _safe_float(trade_cost.get("amount"))
+    execution_cost_usd = (
+        execution_cost_amount * output_token_usd_price
+        if execution_cost_amount is not None and output_token_usd_price is not None
+        else None
+    )
+
+    trade_cost["amount_usd"] = execution_cost_usd
+    trade_cost["token_usd_price"] = output_token_usd_price
+    trade_cost["pricing_source"] = output_price_row.get("pricing_source")
+    option["execution_cost_usd"] = execution_cost_usd
 
     return option
 
@@ -2984,15 +3043,25 @@ def swap_quote(
 
     reference_output_amount = _safe_float((inline_baseline or {}).get("ideal_output_amount"))
 
-    best_quote_option = _attach_cost_fields(best_quote_option, reference_output_amount)
+    best_quote_option = _attach_cost_fields(
+        best_quote_option,
+        reference_output_amount,
+        reference_prices=reference_prices,
+    )
     recommended_executable_option = _attach_cost_fields(
         recommended_executable_option,
         reference_output_amount,
+        reference_prices=reference_prices,
     )
     ranked_other_options = [
-        _attach_cost_fields(opt, reference_output_amount) for opt in ranked_other_options
+        _attach_cost_fields(opt, reference_output_amount, reference_prices=reference_prices)
+        for opt in ranked_other_options
     ] 
-    direct_route_output = _attach_cost_fields(direct_route_output, reference_output_amount)
+    direct_route_output = _attach_cost_fields(
+        direct_route_output,
+        reference_output_amount,
+        reference_prices=reference_prices,
+    )
 
     if _is_executable_quote_option(best_quote_option):
         best_quote_option = _attach_backend_network_fee_estimate(
