@@ -1356,6 +1356,125 @@ def _try_fetch_phoenix_quote(payload: dict) -> dict:
         }
 
 
+PUMPSWAP_SOL_MINT = "So11111111111111111111111111111111111111112"
+PUMPSWAP_DOCS_TOKEN_MINT = "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump"
+PUMPSWAP_DOCS_POOL_CANDIDATE = {
+    "address": "GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J",
+    "name": "official-docs-example",
+    "base_mint": PUMPSWAP_DOCS_TOKEN_MINT,
+    "quote_mint": PUMPSWAP_SOL_MINT,
+}
+
+
+def _build_pumpswap_quote_payload(
+    *,
+    input_mint: str,
+    output_mint: str,
+    amount_raw: int,
+    slippage_bps: int = 50,
+    rpc_url: str | None = None,
+    user_public_key: str | None = None,
+) -> dict:
+    mint_pair = {input_mint, output_mint}
+    supported_pair = mint_pair == {PUMPSWAP_SOL_MINT, PUMPSWAP_DOCS_TOKEN_MINT}
+    pool_candidates = [dict(PUMPSWAP_DOCS_POOL_CANDIDATE)] if supported_pair else []
+
+    payload = {
+        "rpc_url": rpc_url or os.getenv("SOLANA_RPC_URL") or "https://api.mainnet-beta.solana.com",
+        "input_mint": input_mint,
+        "output_mint": output_mint,
+        "amount_raw": str(amount_raw),
+        "slippage_bps": int(slippage_bps),
+        "user_public_key": user_public_key,
+        "pool_candidates": pool_candidates,
+    }
+
+    if not supported_pair:
+        payload["unsupported_pair"] = True
+        payload["unsupported_pair_detail"] = (
+            "PumpSwap quote helper currently supports SOL <-> FIGURE docs-token pool only."
+        )
+
+    if not user_public_key:
+        payload["skip_reason"] = "wallet_public_key_required_for_pumpswap_quote"
+
+    return payload
+
+
+def _fetch_pumpswap_quote(payload: dict) -> dict:
+    if payload.get("unsupported_pair"):
+        raise HTTPException(
+            status_code=400,
+            detail=payload.get("unsupported_pair_detail") or "Unsupported PumpSwap quote pair",
+        )
+
+    if not payload.get("user_public_key"):
+        raise HTTPException(status_code=400, detail="PumpSwap quote requires user_public_key")
+
+    helper_path = project_root() / "tools" / "pumpswap_quote_research.mjs"
+    if not helper_path.exists():
+        raise HTTPException(status_code=502, detail=f"PumpSwap helper missing: {helper_path}")
+
+    try:
+        proc = subprocess.run(
+            [os.getenv("NODE_BINARY") or "node", str(helper_path)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            cwd=project_root(),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=502, detail=f"PumpSwap helper runtime missing: {e}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="PumpSwap helper timed out")
+
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        stderr = (proc.stderr or "").strip()
+        raise HTTPException(
+            status_code=502,
+            detail=f"PumpSwap helper returned no JSON output: {stderr[-500:]}",
+        )
+
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=502, detail=f"PumpSwap helper returned invalid JSON: {e}")
+
+    if proc.returncode != 0 and parsed.get("ok") is not False:
+        detail = parsed.get("error") or (proc.stderr or "").strip()
+        raise HTTPException(status_code=502, detail=f"PumpSwap helper failed: {detail}")
+
+    return parsed
+
+
+def _try_fetch_pumpswap_quote(payload: dict) -> dict:
+    try:
+        data = _fetch_pumpswap_quote(payload)
+        if data.get("ok") is True:
+            return {"ok": True, "data": data}
+
+        error = data.get("error") if isinstance(data, dict) else None
+        return {
+            "ok": False,
+            "error": {
+                "status_code": 502,
+                "detail": error.get("message") if isinstance(error, dict) else "PumpSwap quote failed",
+                "code": error.get("code") if isinstance(error, dict) else None,
+                "helper_error": error,
+            },
+        }
+    except HTTPException as e:
+        return {
+            "ok": False,
+            "error": {
+                "status_code": e.status_code,
+                "detail": e.detail,
+            },
+        }
+
+
 
 PHANTOM_SOL_MINT = "So11111111111111111111111111111111111111112"
 PHANTOM_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -2413,6 +2532,91 @@ def _normalize_phantom_quote_option(
     }
 
 
+def _extract_pumpswap_route_fees(quote: dict) -> dict:
+    return {
+        "platform_fee": None,
+        "route_fee_items": [],
+        "has_explicit_fees": False,
+        "note": "PumpSwap helper does not currently expose normalized explicit fee amounts.",
+    }
+
+
+def _normalize_pumpswap_quote_option(
+    *,
+    variant_id: str,
+    label: str,
+    kind: str,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    input_amount: float,
+    input_amount_raw: int,
+    output_decimals: int,
+) -> dict:
+    pool = quote.get("pool") or {}
+    out_amount_raw = quote.get("out_amount_raw")
+    min_out_amount_raw = quote.get("min_out_amount_raw")
+    route_step = {
+        "label": "PumpSwap",
+        "pool_address": pool.get("address"),
+        "pool_name": pool.get("name"),
+        "direction": quote.get("direction"),
+        "input_mint": quote.get("input_mint"),
+        "output_mint": quote.get("output_mint"),
+        "in_amount_raw": quote.get("in_amount_raw"),
+        "out_amount_raw": out_amount_raw,
+        "base_reserve_raw": quote.get("base_reserve_raw"),
+        "quote_reserve_raw": quote.get("quote_reserve_raw"),
+    }
+
+    return {
+        "variant_id": variant_id,
+        "label": label,
+        "kind": kind,
+        "provider": "pumpswap",
+        "execution_surface_label": "PumpSwap",
+        "quote_status": "live",
+        "execution_status": "quote_only",
+        "supports_current_pair": True,
+        "quote_source_type": "venue_native_pool_sdk",
+        "is_comparison_only": True,
+        "is_clickable": False,
+        "is_jupiter_only": False,
+        "from_token": from_token,
+        "to_token": to_token,
+        "input_amount": input_amount,
+        "input_amount_raw": str(input_amount_raw),
+        "estimated_output": _ui_amount(out_amount_raw, output_decimals),
+        "estimated_output_raw": out_amount_raw,
+        "min_received": _ui_amount(min_out_amount_raw, output_decimals),
+        "min_received_raw": min_out_amount_raw,
+        "estimated_total_swap_cost": None,
+        "estimated_trade_execution_cost": None,
+        "execution_cost": None,
+        "cost_scope": "not_computed_yet",
+        "cost_transparency": _build_cost_transparency(
+            network_fee_scope="unavailable_for_quote_only_preview",
+        ),
+        "explicit_route_fees": _extract_pumpswap_route_fees(quote),
+        "estimated_network_fee": None,
+        "network_fee_scope": "not_estimated_in_preview",
+        "network_fee_detail": "PumpSwap is quote-only in this preview path.",
+        "price_impact_pct": None,
+        "slippage_bps": quote.get("slippage_bps"),
+        "route_label": "PumpSwap",
+        "route_labels": ["PumpSwap"],
+        "route_steps": [route_step],
+        "route_step_count": 1,
+        "route_shape": "single-pool",
+        "protections": {
+            "slippage_bps": quote.get("slippage_bps"),
+        },
+        "explanation": "PumpSwap single-pool SDK quote. Comparison-only for now.",
+        "raw_quote": quote,
+        "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
+    }
+
+
 def _dedupe_options(options: list[dict]) -> list[dict]:
     out = []
     seen = set()
@@ -2961,6 +3165,32 @@ def swap_quote(
     else:
         diagnostics.append({"variant_id": "phantom_quote", **phantom_result["error"]})
 
+    pumpswap_payload = _build_pumpswap_quote_payload(
+        input_mint=input_meta["mint"],
+        output_mint=output_meta["mint"],
+        amount_raw=raw_amount,
+        slippage_bps=50,
+        rpc_url=SOLANA_MAINNET_RPC_URL,
+        user_public_key=user_public_key,
+    )
+    pumpswap_result = _try_fetch_pumpswap_quote(pumpswap_payload)
+    if pumpswap_result["ok"]:
+        external_other_options.append(
+            _normalize_pumpswap_quote_option(
+                variant_id="pumpswap_quote",
+                label="Via PumpSwap",
+                kind="alternative",
+                quote=pumpswap_result["data"],
+                from_token=from_token,
+                to_token=to_token,
+                input_amount=amount,
+                input_amount_raw=raw_amount,
+                output_decimals=output_meta["decimals"],
+            )
+        )
+    else:
+        diagnostics.append({"variant_id": "pumpswap_quote", **pumpswap_result["error"]})
+
     # Build the ranked Jupiter candidate pool from all successful checked variants.
     # This remains the executable universe for now.
     ranked_jupiter_candidates = [recommended, *variant_candidates]
@@ -3028,6 +3258,8 @@ def swap_quote(
             alt_label = "Via Phoenix"
         elif variant_id == "phantom_quote":
             alt_label = "Via Phantom"
+        elif variant_id == "pumpswap_quote":
+            alt_label = "Via PumpSwap"
         elif variant_id == "exclude_recommended_dexes":
             alt_label = "Alternate venue mix"
         elif variant_id == "broader_search":
@@ -3056,6 +3288,7 @@ def swap_quote(
         "orca_whirlpool_quote": "Orca Whirlpool produced the best checked quote for this request, but it is comparison-only in this preview path.",
         "phoenix_quote": "Phoenix CLOB produced the best checked quote for this request, but it is comparison-only in this preview path.",
         "phantom_quote": "Phantom routing API produced the best checked quote for this request, but it is comparison-only in this preview path.",
+        "pumpswap_quote": "PumpSwap produced the best checked quote for this request, but it is comparison-only in this preview path.",
     }.get(
         best_quote_variant_id,
         "The best quote had the strongest checked output among the currently available variants."
@@ -3217,6 +3450,7 @@ def swap_quote(
                 "orca_whirlpool_quote",
                 "phoenix_quote",
                 "phantom_quote",
+                "pumpswap_quote",
             ],
             "available_other_options": len(ranked_other_options),
             "alternatives_show_all_remaining_universes": True,
@@ -3238,6 +3472,7 @@ def swap_quote(
                 "Benchmark gap is a reference comparison, not a fee. Explicit route fees are provider-disclosed fee evidence and may already be reflected in quoted output.",
                 "Phantom uses the official Phantom routing API quote surface. It is quote-only and non-clickable in this preview path.",
                 "Orca and Phoenix use standalone SDK helpers. They are quote-only and non-clickable in this preview path.",
+                "PumpSwap uses a standalone SDK helper only for curated known pool candidates. It is quote-only and non-clickable in this preview path.",
             ],
         },
     }

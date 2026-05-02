@@ -12,15 +12,18 @@ from api.main import (
     _build_orca_whirlpool_quote_payload,
     _build_phantom_quote_payload,
     _build_phoenix_quote_payload,
+    _build_pumpswap_quote_payload,
     _fetch_meteora_dlmm_quote,
     _fetch_orca_whirlpool_quote,
     _fetch_phantom_quote,
     _fetch_phoenix_quote,
+    _fetch_pumpswap_quote,
     _is_executable_quote_option,
     _normalize_meteora_dlmm_quote_option,
     _normalize_orca_whirlpool_quote_option,
     _normalize_phantom_quote_option,
     _normalize_phoenix_quote_option,
+    _normalize_pumpswap_quote_option,
     _normalize_raydium_quote_option,
     _rank_quote_options,
     _build_reference_baseline_from_resolved_prices,
@@ -32,6 +35,7 @@ from api.main import (
     _try_fetch_orca_whirlpool_quote,
     _try_fetch_phantom_quote,
     _try_fetch_phoenix_quote,
+    _try_fetch_pumpswap_quote,
     swap_quote,
     swap_tokens,
 )
@@ -67,6 +71,9 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(bonk["mint"], "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263")
         self.assertEqual(bonk["decimals"], 5)
         self.assertEqual(bonk["coingecko_id"], "bonk")
+        figure = _resolve_swap_token_meta("FIGURE")
+        self.assertEqual(figure["mint"], "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump")
+        self.assertEqual(figure["decimals"], 6)
 
     def test_swap_tokens_returns_default_enabled_registry_tokens(self):
         response = swap_tokens()
@@ -79,6 +86,8 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(by_symbol["BONK"]["display_name"], "Bonk")
         self.assertTrue(by_symbol["BONK"]["default_enabled"])
         self.assertTrue(by_symbol["BONK"]["verified"])
+        self.assertEqual(by_symbol["FIGURE"]["display_name"], "Action Figure")
+        self.assertFalse(by_symbol["FIGURE"]["verified"])
         self.assertNotIn("USDT", by_symbol)
 
     def test_bonk_reference_prices_prefer_dexscreener(self):
@@ -501,6 +510,101 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["error"]["status_code"], 502)
         self.assertIn("helper missing", result["error"]["detail"])
 
+    def test_build_pumpswap_quote_payload_adds_docs_pool_for_sol_to_docs_token(self):
+        payload = _build_pumpswap_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint="7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump",
+            amount_raw=1000000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertEqual(payload["rpc_url"], "https://example.invalid")
+        self.assertEqual(payload["amount_raw"], "1000000000")
+        self.assertEqual(payload["user_public_key"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
+        self.assertEqual(len(payload["pool_candidates"]), 1)
+        self.assertEqual(
+            payload["pool_candidates"][0]["address"],
+            "GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J",
+        )
+        self.assertNotIn("unsupported_pair", payload)
+
+    def test_build_pumpswap_quote_payload_adds_docs_pool_for_docs_token_to_sol(self):
+        payload = _build_pumpswap_quote_payload(
+            input_mint="7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump",
+            output_mint=METEORA_DLMM_SOL_MINT,
+            amount_raw=1000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertEqual(len(payload["pool_candidates"]), 1)
+        self.assertEqual(payload["pool_candidates"][0]["base_mint"], "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump")
+        self.assertEqual(payload["pool_candidates"][0]["quote_mint"], METEORA_DLMM_SOL_MINT)
+        self.assertNotIn("unsupported_pair", payload)
+
+    def test_try_fetch_pumpswap_quote_handles_unsupported_pair_without_fake_card(self):
+        payload = _build_pumpswap_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=METEORA_DLMM_BONK_MINT,
+            amount_raw=1000000000,
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        result = _try_fetch_pumpswap_quote(payload)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["status_code"], 400)
+        self.assertIn("PumpSwap", result["error"]["detail"])
+
+    def test_fetch_pumpswap_quote_uses_subprocess_json_contract(self):
+        helper_output = {
+            "ok": True,
+            "provider": "pumpswap",
+            "out_amount_raw": "123456789",
+        }
+
+        def fake_run(cmd, **kwargs):
+            self.assertIn("tools/pumpswap_quote_research.mjs", cmd[1])
+            payload = json.loads(kwargs["input"])
+            self.assertEqual(payload["user_public_key"], "wallet")
+            self.assertFalse(kwargs.get("shell", False))
+            self.assertGreater(kwargs["timeout"], 0)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(helper_output), "")
+
+        with patch("api.main.subprocess.run", side_effect=fake_run):
+            result = _fetch_pumpswap_quote(
+                {
+                    "rpc_url": "https://example.invalid",
+                    "input_mint": METEORA_DLMM_SOL_MINT,
+                    "output_mint": "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump",
+                    "amount_raw": "1000000000",
+                    "slippage_bps": 50,
+                    "user_public_key": "wallet",
+                    "pool_candidates": [dict(address="pool")],
+                }
+            )
+
+        self.assertEqual(result, helper_output)
+
+    def test_try_fetch_pumpswap_quote_handles_timeout(self):
+        with patch("api.main.subprocess.run", side_effect=subprocess.TimeoutExpired("node", 20)):
+            result = _try_fetch_pumpswap_quote(
+                {
+                    "rpc_url": "https://example.invalid",
+                    "input_mint": METEORA_DLMM_SOL_MINT,
+                    "output_mint": "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump",
+                    "amount_raw": "1000000000",
+                    "user_public_key": "wallet",
+                    "pool_candidates": [dict(address="pool")],
+                }
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["status_code"], 504)
+
     def test_build_phantom_quote_payload_uses_wallet_as_taker(self):
         payload = _build_phantom_quote_payload(
             input_mint=METEORA_DLMM_SOL_MINT,
@@ -663,6 +767,50 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["route_labels"], ["ZeroFi via OKX"])
         self.assertEqual(option["route_shape"], "wallet-routing")
         self.assertTrue(option["explicit_route_fees"]["has_explicit_fees"])
+
+    def test_normalize_pumpswap_quote_option_marks_quote_only_non_clickable(self):
+        quote = {
+            "ok": True,
+            "provider": "pumpswap",
+            "direction": "buy_base_with_quote",
+            "pool": {
+                "address": "GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J",
+                "name": "official-docs-example",
+            },
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump",
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "45000000",
+            "base_reserve_raw": "1000000000000",
+            "quote_reserve_raw": "2000000000",
+            "slippage_bps": 50,
+        }
+
+        option = _normalize_pumpswap_quote_option(
+            variant_id="pumpswap_quote",
+            label="Via PumpSwap",
+            kind="alternative",
+            quote=quote,
+            from_token="SOL",
+            to_token="FIGURE",
+            input_amount=1.0,
+            input_amount_raw=1000000000,
+            output_decimals=6,
+        )
+
+        self.assertEqual(option["provider"], "pumpswap")
+        self.assertEqual(option["execution_surface_label"], "PumpSwap")
+        self.assertEqual(option["quote_status"], "live")
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["supports_current_pair"])
+        self.assertEqual(option["quote_source_type"], "venue_native_pool_sdk")
+        self.assertTrue(option["is_comparison_only"])
+        self.assertFalse(option["is_clickable"])
+        self.assertEqual(option["route_shape"], "single-pool")
+        self.assertEqual(option["estimated_output"], 45.0)
+        self.assertIsNone(option["min_received"])
+        self.assertFalse(option["explicit_route_fees"]["has_explicit_fees"])
+        self.assertEqual(option["_sort_out_amount_raw"], 45000000)
 
     def test_normalize_meteora_dlmm_quote_option_marks_comparison_only(self):
         quote = {
@@ -1362,6 +1510,130 @@ class TestSanity(unittest.TestCase):
             self.assertTrue(option["is_comparison_only"])
             self.assertFalse(option["is_clickable"])
             self.assertIsNotNone(option["estimated_output_usd"])
+
+    def test_swap_quote_can_include_pumpswap_for_docs_token(self):
+        sol_mint = "So11111111111111111111111111111111111111112"
+        docs_mint = "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump"
+        jupiter_quote = {
+            "inputMint": sol_mint,
+            "inAmount": "1000000000",
+            "outputMint": docs_mint,
+            "outAmount": "40000000",
+            "otherAmountThreshold": "39800000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [],
+        }
+        pumpswap_quote = {
+            "ok": True,
+            "provider": "pumpswap",
+            "direction": "buy_base_with_quote",
+            "pool": {
+                "address": "GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J",
+                "name": "official-docs-example",
+            },
+            "input_mint": sol_mint,
+            "output_mint": docs_mint,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "45000000",
+            "base_reserve_raw": "1000000000000",
+            "quote_reserve_raw": "2000000000",
+            "slippage_bps": 50,
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+            patch("api.main._try_fetch_pumpswap_quote", return_value={"ok": True, "data": pumpswap_quote}) as fetch_pumpswap,
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "FIGURE": {"usd": 0.000018},
+                },
+            ),
+        ):
+            response = swap_quote(
+                from_token="SOL",
+                to_token="FIGURE",
+                amount=1.0,
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(fetch_pumpswap.call_args.args[0]["pool_candidates"][0]["address"], "GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J")
+        self.assertEqual(response["recommended_option"]["provider"], "pumpswap")
+        self.assertTrue(response["recommended_option"]["is_comparison_only"])
+        self.assertFalse(response["recommended_option"]["is_clickable"])
+        self.assertEqual(response["recommended_option"]["execution_status"], "quote_only")
+        self.assertAlmostEqual(response["recommended_option"]["estimated_output"], 45.0)
+        self.assertAlmostEqual(response["recommended_option"]["estimated_output_usd"], 0.00081)
+        self.assertEqual(response["recommended_executable_option"]["provider"], "jupiter-metis")
+        self.assertIn("pumpswap_quote", response["summary"]["checked_variants"])
+
+    def test_swap_quote_sol_to_bonk_does_not_show_fake_pumpswap(self):
+        sol_mint = "So11111111111111111111111111111111111111112"
+        bonk_mint = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+        jupiter_quote = {
+            "inputMint": sol_mint,
+            "inAmount": "1000000000",
+            "outputMint": bonk_mint,
+            "outAmount": "1350000000000",
+            "otherAmountThreshold": "1343250000000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [],
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+            patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "BONK": {"usd": 0.000006},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token="BONK", amount=1.0)
+
+        visible = [
+            response["recommended_option"],
+            response["direct_route_check"],
+            *response["other_options"],
+        ]
+        self.assertNotIn("pumpswap", {opt["provider"] for opt in visible if opt})
+        diagnostic_variants = {
+            item["variant_id"] for item in response["debug"]["variant_errors"]
+        }
+        self.assertIn("pumpswap_quote", diagnostic_variants)
 
     def test_swap_quote_sol_usdc_still_uses_registry_metadata(self):
         jupiter_quote = {

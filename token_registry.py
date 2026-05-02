@@ -21,11 +21,14 @@ class TokenMeta(TypedDict, total=False):
     tags: list[str]
     verified: bool
     default_enabled: bool
+    supported_pair_hints: list[dict]
+    known_pool_candidates: dict
 
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 BONK_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+DOCS_PUMP_MINT = "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump"
 
 NATIVE_TOKENS: Dict[str, TokenMeta] = {
     "SOL": {
@@ -101,6 +104,33 @@ TOKENS: Dict[str, TokenMeta] = {
         "tags": ["meme", "curated"],
         "verified": True,
         "default_enabled": True,
+    },
+    DOCS_PUMP_MINT: {
+        "asset": "figure",
+        "symbol": "FIGURE",
+        "name": "Action Figure",
+        "display_name": "Action Figure",
+        "mint": DOCS_PUMP_MINT,
+        "decimals": 6,
+        "dexscreener": True,
+        "dexscreener_chain_id": "solana",
+        "tags": ["meme", "pumpfun", "pumpswap", "experimental"],
+        "verified": False,
+        "default_enabled": True,
+        "supported_pair_hints": [
+            {"input": "SOL", "output": "FIGURE"},
+            {"input": "FIGURE", "output": "SOL"},
+        ],
+        "known_pool_candidates": {
+            "pumpswap": [
+                {
+                    "address": "GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J",
+                    "name": "official-docs-example",
+                    "base_mint": DOCS_PUMP_MINT,
+                    "quote_mint": SOL_MINT,
+                }
+            ]
+        },
     },
 }
 
