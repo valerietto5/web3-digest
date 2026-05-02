@@ -139,6 +139,15 @@ class TestSanity(unittest.TestCase):
         self.assertIn('const sign = n < 0 ? "-" : "";', html)
         self.assertIn('return sign + "$" + abs.toFixed(2);', html)
 
+    def test_swap_ui_recommended_and_direct_titles_include_surface(self):
+        html = build_ui_html()
+
+        self.assertIn('return "Recommended — " + surface;', html)
+        self.assertIn('return "Direct / simple — " + surface;', html)
+        self.assertIn("Direct route is also the current recommendation.", html)
+        self.assertIn("Route shape:", html)
+        self.assertIn("Alternative ${idx + 1} — ${escapeHtml(routeLabel)}", html)
+
     def test_insert_and_get_latest_prices_with_ts(self):
         t1 = "2026-02-25T00:00:00+00:00"
         t2 = "2026-02-25T01:00:00+00:00"

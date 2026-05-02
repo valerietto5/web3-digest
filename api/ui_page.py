@@ -735,12 +735,24 @@ function surfaceRouteLabel(opt) {
     : (opt?.route_label || "unknown-route");
 }
 
+function swapOptionCardTitle(opt, opts = {}) {
+  if (opts.title) return opts.title;
+
+  const surface = surfaceRouteLabel(opt);
+  const kind = String(opt?.kind || "");
+
+  if (kind === "recommended") return "Recommended — " + surface;
+  if (kind === "direct") return "Direct / simple — " + surface;
+
+  return opt?.label || opt?.execution_surface_label || "Route";
+}
+
 function renderSwapOptionCard(opt, opts = {}) {
   if (!opt) {
     return "<div class='muted'>No data.</div>";
   }
 
-  const title = opts.title || (opt.label || opt.execution_surface_label || "Route");
+  const title = swapOptionCardTitle(opt, opts);
   const note = opts.note || "";
   const compactDirect = !!opts.compactDirect;
   const showRecommendedAction = !!opts.showRecommendedAction;
@@ -906,7 +918,7 @@ function renderSwapOptionCard(opt, opts = {}) {
         Receive (est.): ${escapeHtml(estOut)} ${escapeHtml(opt.to_token || "")}${escapeHtml(receiveUsdText)}
       </div>
       <div class="muted" style="margin-top:4px;">
-        Route: ${escapeHtml(routeLabel)} | Steps: ${escapeHtml(String(routeSteps))} 
+        Route shape: ${escapeHtml(routeShape)} · Steps: ${escapeHtml(String(routeSteps))}
       </div>
       ${
   isRecommendedCard
