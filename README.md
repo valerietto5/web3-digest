@@ -1,8 +1,8 @@
 # Web3 Digest
 
-**Web3 Digest is a wallet-connected execution-transparency app for swaps.**
+**Web3 Digest is a wallet-connected execution comparison engine for Solana swaps.**
 
-It helps users connect Phantom, compare routes, understand tradeoffs, and make better execution decisions with clearer cost, route, and execution visibility.
+It helps users connect Phantom, compare real quote paths, understand route tradeoffs, and make better swap decisions with clearer cost, benchmark, and execution visibility.
 
 Project status: **Alpha**
 
@@ -15,20 +15,21 @@ Web3 Digest is **not** trying to become a new wallet competing with Phantom.
 Instead, it sits **on top of trusted wallets like Phantom** and focuses on a different problem:
 
 - helping users understand what they are about to swap into
-- comparing routes more clearly
-- showing the gap between ideal reference and executable reality
+- comparing execution outcomes more clearly
+- showing the gap between theoretical reference and quoted reality
 - making execution feel more transparent and less mysterious
 - turning swap decisions into something users can inspect instead of blindly accept
 
 The product direction is simple:
 
-**Connect Phantom. Swap with transparency. Expand the connected dashboard experience later.**
+**Connect Phantom. Compare swap execution honestly. Execute safely later. Expand the connected dashboard experience after the swap wedge is strong.**
 
 ---
 
 ## Product identity
 
 ### Phantom remains the wallet
+
 Phantom handles:
 
 - wallet creation
@@ -37,15 +38,18 @@ Phantom handles:
 - trusted wallet UX
 
 ### Web3 Digest becomes the intelligence layer
+
 Web3 Digest handles:
 
-- route comparison
+- quote comparison
 - execution transparency
-- theoretical reference vs executable reality
+- theoretical reference vs quoted reality
 - direct-route inspection
 - route explanation
 - route-shape visibility
 - support-style diagnostics
+- cost visibility where available
+- later, selected swap execution through Phantom
 - later, a stronger connected holdings/dashboard experience
 
 This is a product built **with Phantom in mind, not against it**.
@@ -65,7 +69,7 @@ Help users make better swaps by making execution:
 
 ## Vision
 
-Build the most trusted, user-friendly **swap transparency layer** in crypto:
+Build the most trusted, user-friendly **swap execution-intelligence layer** in crypto:
 
 - simple enough for non-crypto-native users
 - transparent enough for power users
@@ -91,9 +95,9 @@ Web3 Digest exists to make swaps feel **understandable instead of opaque**.
 
 ## Current state
 
-The project has moved well beyond a read-only portfolio prototype.
+The project has moved beyond a read-only portfolio prototype and beyond a single-router quote demo.
 
-Today it already includes:
+Today it includes:
 
 - CLI wallet/reporting foundation
 - FastAPI backend
@@ -102,24 +106,78 @@ Today it already includes:
 - live devnet wallet balance display
 - in-app devnet airdrop helper
 - real Send SOL flow on devnet
-- swap quote preview surface
-- recommended / alternatives / direct-route comparison structure
+- Solana swap quote preview surface
+- multi-universe quote comparison engine
+- Recommended / Direct / Alternatives route structure
 - live reference baseline updates while typing
 - recommended-route cost summary in USD
-- estimated network fee display for the recommended route
+- estimated network fee display where available
 - explicit route-fee display when available
 - user-facing route explanation and support-style diagnostics
+- fail-soft behavior for unsupported quote universes
+
+---
+
+## Current quote universes
+
+The current Alpha can compare real successful quotes across several recognizable swap/execution surfaces.
+
+### Jupiter
+
+Primary quote universe and future first execution target.
+
+### Raydium
+
+Real quote path, currently comparison-only and non-clickable.
+
+### Orca
+
+Explicit pool candidate model. Only real successful pool quotes render as cards.
+
+### Meteora
+
+DLMM-only curated quote path. Comparison-only and non-clickable for now.
+
+### Phantom
+
+Wallet-routing quote research surface. Comparison-only and curated for supported SOL-to-SPL pairs.
+
+### PumpSwap
+
+Curated-only. Currently used for the FIGURE docs/test token path, not as a generic Pump.fun solution.
+
+---
+
+## Current token coverage
+
+Current curated swap testing routes include:
+
+- SOL → USDC
+- SOL → BONK
+- SOL → WIF
+- SOL → POPCAT
+- SOL → CHAD
+- SOL → SPX6900
+- SOL → FIGURE
+
+The current rule is simple:
+
+**No fake quotes.**
+
+Only real successful quotes render as visible route cards. Unsupported venues fail softly and stay in diagnostics/debug output.
 
 ---
 
 ## What works today
 
 ### CLI foundation
-- insert balances (manual or Solana) into SQLite
-- insert prices (CoinGecko + optional Dex fallback) into SQLite
+
+- insert balances into SQLite
+- insert prices into SQLite
 - print a wallet report from stored snapshots
 
 ### Web app
+
 - open the UI at `GET /ui`
 - refresh balances and prices
 - view latest portfolio report and history
@@ -132,16 +190,16 @@ Today it already includes:
 - review:
   - theoretical reference baseline
   - recommended route
-  - nested alternatives
   - direct-route lens
-  - minimum received
+  - alternatives
+  - minimum received where available
   - route path
   - route shape / step count
   - route explanation
   - execution gap vs reference
-  - estimated total swap cost
+  - estimated route cost story
   - explicit route fees when available
-  - estimated network fee
+  - estimated network fee where available
   - support-style error states and notes
 
 ---
@@ -151,60 +209,63 @@ Today it already includes:
 The product should make the **economic result** easier to understand than typical swap UIs do.
 
 ### Core rule
+
 The product must clearly separate:
 
 - **theoretical reference**
-- **real executable quote**
+- **real quoted/executable output**
+- **known explicit costs**
 
 Those are different layers and should stay separate in both UX and architecture.
 
 ### Current comparison surface
+
 The swap surface is built around:
 
 #### 1. Live reference layer
+
 - choose tokens
 - type amount
 - see live theoretical conversion
 
 #### 2. Execution-intelligence layer
+
 - Preview Quote
-- recommended route
-- nested alternatives
-- direct-route check
+- Recommended route
+- Direct route check
+- Alternatives
 - route explanation
 - execution gap vs reference
-- separate fee visibility
+- separate fee/cost visibility where available
 
 ### Why this matters
+
 A key product insight is that:
 
 - router-reported `priceImpactPct`
-- and the **gap vs theoretical reference**
+- the **gap vs theoretical reference**
+- known explicit route costs
 
-are **not the same metric**.
+are not the same metric.
 
-Both matter, and both should stay visible.
-
-A second key rule is that:
-
-- **Executable output vs reference** is a transparency metric
-- **Estimated total swap cost** is a known-cost metric
-
-Those should not be collapsed into one line.
+They should not be collapsed into one vague “fee” number.
 
 ---
 
 ## Current implementation notes
 
-The current swap surface is already useful, but it is still Alpha.
+The current swap surface is useful, but it is still Alpha.
 
 ### Honest notes about the current build
-- swap comparison is currently **Jupiter-first**
-- the swap card is currently **quote preview only**, not full swap execution
-- route fees are shown separately **when explicitly available in the quote**
-- estimated network fee is shown separately from the headline cost model
-- the current swap network-fee estimation path still needs further hardening/refinement
-- the UI is now much cleaner structurally, but still not final visual polish
+
+- swap comparison is currently quote-preview first
+- Jupiter is the first planned executable route
+- non-Jupiter universes are currently quote-only / comparison-only
+- route fees are shown separately when explicitly available in the quote
+- estimated network fee is shown separately from the benchmark comparison
+- network-fee estimation still needs hardening before production-grade execution
+- token coverage is currently curated and narrow
+- the UI structure is improving but is not final visual polish
 
 That means the product wedge is real, but parts of the implementation still need hardening.
 
@@ -220,7 +281,7 @@ The longer-term swap input should evolve toward a more stacked, two-panel, walle
 - the destination panel shows the theoretical converted amount live
 - executable route comparison stays below that as a separate action and intelligence layer
 
-So the current work is focused first on:
+Current work is focused first on:
 
 - engine
 - behavior
@@ -238,17 +299,19 @@ Pretty UI and final polish come later.
 The current swap surface is being shaped so that it can later become actionable cleanly.
 
 ### Current interaction rules
+
 - Recommended is the main card
-- Alternatives are nested under Recommended
-- Direct is the lighter second comparison card
-- alternatives are informative only for now
-- expand and execute are separate behaviors
+- Direct is the simpler comparison lens
+- Alternatives are distinct quote/comparison universes
+- quote-only routes are non-clickable
+- expand and execute should remain separate behaviors
 - future primary actions should be **buttons**, not whole-card taps
 
 ### Expected future actionability order
-1. **Recommended route becomes actionable first**
-2. **Direct route becomes actionable second**
-3. **Alternatives become richer/selectable later**
+
+1. **Recommended Jupiter route becomes actionable first**
+2. **Direct route becomes actionable second if technically executable**
+3. **Alternatives become richer/selectable later only when execution paths are honest**
 
 This keeps the surface mobile-safer and easier to understand.
 
@@ -267,28 +330,35 @@ The product may later expand into a stronger wallet-connected dashboard experien
 But this remains **secondary** to the main wedge.
 
 ### Primary wedge
+
 **Swap transparency first. Dashboard expansion second.**
 
 ---
 
 ## Routing direction
 
-The current comparison surface is **Jupiter-first**, which is the right first step.
+The current comparison surface started Jupiter-first, but it now has a real multi-universe direction.
 
-But the long-term product should not stop at one provider worldview.
-
-The roadmap is expected to expand into at least **two additional routing/liquidity universes/providers** so route comparison becomes:
+The roadmap is expected to expand into more honest quote and execution surfaces so route comparison becomes:
 
 - richer
 - more credible
-- more honest
-- more aligned with the transparency promise
+- more transparent
+- more aligned with the execution-intelligence promise
+
+Near-term execution order:
+
+1. stabilize the current comparison/decision UX
+2. make the recommended Jupiter route executable through Phantom
+3. build scalable token intake
+4. evaluate additional executable universes
 
 ---
 
 ## Platform direction
 
 ### Web first
+
 The product is being built as a **web app first** because that is the right path for:
 
 - fast iteration
@@ -297,9 +367,10 @@ The product is being built as a **web app first** because that is the right path
 - early product validation
 
 ### Mobile-aware
-Even though native mobile is not the first build, the long-term direction must stay **mobile-aware**.
 
-That matters because much real-world swapping behavior — especially in fast-moving meme/token environments — is heavily **phone-first**, and Phantom’s strongest real-world advantage is its mobile usage habit and polished UX.
+Even though native mobile is not the first build, the long-term direction should stay **mobile-aware**.
+
+That matters because much real-world swapping behavior — especially in fast-moving meme/token environments — is heavily phone-first, and Phantom’s strongest real-world advantage is its mobile usage habit and polished UX.
 
 So the right path is:
 
@@ -318,6 +389,7 @@ So the right path is:
   - refresh scripts
   - persistence logic
   - swap ranking / comparison logic
+  - quote universe integrations
   - Jupiter quote + instruction plumbing
 
 - **SQLite**
@@ -363,8 +435,11 @@ Important areas include:
 - `token_registry.py`
   - token metadata / mint normalization / pricing mappings
 
-- `accounts.json`
-  - saved account configuration
+- `test_sanity.py`
+  - sanity tests for core behavior, registry behavior, and quote fail-soft rules
+
+- `AGENTS.md`
+  - repository guidelines for coding agents
 
 - docs:
   - `VISION.md`
@@ -377,6 +452,7 @@ Important areas include:
 ## Version ladder
 
 ### V0 — read-only wallet foundation
+
 - balances
 - prices
 - history
@@ -384,55 +460,70 @@ Important areas include:
 - truthful stale/missing data handling
 
 ### V1 — wallet-connected runway
+
 - Phantom connect / sign
 - browser wallet cockpit
 - Send SOL on devnet
 - transaction state UI
 - support-style diagnostics
 
-### V1.5 — swap-transparency foundation
+### V1.5 — execution intelligence engine alpha
+
 - in-app swap form
 - live theoretical reference
-- quote provider integration
-- recommendation / alternatives / direct-route check
-- separate transparency line vs cost layer
-- recommended-route cost framing
-- honest quote UX and support-style failures
+- multi-universe quote engine
+- Recommended / Direct / Alternatives
+- benchmark/reference comparison
+- route-card cost framing
+- honest quote UX
+- fail-soft unsupported venues
+- curated meme-token coverage
 
-### V2 — stronger comparison surface + interaction model
-Planned:
-- tighter route-card UX
-- CTA placement / actionability model
-- clearer route interaction flow
-- safer config handling for swap infrastructure
-- more trustworthy comparison flow
+### V2 — Jupiter execution
 
-### V2.5 — swap execution handoff
 Planned:
-- Recommended route action first
-- Direct route action second
-- hand transaction to wallet for signing
-- execute from inside the UI
-- show status / confirmation / failure clearly
 
-### V3+ — deeper route intelligence + connected dashboard expansion
+- make Recommended Jupiter route executable
+- preserve Phantom signing boundary
+- add confirmation state
+- add transaction result handling
+- keep other universes quote-only until execution paths are real
+
+### V2.5 — scalable token intake
+
 Planned:
-- direct venue/provider comparison
-- multi-provider routing worldview
-- stronger holdings/dashboard UX
-- richer support/debugging layers
+
+- paste token mint
+- resolve token metadata
+- dynamically test quote universe support
+- later token search
+- later trending/liquidity discovery
+
+### V3 — broader execution intelligence
+
+Planned:
+
+- direct venue/provider execution paths where honest
+- richer route/risk intelligence
+- stronger cost model
+- improved connected dashboard
+- mobile-aware product UI
 - later multichain expansion if justified
 
 ---
 
 ## What is not shipped yet
 
-- full swap execution flow from the swap cards
-- CTA buttons for Recommended / Direct routes
-- selectable or executable alternatives
-- multi-provider ranking beyond Jupiter-first comparison
+- real swap execution flow from the swap cards
+- Jupiter route execution through Phantom
+- executable Raydium routes
+- executable Orca routes
+- executable Meteora routes
+- executable PumpSwap routes
+- full route-fee decomposition for every quote universe
 - final-grade transaction-specific network-fee estimation
-- final benchmark expansion for long-tail pairs
+- scalable token intake by pasted mint
+- token search / discovery
 - final two-panel swap input design
 - production-grade swap infra hardening
 - production-grade polished UI
@@ -447,6 +538,8 @@ Planned:
 - transaction flows are tested in safe environments first
 - devnet is used for wallet/send testing
 - truthful failure is preferred over fake success
+- unsupported quote universes should fail softly
+- visible route cards should come only from real successful quotes
 
 Current status remains **Alpha**.
 
@@ -454,7 +547,7 @@ Current status remains **Alpha**.
 
 ## Why this project matters personally
 
-This project is also intentionally designed to:
+This project is intentionally designed to:
 
 - teach real engineering through a hands-on product
 - become a strong GitHub showcase
@@ -465,4 +558,4 @@ This project is also intentionally designed to:
 
 ## One-line product sentence
 
-**Web3 Digest is a wallet-connected execution-transparency app that helps users compare routes, understand tradeoffs, and make better swap decisions on top of trusted wallets like Phantom.**
+**Web3 Digest is a wallet-connected execution comparison engine that helps users compare swap routes, understand tradeoffs, and make better swap decisions on top of trusted wallets like Phantom.**
