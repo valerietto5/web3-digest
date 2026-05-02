@@ -23,22 +23,41 @@ from fastapi import Body
 
 import requests
 from datetime import datetime, timezone
+from token_registry import default_swap_token_meta_by_symbol, get_token_meta_by_symbol
 
 app = FastAPI(title="Web3 Digest API", version="0.1.0")
 
 
 
 
-COINGECKO_IDS = {
-    "SOL": "solana",
-    "USDC": "usd-coin",
-}
+TOKEN_META = default_swap_token_meta_by_symbol()
+
+
+def _resolve_swap_token_meta(token_symbol: str) -> dict | None:
+    meta = get_token_meta_by_symbol(token_symbol)
+    if not meta:
+        return None
+
+    mint = (meta.get("mint") or "").strip()
+    decimals = meta.get("decimals")
+    if not mint or decimals is None:
+        return None
+
+    return dict(meta)
+
+
+def _coingecko_id_for_quote_token(token_symbol: str) -> str | None:
+    meta = _resolve_swap_token_meta(token_symbol)
+    if meta and meta.get("coingecko_id"):
+        return meta.get("coingecko_id")
+    return None
+
 
 def _fetch_jupiter_price_v3_reference_prices_usd(tokens: list[str]) -> dict:
     token_to_mint = {}
     for token in tokens:
         token = (token or "").strip().upper()
-        meta = TOKEN_META.get(token) or {}
+        meta = _resolve_swap_token_meta(token) or {}
         mint = (meta.get("mint") or "").strip()
         if mint:
             token_to_mint[token] = mint
@@ -110,7 +129,8 @@ def _fetch_coingecko_reference_prices_usd(tokens: list[str]) -> dict:
     """
     token_to_cg = {}
     for token in tokens:
-        cg_id = COINGECKO_IDS.get(token)
+        token = (token or "").strip().upper()
+        cg_id = _coingecko_id_for_quote_token(token)
         if not cg_id:
             continue
         token_to_cg[token] = cg_id
@@ -512,18 +532,6 @@ def accounts():
 
 
 JUP_API_KEY = os.environ.get("JUP_API_KEY", "").strip()
-
-TOKEN_META = {
-    "SOL": {
-        "mint": "So11111111111111111111111111111111111111112",
-        "decimals": 9,
-    },
-    "USDC": {
-        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        "decimals": 6,
-    },
-}
-
 
 def to_raw_amount(amount: float, decimals: int) -> int:
     raw = round(amount * (10 ** decimals))
@@ -2598,11 +2606,11 @@ def swap_quote(
     if from_token == to_token:
         raise HTTPException(status_code=400, detail="from_token and to_token must be different")
 
-    if from_token not in TOKEN_META or to_token not in TOKEN_META:
+    input_meta = _resolve_swap_token_meta(from_token)
+    output_meta = _resolve_swap_token_meta(to_token)
+    if not input_meta or not output_meta:
         raise HTTPException(status_code=400, detail="unsupported token for now")
 
-    input_meta = TOKEN_META[from_token]
-    output_meta = TOKEN_META[to_token]
     raw_amount = to_raw_amount(amount, input_meta["decimals"])
 
     base_params = {
@@ -3121,7 +3129,9 @@ def swap_inline_baseline(from_token: str, to_token: str, amount: float, network:
     if from_token == to_token:
         raise HTTPException(status_code=400, detail="from_token and to_token must be different")
 
-    if from_token not in TOKEN_META or to_token not in TOKEN_META:
+    input_meta = _resolve_swap_token_meta(from_token)
+    output_meta = _resolve_swap_token_meta(to_token)
+    if not input_meta or not output_meta:
         raise HTTPException(status_code=400, detail="unsupported token for now")
 
     inline_baseline, _ = _build_inline_baseline(

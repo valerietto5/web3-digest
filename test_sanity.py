@@ -22,6 +22,7 @@ from api.main import (
     _normalize_phoenix_quote_option,
     _normalize_raydium_quote_option,
     _rank_quote_options,
+    _resolve_swap_token_meta,
     _select_direct_route_option,
     _select_diverse_other_options,
     _try_fetch_meteora_dlmm_quote,
@@ -48,6 +49,19 @@ class TestSanity(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_swap_registry_resolves_sol_usdc_and_bonk(self):
+        sol = _resolve_swap_token_meta("SOL")
+        usdc = _resolve_swap_token_meta("USDC")
+        bonk = _resolve_swap_token_meta("BONK")
+
+        self.assertEqual(sol["mint"], "So11111111111111111111111111111111111111112")
+        self.assertEqual(sol["decimals"], 9)
+        self.assertEqual(usdc["mint"], "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        self.assertEqual(usdc["decimals"], 6)
+        self.assertEqual(bonk["mint"], "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263")
+        self.assertEqual(bonk["decimals"], 5)
+        self.assertEqual(bonk["coingecko_id"], "bonk")
 
     def test_insert_and_get_latest_prices_with_ts(self):
         t1 = "2026-02-25T00:00:00+00:00"
@@ -862,7 +876,7 @@ class TestSanity(unittest.TestCase):
         }
 
         with (
-            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote) as fetch_jupiter,
             patch(
                 "api.main._try_fetch_jupiter_quote",
                 return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
@@ -909,6 +923,147 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(meteora_option["is_clickable"])
         self.assertEqual(meteora_option["route_shape"], "single-pool")
         self.assertIn("meteora_dlmm_quote", response["summary"]["checked_variants"])
+
+    def test_swap_quote_accepts_sol_to_bonk_and_skips_unsupported_universes(self):
+        sol_mint = "So11111111111111111111111111111111111111112"
+        bonk_mint = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+        jupiter_quote = {
+            "inputMint": sol_mint,
+            "inAmount": "1000000000",
+            "outputMint": bonk_mint,
+            "outAmount": "1350000000",
+            "otherAmountThreshold": "1343250000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Raydium",
+                        "inputMint": sol_mint,
+                        "outputMint": bonk_mint,
+                        "inAmount": "1000000000",
+                        "outAmount": "1350000000",
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": sol_mint,
+                "inputAmount": "1000000000",
+                "outputMint": bonk_mint,
+                "outputAmount": "1340000000",
+                "otherAmountThreshold": "1333300000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote) as fetch_jupiter,
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}) as fetch_raydium,
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported) as fetch_meteora,
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported) as fetch_orca,
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported) as fetch_phoenix,
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported) as fetch_phantom,
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "BONK": {"usd": 0.000006},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token="BONK", amount=1.0)
+
+        self.assertEqual(response["from_token"], "SOL")
+        self.assertEqual(response["to_token"], "BONK")
+        self.assertEqual(response["input_amount_raw"], 1000000000)
+        self.assertEqual(response["recommended_option"]["provider"], "jupiter-metis")
+        self.assertEqual(fetch_jupiter.call_args.args[0]["outputMint"], bonk_mint)
+        self.assertEqual(fetch_raydium.call_args.args[0]["outputMint"], bonk_mint)
+        fetch_meteora.assert_called_once()
+        fetch_orca.assert_called_once()
+        fetch_phoenix.assert_called_once()
+        fetch_phantom.assert_called_once()
+
+        providers = [opt["provider"] for opt in response["other_options"]]
+        self.assertIn("raydium-trade-api", providers)
+        self.assertNotIn("meteora-dlmm", providers)
+        self.assertNotIn("orca-whirlpool", providers)
+        self.assertNotIn("phoenix-clob", providers)
+        self.assertNotIn("phantom-routing-api", providers)
+
+        diagnostic_variants = {
+            item["variant_id"] for item in response["debug"]["variant_errors"]
+        }
+        self.assertIn("meteora_dlmm_quote", diagnostic_variants)
+        self.assertIn("orca_whirlpool_quote", diagnostic_variants)
+        self.assertIn("phoenix_quote", diagnostic_variants)
+        self.assertIn("phantom_quote", diagnostic_variants)
+
+    def test_swap_quote_sol_usdc_still_uses_registry_metadata(self):
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "85000000",
+            "otherAmountThreshold": "84575000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [],
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch(
+                "api.main._try_fetch_raydium_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock raydium"}},
+            ),
+            patch(
+                "api.main._try_fetch_meteora_dlmm_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock meteora"}},
+            ),
+            patch(
+                "api.main._try_fetch_orca_whirlpool_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock orca"}},
+            ),
+            patch(
+                "api.main._try_fetch_phoenix_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock phoenix"}},
+            ),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token="USDC", amount=1.0)
+
+        self.assertEqual(response["from_token"], "SOL")
+        self.assertEqual(response["to_token"], "USDC")
+        self.assertEqual(response["input_amount_raw"], 1000000000)
+        self.assertEqual(response["recommended_option"]["estimated_output"], 85.0)
 
     def test_swap_quote_recommends_meteora_when_it_has_best_output(self):
         jupiter_quote = {

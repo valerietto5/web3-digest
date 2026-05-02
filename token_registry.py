@@ -5,14 +5,43 @@
 
 from __future__ import annotations
 
-from typing import Dict, TypedDict, Optional
+from typing import Dict, TypedDict
 
 
 class TokenMeta(TypedDict, total=False):
     asset: str          # our internal asset key, e.g. "usdc"
     symbol: str         # display symbol, e.g. "USDC"
     name: str           # human name
+    display_name: str   # UI display name
+    mint: str           # Solana mint address used by quote APIs
+    decimals: int       # SPL/native token decimals
     coingecko_id: str   # CoinGecko "id" for /simple/price, e.g. "usd-coin"
+    dexscreener: bool
+    dexscreener_chain_id: str
+    tags: list[str]
+    verified: bool
+    default_enabled: bool
+
+
+SOL_MINT = "So11111111111111111111111111111111111111112"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+BONK_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+
+NATIVE_TOKENS: Dict[str, TokenMeta] = {
+    "SOL": {
+        "asset": "sol",
+        "symbol": "SOL",
+        "name": "Solana",
+        "display_name": "Solana",
+        "mint": SOL_MINT,
+        "decimals": 9,
+        "coingecko_id": "solana",
+        "dexscreener_chain_id": "solana",
+        "tags": ["native", "blue_chip"],
+        "verified": True,
+        "default_enabled": True,
+    },
+}
 
 
 # Known SPL mints (Solana)
@@ -22,31 +51,106 @@ TOKENS: Dict[str, TokenMeta] = {
         "asset": "snp500",
         "symbol": "SNP500",
         "name": "SNP500",
+        "display_name": "SNP500",
+        "mint": "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump",
         "dexscreener": True,
+        "dexscreener_chain_id": "solana",
+        "tags": ["meme"],
+        "verified": False,
+        "default_enabled": False,
     },
     # USDC (Solana)
-    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
+    USDC_MINT: {
         "asset": "usdc",
         "symbol": "USDC",
         "name": "USD Coin",
+        "display_name": "USD Coin",
+        "mint": USDC_MINT,
+        "decimals": 6,
         "coingecko_id": "usd-coin",
+        "dexscreener_chain_id": "solana",
+        "tags": ["stablecoin"],
+        "verified": True,
+        "default_enabled": True,
     },
     # USDT (Solana)
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": {
         "asset": "usdt",
         "symbol": "USDT",
         "name": "Tether",
+        "display_name": "Tether",
+        "mint": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+        "decimals": 6,
         "coingecko_id": "tether",
+        "dexscreener_chain_id": "solana",
+        "tags": ["stablecoin"],
+        "verified": True,
+        "default_enabled": False,
     },
     # Example meme (only useful if you ever hold it)
     # BONK (Solana)
-    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": {
+    BONK_MINT: {
         "asset": "bonk",
         "symbol": "BONK",
         "name": "Bonk",
+        "display_name": "Bonk",
+        "mint": BONK_MINT,
+        "decimals": 5,
         "coingecko_id": "bonk",
+        "dexscreener_chain_id": "solana",
+        "tags": ["meme", "curated"],
+        "verified": True,
+        "default_enabled": True,
     },
 }
+
+
+def _with_mint(mint: str, meta: TokenMeta) -> TokenMeta:
+    out: TokenMeta = dict(meta)
+    out.setdefault("mint", mint)
+    out.setdefault("display_name", out.get("name") or out.get("symbol") or mint)
+    return out
+
+
+def get_token_meta_by_symbol(symbol: str, *, default_enabled_only: bool = True) -> TokenMeta | None:
+    """
+    Resolve a curated token by display symbol for swap/quote surfaces.
+
+    This is intentionally registry-backed so API endpoints do not need their own
+    growing token metadata list as meme-token coverage expands.
+    """
+    wanted = str(symbol or "").strip().upper()
+    if not wanted:
+        return None
+
+    native = NATIVE_TOKENS.get(wanted)
+    if native:
+        if default_enabled_only and not native.get("default_enabled"):
+            return None
+        return _with_mint(native["mint"], native)
+
+    for mint, meta in TOKENS.items():
+        if (meta.get("symbol") or "").strip().upper() != wanted:
+            continue
+        if default_enabled_only and not meta.get("default_enabled"):
+            return None
+        return _with_mint(mint, meta)
+
+    return None
+
+
+def default_swap_token_meta_by_symbol() -> Dict[str, TokenMeta]:
+    out: Dict[str, TokenMeta] = {}
+    for symbol, meta in NATIVE_TOKENS.items():
+        if meta.get("default_enabled"):
+            out[symbol] = _with_mint(meta["mint"], meta)
+
+    for mint, meta in TOKENS.items():
+        symbol = (meta.get("symbol") or "").strip().upper()
+        if symbol and meta.get("default_enabled"):
+            out[symbol] = _with_mint(mint, meta)
+
+    return out
 
 
 def mint_to_asset_key(mint: str) -> str:
