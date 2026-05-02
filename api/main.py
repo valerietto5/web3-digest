@@ -325,6 +325,17 @@ def _build_reference_baseline_from_resolved_prices(
     input_usd_value = amount * input_usd_price
     ideal_output_amount = input_usd_value / output_usd_price
 
+    pricing_source = (
+        to_row.get("pricing_source")
+        or from_row.get("pricing_source")
+        or "coingecko_simple_price"
+    )
+    pricing_ts = (
+        to_row.get("pricing_ts")
+        if to_row.get("pricing_source")
+        else from_row.get("pricing_ts")
+    )
+
     baseline = {
         "label": "Theoretical reference baseline",
         "is_executable": False,
@@ -336,12 +347,8 @@ def _build_reference_baseline_from_resolved_prices(
         "output_token": to_token,
         "output_usd_price": output_usd_price,
         "output_usd_value": ideal_output_amount * output_usd_price,
-        "pricing_source": (
-            to_row.get("pricing_source")
-            or from_row.get("pricing_source")
-            or "coingecko_simple_price"
-        ),
-        "pricing_ts": to_row.get("pricing_ts") or from_row.get("pricing_ts"),
+        "pricing_source": pricing_source,
+        "pricing_ts": pricing_ts,
         "pricing_source_detail": {
             "from_token": from_row.get("pricing_source_detail"),
             "to_token": to_row.get("pricing_source_detail"),
@@ -1022,6 +1029,7 @@ def _try_fetch_raydium_quote(params: dict) -> dict:
 
 METEORA_DLMM_SOL_MINT = "So11111111111111111111111111111111111111112"
 METEORA_DLMM_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+METEORA_DLMM_BONK_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
 METEORA_DLMM_SOL_USDC_CANDIDATE = {
     "address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
     "name": "SOL-USDC",
@@ -1029,9 +1037,22 @@ METEORA_DLMM_SOL_USDC_CANDIDATE = {
     "token_y": METEORA_DLMM_USDC_MINT,
     "bin_step": 4,
 }
+METEORA_DLMM_BONK_SOL_CANDIDATE = {
+    "address": "6oFWm7KPLfxnwMb3z5xwBoXNSPP3JJyirAPqPSiVcnsp",
+    "name": "BONK-SOL",
+    "token_x": METEORA_DLMM_BONK_MINT,
+    "token_y": METEORA_DLMM_SOL_MINT,
+}
 
 ORCA_WHIRLPOOL_SOL_MINT = "So11111111111111111111111111111111111111112"
 ORCA_WHIRLPOOL_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+ORCA_WHIRLPOOL_BONK_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+ORCA_WHIRLPOOL_BONK_SOL_CANDIDATE = {
+    "address": "5zpyutJu9ee6jFymDGoK7F6S5Kczqtc9FomP3ueKuyA9",
+    "name": "BONK-SOL",
+    "token_mint_a": ORCA_WHIRLPOOL_BONK_MINT,
+    "token_mint_b": ORCA_WHIRLPOOL_SOL_MINT,
+}
 
 PHOENIX_SOL_MINT = "So11111111111111111111111111111111111111112"
 PHOENIX_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -1055,6 +1076,8 @@ def _build_meteora_dlmm_quote_payload(
     mint_pair = {input_mint, output_mint}
     if mint_pair == {METEORA_DLMM_SOL_MINT, METEORA_DLMM_USDC_MINT}:
         pool_candidates.append(dict(METEORA_DLMM_SOL_USDC_CANDIDATE))
+    elif mint_pair == {METEORA_DLMM_SOL_MINT, METEORA_DLMM_BONK_MINT}:
+        pool_candidates.append(dict(METEORA_DLMM_BONK_SOL_CANDIDATE))
 
     return {
         "rpc_url": rpc_url or os.getenv("SOLANA_RPC_URL") or "https://api.mainnet-beta.solana.com",
@@ -1148,10 +1171,14 @@ def _build_orca_whirlpool_quote_payload(
         "pool_candidates": [],
     }
 
-    if input_mint != ORCA_WHIRLPOOL_SOL_MINT or output_mint != ORCA_WHIRLPOOL_USDC_MINT:
+    if {input_mint, output_mint} == {ORCA_WHIRLPOOL_SOL_MINT, ORCA_WHIRLPOOL_BONK_MINT}:
+        payload["pool_candidates"].append(dict(ORCA_WHIRLPOOL_BONK_SOL_CANDIDATE))
+
+    supported_output_mints = {ORCA_WHIRLPOOL_USDC_MINT, ORCA_WHIRLPOOL_BONK_MINT}
+    if input_mint != ORCA_WHIRLPOOL_SOL_MINT or output_mint not in supported_output_mints:
         payload["unsupported_pair"] = True
         payload["unsupported_pair_detail"] = (
-            "Orca Whirlpool quote helper currently supports SOL -> USDC only."
+            "Orca Whirlpool quote helper currently supports SOL -> USDC and SOL -> BONK only."
         )
 
     return payload
@@ -1332,6 +1359,7 @@ def _try_fetch_phoenix_quote(payload: dict) -> dict:
 
 PHANTOM_SOL_MINT = "So11111111111111111111111111111111111111112"
 PHANTOM_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+PHANTOM_BONK_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
 
 
 def _build_phantom_quote_payload(
@@ -1352,10 +1380,11 @@ def _build_phantom_quote_payload(
         "taker_address": user_public_key,
     }
 
-    if input_mint != PHANTOM_SOL_MINT or output_mint != PHANTOM_USDC_MINT:
+    supported_output_mints = {PHANTOM_USDC_MINT, PHANTOM_BONK_MINT}
+    if input_mint != PHANTOM_SOL_MINT or output_mint not in supported_output_mints:
         payload["unsupported_pair"] = True
         payload["unsupported_pair_detail"] = (
-            "Phantom quote research helper currently supports SOL -> USDC only."
+            "Phantom quote research helper currently supports SOL -> USDC and SOL -> BONK only."
         )
 
     if not user_public_key:
@@ -1726,6 +1755,11 @@ def _attach_cost_fields(
     output_token = option.get("to_token")
     output_price_row = reference_prices.get(output_token) or {}
     output_token_usd_price = _safe_float(output_price_row.get("usd"))
+    estimated_output_usd = (
+        quoted_output_amount * output_token_usd_price
+        if quoted_output_amount is not None and output_token_usd_price is not None
+        else None
+    )
     execution_cost_amount = _safe_float(trade_cost.get("amount"))
     execution_cost_usd = (
         execution_cost_amount * output_token_usd_price
@@ -1736,6 +1770,7 @@ def _attach_cost_fields(
     trade_cost["amount_usd"] = execution_cost_usd
     trade_cost["token_usd_price"] = output_token_usd_price
     trade_cost["pricing_source"] = output_price_row.get("pricing_source")
+    option["estimated_output_usd"] = estimated_output_usd
     option["execution_cost_usd"] = execution_cost_usd
 
     return option

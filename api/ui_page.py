@@ -748,6 +748,8 @@ function renderSwapOptionCard(opt, opts = {}) {
   const isComparisonOnly = opt.is_comparison_only === true;
   const isClickable = opt.is_clickable !== false && !isComparisonOnly;
   const estOut = fmtNum(Number(opt.estimated_output || 0), 6);
+  const receiveUsd = Number(opt?.estimated_output_usd);
+  const receiveUsdText = Number.isFinite(receiveUsd) ? " ≈ " + fmtUsdCost(receiveUsd) : "";
   const minReceived = opt.min_received == null ? "n/a" : fmtNum(Number(opt.min_received), 6);
   const impact = formatImpactPct(opt.price_impact_pct);
   const slippage = formatSettingPctFromBps(opt?.protections?.slippage_bps ?? opt?.slippage_bps);
@@ -901,7 +903,7 @@ function renderSwapOptionCard(opt, opts = {}) {
               : "")
       }
       <div class="muted" style="margin-top:6px; padding-right:220px;">
-        Receive (est.): ${escapeHtml(estOut)} ${escapeHtml(opt.to_token || "")}
+        Receive (est.): ${escapeHtml(estOut)} ${escapeHtml(opt.to_token || "")}${escapeHtml(receiveUsdText)}
       </div>
       <div class="muted" style="margin-top:4px;">
         Route: ${escapeHtml(routeLabel)} | Steps: ${escapeHtml(String(routeSteps))} 
@@ -978,16 +980,12 @@ function renderCompactAlternativeCard(opt, idx = 0) {
   const routeLabel = surfaceRouteLabel(opt);
   const isComparisonOnly = opt.is_comparison_only === true;
   const estOut = fmtNum(Number(opt?.estimated_output || 0), 6);
+  const receiveUsd = Number(opt?.estimated_output_usd);
+  const receiveUsdText = Number.isFinite(receiveUsd) ? " ≈ " + fmtUsdCost(receiveUsd) : "";
   const outToken = opt?.to_token || "";
   const executionCostUsd = Number(opt?.execution_cost_usd);
-  const fallbackExecutionCost = Number(opt?.estimated_trade_execution_cost?.amount);
-
-  const executionCostForDisplay = Number.isFinite(executionCostUsd)
-    ? executionCostUsd
-    : (Number.isFinite(fallbackExecutionCost) ? fallbackExecutionCost : NaN);
-
-  const executionCostText = Number.isFinite(executionCostForDisplay)
-    ? fmtUsdCost(executionCostForDisplay)
+  const executionCostText = Number.isFinite(executionCostUsd)
+    ? fmtUsdCost(executionCostUsd)
     : "n/a";
 
   const stepCount = Number(opt?.route_step_count || 0);
@@ -1011,7 +1009,7 @@ function renderCompactAlternativeCard(opt, idx = 0) {
           : ""
       }
       <div class="muted" style="margin-top:4px;">
-        Receive: ${escapeHtml(estOut)} ${escapeHtml(outToken)}
+        Receive: ${escapeHtml(estOut)} ${escapeHtml(outToken)}${escapeHtml(receiveUsdText)}
       </div>
       <div class="muted" style="margin-top:2px;">
         Execution cost: ${escapeHtml(executionCostText)}
@@ -2208,8 +2206,10 @@ function fmtUsdCost(x) {
   if (!Number.isFinite(n)) return "n/a";
 
   if (n === 0) return "$0.00";
-  if (n < 0.01) return "$" + n.toFixed(4);
-  return "$" + n.toFixed(2);
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
+  if (abs < 0.01) return sign + "$" + abs.toFixed(4);
+  return sign + "$" + abs.toFixed(2);
 }
 
   function renderHistory(resp) {

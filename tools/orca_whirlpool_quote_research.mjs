@@ -15,7 +15,6 @@ import {
 } from "@solana/kit";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
-const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const DEFAULT_QUOTE_OWNER = "11111111111111111111111111111111";
 
 function writeJson(value) {
@@ -196,15 +195,6 @@ function validateRequest(request) {
     return outputMint;
   }
 
-  if (request.input_mint !== SOL_MINT || request.output_mint !== USDC_MINT) {
-    return structuredError("UNSUPPORTED_PAIR", "Orca Whirlpool helper currently supports SOL -> USDC only.", {
-      supported_input_mint: SOL_MINT,
-      supported_output_mint: USDC_MINT,
-      input_mint: request.input_mint,
-      output_mint: request.output_mint,
-    });
-  }
-
   const amount = validateAmountRaw(request.amount_raw);
   if (!amount.ok) {
     return amount;
@@ -338,7 +328,7 @@ async function resolvePoolCandidates(request, rpc) {
   if (candidates.length === 0) {
     return structuredError(
       "NO_POOL_CANDIDATES",
-      "No initialized Orca Whirlpool SOL/USDC pool candidates were found.",
+      "No initialized Orca Whirlpool pool candidates were found for the requested pair.",
       {
         input_mint: request.inputMintString,
         output_mint: request.outputMintString,
@@ -359,7 +349,7 @@ async function resolvePoolCandidates(request, rpc) {
 async function fetchOrcaApiPoolCandidates(request) {
   const url = new URL("https://api.orca.so/v2/solana/pools/search");
   url.search = new URLSearchParams({
-    q: "SOL-USDC",
+    q: `${request.inputMintString}-${request.outputMintString}`,
     minTvl: "50000",
     size: "10",
     sortBy: "tvl",

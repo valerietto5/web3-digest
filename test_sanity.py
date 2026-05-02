@@ -7,6 +7,7 @@ from unittest.mock import patch
 from api.main import (
     METEORA_DLMM_SOL_MINT,
     METEORA_DLMM_USDC_MINT,
+    METEORA_DLMM_BONK_MINT,
     _build_meteora_dlmm_quote_payload,
     _build_orca_whirlpool_quote_payload,
     _build_phantom_quote_payload,
@@ -107,6 +108,7 @@ class TestSanity(unittest.TestCase):
         )
 
         self.assertEqual(baseline["pricing_source"], "dexscreener_solana")
+        self.assertIsNone(baseline["pricing_ts"])
         self.assertEqual(delta["output_token"], "BONK")
         self.assertEqual(delta["pricing_source"], "dexscreener_solana")
         self.assertAlmostEqual(
@@ -124,6 +126,9 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Jupiter reference", html)
         self.assertIn("fmtUsdCost(rawUsd)", html)
         self.assertIn("fmtUsdCost(tradeCostUsd)", html)
+        self.assertIn("estimated_output_usd", html)
+        self.assertIn('const sign = n < 0 ? "-" : "";', html)
+        self.assertIn('return sign + "$" + abs.toFixed(2);', html)
 
     def test_insert_and_get_latest_prices_with_ts(self):
         t1 = "2026-02-25T00:00:00+00:00"
@@ -321,6 +326,23 @@ class TestSanity(unittest.TestCase):
             "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
         )
 
+    def test_build_meteora_dlmm_quote_payload_adds_sol_bonk_candidate(self):
+        payload = _build_meteora_dlmm_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=METEORA_DLMM_BONK_MINT,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+        )
+
+        self.assertEqual(len(payload["pool_candidates"]), 1)
+        self.assertEqual(
+            payload["pool_candidates"][0]["address"],
+            "6oFWm7KPLfxnwMb3z5xwBoXNSPP3JJyirAPqPSiVcnsp",
+        )
+        self.assertEqual(payload["pool_candidates"][0]["token_x"], METEORA_DLMM_BONK_MINT)
+        self.assertEqual(payload["pool_candidates"][0]["token_y"], METEORA_DLMM_SOL_MINT)
+
     def test_fetch_meteora_dlmm_quote_uses_subprocess_json_contract(self):
         helper_output = {
             "ok": True,
@@ -347,7 +369,7 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["status_code"], 504)
 
-    def test_build_orca_whirlpool_quote_payload_supports_sol_usdc_only(self):
+    def test_build_orca_whirlpool_quote_payload_supports_sol_usdc(self):
         payload = _build_orca_whirlpool_quote_payload(
             input_mint=METEORA_DLMM_SOL_MINT,
             output_mint=METEORA_DLMM_USDC_MINT,
@@ -359,6 +381,26 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["rpc_url"], "https://example.invalid")
         self.assertEqual(payload["amount_raw"], "1000000000")
         self.assertEqual(payload["pool_candidates"], [])
+        self.assertNotIn("unsupported_pair", payload)
+
+    def test_build_orca_whirlpool_quote_payload_supports_sol_bonk(self):
+        payload = _build_orca_whirlpool_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=METEORA_DLMM_BONK_MINT,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+        )
+
+        self.assertEqual(payload["rpc_url"], "https://example.invalid")
+        self.assertEqual(payload["amount_raw"], "1000000000")
+        self.assertEqual(len(payload["pool_candidates"]), 1)
+        self.assertEqual(
+            payload["pool_candidates"][0]["address"],
+            "5zpyutJu9ee6jFymDGoK7F6S5Kczqtc9FomP3ueKuyA9",
+        )
+        self.assertEqual(payload["pool_candidates"][0]["token_mint_a"], METEORA_DLMM_BONK_MINT)
+        self.assertEqual(payload["pool_candidates"][0]["token_mint_b"], METEORA_DLMM_SOL_MINT)
         self.assertNotIn("unsupported_pair", payload)
 
     def test_fetch_orca_whirlpool_quote_uses_subprocess_json_contract(self):
@@ -412,6 +454,19 @@ class TestSanity(unittest.TestCase):
             "4DoNfFBfF7UokCC2FQzriy7yHK6DY6NVdYpuekQ5pRgg",
         )
 
+    def test_build_phoenix_quote_payload_keeps_sol_bonk_fail_soft(self):
+        payload = _build_phoenix_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=METEORA_DLMM_BONK_MINT,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+        )
+
+        self.assertEqual(payload["market_candidates"], [])
+        self.assertTrue(payload["unsupported_pair"])
+        self.assertIn("SOL -> USDC only", payload["unsupported_pair_detail"])
+
     def test_fetch_phoenix_quote_uses_subprocess_json_contract(self):
         helper_output = {
             "ok": True,
@@ -461,6 +516,21 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["amount"], "1000000000")
         self.assertEqual(payload["amount_unit"], "base")
         self.assertEqual(payload["slippage_bps"], 50)
+        self.assertEqual(payload["taker_address"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
+        self.assertNotIn("unsupported_pair", payload)
+        self.assertNotIn("skip_reason", payload)
+
+    def test_build_phantom_quote_payload_supports_sol_to_bonk(self):
+        payload = _build_phantom_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint="DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+            amount_raw=1000000000,
+            slippage_bps=50,
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertTrue(payload["sell_token_is_native"])
+        self.assertEqual(payload["buy_token_mint"], "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263")
         self.assertEqual(payload["taker_address"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
         self.assertNotIn("unsupported_pair", payload)
         self.assertNotIn("skip_reason", payload)
@@ -1085,15 +1155,213 @@ class TestSanity(unittest.TestCase):
             response["recommended_option"]["estimated_trade_execution_cost"]["amount_usd"],
             3.0,
         )
+        self.assertAlmostEqual(response["recommended_option"]["estimated_output_usd"], 81.0)
         raydium_option = next(
             opt for opt in response["other_options"] if opt["provider"] == "raydium-trade-api"
         )
         self.assertAlmostEqual(raydium_option["estimated_trade_execution_cost"]["amount"], 600000.0)
         self.assertAlmostEqual(raydium_option["estimated_trade_execution_cost"]["amount_usd"], 3.6)
+        self.assertAlmostEqual(raydium_option["estimated_output_usd"], 80.4)
         self.assertNotEqual(
             raydium_option["estimated_trade_execution_cost"]["amount"],
             raydium_option["estimated_trade_execution_cost"]["amount_usd"],
         )
+
+    def test_swap_quote_sol_to_bonk_can_include_phantom_alternative(self):
+        sol_mint = "So11111111111111111111111111111111111111112"
+        bonk_mint = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+        jupiter_quote = {
+            "inputMint": sol_mint,
+            "inAmount": "1000000000",
+            "outputMint": bonk_mint,
+            "outAmount": "1350000000000",
+            "otherAmountThreshold": "1343250000000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [],
+        }
+        phantom_quote = {
+            "ok": True,
+            "status_code": 200,
+            "first_quote_buyAmount": "1345000000000",
+            "quoteResponse": {
+                "quotes": [
+                    {
+                        "buyAmount": "1345000000000",
+                        "baseProvider": {"id": "phantom", "name": "Phantom"},
+                        "sources": [{"name": "Phantom Route", "proportion": 1}],
+                    }
+                ]
+            },
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value={"ok": True, "data": phantom_quote}) as fetch_phantom,
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "BONK": {"usd": 0.000006},
+                },
+            ),
+        ):
+            response = swap_quote(
+                from_token="SOL",
+                to_token="BONK",
+                amount=1.0,
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(fetch_phantom.call_args.args[0]["buy_token_mint"], bonk_mint)
+        phantom_option = next(
+            opt for opt in response["other_options"] if opt["provider"] == "phantom-routing-api"
+        )
+        self.assertEqual(phantom_option["execution_surface_label"], "Phantom")
+        self.assertEqual(phantom_option["quote_status"], "live")
+        self.assertEqual(phantom_option["execution_status"], "quote_only")
+        self.assertEqual(phantom_option["quote_source_type"], "wallet_routing_api")
+        self.assertTrue(phantom_option["is_comparison_only"])
+        self.assertFalse(phantom_option["is_clickable"])
+        self.assertTrue(phantom_option["is_official_quote"])
+        self.assertEqual(phantom_option["estimated_output"], 13450000.0)
+        self.assertAlmostEqual(phantom_option["estimated_output_usd"], 80.7)
+
+    def test_swap_quote_sol_to_bonk_can_show_successful_real_universes(self):
+        sol_mint = "So11111111111111111111111111111111111111112"
+        bonk_mint = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+        jupiter_quote = {
+            "inputMint": sol_mint,
+            "inAmount": "1000000000",
+            "outputMint": bonk_mint,
+            "outAmount": "1350000000000",
+            "otherAmountThreshold": "1343250000000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [],
+        }
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": sol_mint,
+                "inputAmount": "1000000000",
+                "outputMint": bonk_mint,
+                "outputAmount": "1349000000000",
+                "otherAmountThreshold": "1342255000000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+        meteora_quote = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "pool": {
+                "address": "6oFWm7KPLfxnwMb3z5xwBoXNSPP3JJyirAPqPSiVcnsp",
+                "name": "BONK-SOL",
+            },
+            "input_mint": sol_mint,
+            "output_mint": bonk_mint,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "1348000000000",
+            "min_out_amount_raw": "1341260000000",
+            "fee_raw": "500030",
+            "protocol_fee_raw": "50002",
+            "price_impact": "0",
+            "bin_arrays": ["bin"],
+        }
+        orca_quote = {
+            "ok": True,
+            "provider": "orca_whirlpool",
+            "pool": {
+                "address": "orca_pool",
+                "name": "BONK-SOL",
+                "token_mint_a": bonk_mint,
+                "token_mint_b": sol_mint,
+            },
+            "input_mint": sol_mint,
+            "output_mint": bonk_mint,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "1347000000000",
+            "min_out_amount_raw": "1340265000000",
+            "fee_raw": "400000",
+            "slippage_bps": 50,
+        }
+        phantom_quote = {
+            "ok": True,
+            "status_code": 200,
+            "first_quote_buyAmount": "1346000000000",
+            "quoteResponse": {
+                "quotes": [
+                    {
+                        "buyAmount": "1346000000000",
+                        "baseProvider": {"id": "phantom", "name": "Phantom"},
+                    }
+                ]
+            },
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value={"ok": True, "data": orca_quote}),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value={"ok": True, "data": phantom_quote}),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "BONK": {"usd": 0.000006},
+                },
+            ),
+        ):
+            response = swap_quote(
+                from_token="SOL",
+                to_token="BONK",
+                amount=1.0,
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        visible = [
+            response["recommended_option"],
+            response["direct_route_check"],
+            *response["other_options"],
+        ]
+        visible_providers = {opt["provider"] for opt in visible if opt}
+        self.assertIn("jupiter-metis", visible_providers)
+        self.assertIn("raydium-trade-api", visible_providers)
+        self.assertIn("meteora-dlmm", visible_providers)
+        self.assertIn("orca-whirlpool", visible_providers)
+        self.assertIn("phantom-routing-api", visible_providers)
+        self.assertNotIn("phoenix-clob", visible_providers)
+        for provider in ["meteora-dlmm", "orca-whirlpool", "phantom-routing-api"]:
+            option = next(opt for opt in visible if opt and opt["provider"] == provider)
+            self.assertTrue(option["is_comparison_only"])
+            self.assertFalse(option["is_clickable"])
+            self.assertIsNotNone(option["estimated_output_usd"])
 
     def test_swap_quote_sol_usdc_still_uses_registry_metadata(self):
         jupiter_quote = {
