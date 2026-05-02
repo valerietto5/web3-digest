@@ -28,6 +28,7 @@ class TokenMeta(TypedDict, total=False):
 SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 BONK_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+WIF_MINT = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
 DOCS_PUMP_MINT = "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump"
 
 NATIVE_TOKENS: Dict[str, TokenMeta] = {
@@ -100,6 +101,20 @@ TOKENS: Dict[str, TokenMeta] = {
         "mint": BONK_MINT,
         "decimals": 5,
         "coingecko_id": "bonk",
+        "dexscreener_chain_id": "solana",
+        "tags": ["meme", "curated"],
+        "verified": True,
+        "default_enabled": True,
+    },
+    # dogwifhat (Solana)
+    WIF_MINT: {
+        "asset": "wif",
+        "symbol": "WIF",
+        "name": "dogwifhat",
+        "display_name": "dogwifhat",
+        "mint": WIF_MINT,
+        "decimals": 6,
+        "coingecko_id": "dogwifhat",
         "dexscreener_chain_id": "solana",
         "tags": ["meme", "curated"],
         "verified": True,

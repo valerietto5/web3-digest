@@ -1047,10 +1047,17 @@ METEORA_DLMM_BONK_SOL_CANDIDATE = {
 ORCA_WHIRLPOOL_SOL_MINT = "So11111111111111111111111111111111111111112"
 ORCA_WHIRLPOOL_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 ORCA_WHIRLPOOL_BONK_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+ORCA_WHIRLPOOL_WIF_MINT = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
 ORCA_WHIRLPOOL_BONK_SOL_CANDIDATE = {
     "address": "5zpyutJu9ee6jFymDGoK7F6S5Kczqtc9FomP3ueKuyA9",
     "name": "BONK-SOL",
     "token_mint_a": ORCA_WHIRLPOOL_BONK_MINT,
+    "token_mint_b": ORCA_WHIRLPOOL_SOL_MINT,
+}
+ORCA_WHIRLPOOL_WIF_SOL_CANDIDATE = {
+    "address": "D6NdKrKNQPmRZCCnG1GqXtF7MMoHB7qR6GU5TkG59Qz1",
+    "name": "WIF-SOL",
+    "token_mint_a": ORCA_WHIRLPOOL_WIF_MINT,
     "token_mint_b": ORCA_WHIRLPOOL_SOL_MINT,
 }
 
@@ -1173,12 +1180,18 @@ def _build_orca_whirlpool_quote_payload(
 
     if {input_mint, output_mint} == {ORCA_WHIRLPOOL_SOL_MINT, ORCA_WHIRLPOOL_BONK_MINT}:
         payload["pool_candidates"].append(dict(ORCA_WHIRLPOOL_BONK_SOL_CANDIDATE))
+    elif {input_mint, output_mint} == {ORCA_WHIRLPOOL_SOL_MINT, ORCA_WHIRLPOOL_WIF_MINT}:
+        payload["pool_candidates"].append(dict(ORCA_WHIRLPOOL_WIF_SOL_CANDIDATE))
 
-    supported_output_mints = {ORCA_WHIRLPOOL_USDC_MINT, ORCA_WHIRLPOOL_BONK_MINT}
+    supported_output_mints = {
+        ORCA_WHIRLPOOL_USDC_MINT,
+        ORCA_WHIRLPOOL_BONK_MINT,
+        ORCA_WHIRLPOOL_WIF_MINT,
+    }
     if input_mint != ORCA_WHIRLPOOL_SOL_MINT or output_mint not in supported_output_mints:
         payload["unsupported_pair"] = True
         payload["unsupported_pair_detail"] = (
-            "Orca Whirlpool quote helper currently supports SOL -> USDC and SOL -> BONK only."
+            "Orca Whirlpool quote helper currently supports SOL -> USDC, SOL -> BONK, and SOL -> WIF only."
         )
 
     return payload
@@ -1479,6 +1492,7 @@ def _try_fetch_pumpswap_quote(payload: dict) -> dict:
 PHANTOM_SOL_MINT = "So11111111111111111111111111111111111111112"
 PHANTOM_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 PHANTOM_BONK_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+PHANTOM_WIF_MINT = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
 
 
 def _build_phantom_quote_payload(
@@ -1499,11 +1513,11 @@ def _build_phantom_quote_payload(
         "taker_address": user_public_key,
     }
 
-    supported_output_mints = {PHANTOM_USDC_MINT, PHANTOM_BONK_MINT}
+    supported_output_mints = {PHANTOM_USDC_MINT, PHANTOM_BONK_MINT, PHANTOM_WIF_MINT}
     if input_mint != PHANTOM_SOL_MINT or output_mint not in supported_output_mints:
         payload["unsupported_pair"] = True
         payload["unsupported_pair_detail"] = (
-            "Phantom quote research helper currently supports SOL -> USDC and SOL -> BONK only."
+            "Phantom quote research helper currently supports SOL -> USDC, SOL -> BONK, and SOL -> WIF only."
         )
 
     if not user_public_key:
