@@ -30,6 +30,7 @@ from api.main import (
     _try_fetch_phantom_quote,
     _try_fetch_phoenix_quote,
     swap_quote,
+    swap_tokens,
 )
 
 from db import (
@@ -62,6 +63,19 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(bonk["mint"], "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263")
         self.assertEqual(bonk["decimals"], 5)
         self.assertEqual(bonk["coingecko_id"], "bonk")
+
+    def test_swap_tokens_returns_default_enabled_registry_tokens(self):
+        response = swap_tokens()
+        self.assertTrue(response["ok"])
+
+        by_symbol = {token["symbol"]: token for token in response["tokens"]}
+        self.assertEqual(by_symbol["SOL"]["decimals"], 9)
+        self.assertEqual(by_symbol["USDC"]["decimals"], 6)
+        self.assertEqual(by_symbol["BONK"]["mint"], "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263")
+        self.assertEqual(by_symbol["BONK"]["display_name"], "Bonk")
+        self.assertTrue(by_symbol["BONK"]["default_enabled"])
+        self.assertTrue(by_symbol["BONK"]["verified"])
+        self.assertNotIn("USDT", by_symbol)
 
     def test_insert_and_get_latest_prices_with_ts(self):
         t1 = "2026-02-25T00:00:00+00:00"

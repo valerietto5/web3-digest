@@ -531,6 +531,32 @@ def accounts():
     return {"accounts": out}
 
 
+def _public_swap_token_meta(symbol: str, meta: dict) -> dict:
+    return {
+        "symbol": symbol,
+        "display_name": meta.get("display_name") or meta.get("name") or symbol,
+        "mint": meta.get("mint"),
+        "decimals": meta.get("decimals"),
+        "tags": meta.get("tags") or [],
+        "verified": bool(meta.get("verified")),
+        "default_enabled": bool(meta.get("default_enabled")),
+    }
+
+
+@app.get("/swap/tokens")
+def swap_tokens():
+    tokens = []
+    for symbol, meta in TOKEN_META.items():
+        if not meta.get("default_enabled"):
+            continue
+        public_meta = _public_swap_token_meta(symbol, meta)
+        if not public_meta.get("mint") or public_meta.get("decimals") is None:
+            continue
+        tokens.append(public_meta)
+
+    return {"ok": True, "tokens": tokens}
+
+
 JUP_API_KEY = os.environ.get("JUP_API_KEY", "").strip()
 
 def to_raw_amount(amount: float, decimals: int) -> int:

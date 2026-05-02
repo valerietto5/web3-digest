@@ -285,6 +285,10 @@ def build_ui_html() -> str:
 
   const ACTIVITY_LIMIT = 8;
   const activityItems = [];
+  let swapTokenList = [
+    { symbol: "SOL", display_name: "Solana", decimals: 9 },
+    { symbol: "USDC", display_name: "USD Coin", decimals: 6 }
+  ];
 
   function nowTimeLabel() {
     return new Date().toLocaleTimeString();
@@ -1850,6 +1854,51 @@ function qs(params) {
     return { ok: res.ok, status: res.status, text, data };
   }
 
+  function renderSwapTokenOptions(selectId, defaultSymbol) {
+    const sel = $(selectId);
+    if (!sel) return;
+
+    const previous = sel.value || defaultSymbol;
+    sel.innerHTML = "";
+
+    for (const token of swapTokenList) {
+      const symbol = String(token.symbol || "").toUpperCase();
+      if (!symbol) continue;
+
+      const opt = document.createElement("option");
+      opt.value = symbol;
+      const name = token.display_name || symbol;
+      opt.textContent = name === symbol ? symbol : symbol + " - " + name;
+      sel.appendChild(opt);
+    }
+
+    const values = Array.from(sel.options).map((opt) => opt.value);
+    if (values.includes(previous)) {
+      sel.value = previous;
+    } else if (values.includes(defaultSymbol)) {
+      sel.value = defaultSymbol;
+    }
+  }
+
+  function renderSwapTokenSelectors() {
+    renderSwapTokenOptions("swapFromToken", "SOL");
+    renderSwapTokenOptions("swapToToken", "USDC");
+  }
+
+  async function loadSwapTokens() {
+    try {
+      const res = await fetchMaybeJson("/swap/tokens");
+      const tokens = Array.isArray(res.data?.tokens) ? res.data.tokens : [];
+      if (res.ok && res.data?.ok && tokens.length) {
+        swapTokenList = tokens;
+      }
+    } catch (err) {
+      // Keep the built-in SOL/USDC fallback if the registry endpoint is unavailable.
+    }
+
+    renderSwapTokenSelectors();
+  }
+
   function fmtNum(x, digits=6) {
     if (x === null || x === undefined) return "—";
     if (typeof x !== "number") return String(x);
@@ -1881,8 +1930,11 @@ function qs(params) {
 
   function tokenDecimals(token) {
     const t = String(token || "").toUpperCase();
-    if (t === "SOL") return 9;
-    if (t === "USDC") return 6;
+    const found = swapTokenList.find((item) => String(item.symbol || "").toUpperCase() === t);
+    if (found && found.decimals !== undefined && found.decimals !== null) {
+      const n = Number(found.decimals);
+      if (Number.isInteger(n) && n >= 0) return n;
+    }
     return null;
   }
 
@@ -2259,6 +2311,7 @@ function fmtUsdCost(x) {
   (async () => {
     resetSendStateUi();
     renderActivityLog();
+    await loadSwapTokens();
     await loadAccounts();
     await loadReportAndHistory();
     await connectPhantom(true);
