@@ -1493,6 +1493,9 @@ PHANTOM_SOL_MINT = "So11111111111111111111111111111111111111112"
 PHANTOM_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 PHANTOM_BONK_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
 PHANTOM_WIF_MINT = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
+PHANTOM_POPCAT_MINT = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr"
+PHANTOM_CHAD_MINT = "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump"
+PHANTOM_SPX6900_MINT = "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr"
 
 
 def _build_phantom_quote_payload(
@@ -1513,11 +1516,18 @@ def _build_phantom_quote_payload(
         "taker_address": user_public_key,
     }
 
-    supported_output_mints = {PHANTOM_USDC_MINT, PHANTOM_BONK_MINT, PHANTOM_WIF_MINT}
+    supported_output_mints = {
+        PHANTOM_USDC_MINT,
+        PHANTOM_BONK_MINT,
+        PHANTOM_WIF_MINT,
+        PHANTOM_POPCAT_MINT,
+        PHANTOM_CHAD_MINT,
+        PHANTOM_SPX6900_MINT,
+    }
     if input_mint != PHANTOM_SOL_MINT or output_mint not in supported_output_mints:
         payload["unsupported_pair"] = True
         payload["unsupported_pair_detail"] = (
-            "Phantom quote research helper currently supports SOL -> USDC, SOL -> BONK, and SOL -> WIF only."
+            "Phantom quote research helper currently supports curated SOL -> SPL quote pairs only."
         )
 
     if not user_public_key:

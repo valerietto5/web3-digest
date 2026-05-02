@@ -29,6 +29,9 @@ SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 BONK_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
 WIF_MINT = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
+POPCAT_MINT = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr"
+CHAD_MINT = "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump"
+SPX6900_MINT = "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr"
 DOCS_PUMP_MINT = "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump"
 
 NATIVE_TOKENS: Dict[str, TokenMeta] = {
@@ -115,6 +118,48 @@ TOKENS: Dict[str, TokenMeta] = {
         "mint": WIF_MINT,
         "decimals": 6,
         "coingecko_id": "dogwifhat",
+        "dexscreener_chain_id": "solana",
+        "tags": ["meme", "curated"],
+        "verified": True,
+        "default_enabled": True,
+    },
+    # Popcat (Solana)
+    POPCAT_MINT: {
+        "asset": "popcat",
+        "symbol": "POPCAT",
+        "name": "Popcat",
+        "display_name": "Popcat",
+        "mint": POPCAT_MINT,
+        "decimals": 9,
+        "coingecko_id": "popcat",
+        "dexscreener_chain_id": "solana",
+        "tags": ["meme", "curated"],
+        "verified": True,
+        "default_enabled": True,
+    },
+    # CHAD (Solana, CoinGecko chad-3)
+    CHAD_MINT: {
+        "asset": "chad",
+        "symbol": "CHAD",
+        "name": "CHAD",
+        "display_name": "CHAD",
+        "mint": CHAD_MINT,
+        "decimals": 6,
+        "coingecko_id": "chad-3",
+        "dexscreener_chain_id": "solana",
+        "tags": ["meme", "curated"],
+        "verified": True,
+        "default_enabled": True,
+    },
+    # SPX6900 (Wormhole on Solana)
+    SPX6900_MINT: {
+        "asset": "spx6900",
+        "symbol": "SPX6900",
+        "name": "SPX6900",
+        "display_name": "SPX6900",
+        "mint": SPX6900_MINT,
+        "decimals": 8,
+        "coingecko_id": "spx6900",
         "dexscreener_chain_id": "solana",
         "tags": ["meme", "curated"],
         "verified": True,

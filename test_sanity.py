@@ -59,11 +59,14 @@ class TestSanity(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_swap_registry_resolves_sol_usdc_bonk_and_wif(self):
+    def test_swap_registry_resolves_curated_swap_tokens(self):
         sol = _resolve_swap_token_meta("SOL")
         usdc = _resolve_swap_token_meta("USDC")
         bonk = _resolve_swap_token_meta("BONK")
         wif = _resolve_swap_token_meta("WIF")
+        popcat = _resolve_swap_token_meta("POPCAT")
+        chad = _resolve_swap_token_meta("CHAD")
+        spx6900 = _resolve_swap_token_meta("SPX6900")
 
         self.assertEqual(sol["mint"], "So11111111111111111111111111111111111111112")
         self.assertEqual(sol["decimals"], 9)
@@ -76,6 +79,18 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(wif["decimals"], 6)
         self.assertEqual(wif["coingecko_id"], "dogwifhat")
         self.assertEqual(wif["display_name"], "dogwifhat")
+        self.assertEqual(popcat["mint"], "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr")
+        self.assertEqual(popcat["decimals"], 9)
+        self.assertEqual(popcat["coingecko_id"], "popcat")
+        self.assertEqual(popcat["display_name"], "Popcat")
+        self.assertEqual(chad["mint"], "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump")
+        self.assertEqual(chad["decimals"], 6)
+        self.assertEqual(chad["coingecko_id"], "chad-3")
+        self.assertEqual(chad["display_name"], "CHAD")
+        self.assertEqual(spx6900["mint"], "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr")
+        self.assertEqual(spx6900["decimals"], 8)
+        self.assertEqual(spx6900["coingecko_id"], "spx6900")
+        self.assertEqual(spx6900["display_name"], "SPX6900")
         figure = _resolve_swap_token_meta("FIGURE")
         self.assertEqual(figure["mint"], "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump")
         self.assertEqual(figure["decimals"], 6)
@@ -96,6 +111,19 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(by_symbol["WIF"]["decimals"], 6)
         self.assertTrue(by_symbol["WIF"]["default_enabled"])
         self.assertTrue(by_symbol["WIF"]["verified"])
+        self.assertEqual(by_symbol["POPCAT"]["mint"], "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr")
+        self.assertEqual(by_symbol["POPCAT"]["display_name"], "Popcat")
+        self.assertEqual(by_symbol["POPCAT"]["decimals"], 9)
+        self.assertTrue(by_symbol["POPCAT"]["default_enabled"])
+        self.assertTrue(by_symbol["POPCAT"]["verified"])
+        self.assertEqual(by_symbol["CHAD"]["mint"], "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump")
+        self.assertEqual(by_symbol["CHAD"]["decimals"], 6)
+        self.assertTrue(by_symbol["CHAD"]["default_enabled"])
+        self.assertTrue(by_symbol["CHAD"]["verified"])
+        self.assertEqual(by_symbol["SPX6900"]["mint"], "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr")
+        self.assertEqual(by_symbol["SPX6900"]["decimals"], 8)
+        self.assertTrue(by_symbol["SPX6900"]["default_enabled"])
+        self.assertTrue(by_symbol["SPX6900"]["verified"])
         self.assertEqual(by_symbol["FIGURE"]["display_name"], "Action Figure")
         self.assertFalse(by_symbol["FIGURE"]["verified"])
         self.assertNotIn("USDT", by_symbol)
@@ -382,6 +410,22 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(payload["pool_candidates"], [])
 
+    def test_build_meteora_dlmm_quote_payload_has_no_unverified_new_meme_candidates(self):
+        for mint in [
+            "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump",
+            "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+        ]:
+            payload = _build_meteora_dlmm_quote_payload(
+                input_mint=METEORA_DLMM_SOL_MINT,
+                output_mint=mint,
+                amount_raw=1000000000,
+                slippage_bps=50,
+                rpc_url="https://example.invalid",
+            )
+
+            self.assertEqual(payload["pool_candidates"], [])
+
     def test_fetch_meteora_dlmm_quote_uses_subprocess_json_contract(self):
         helper_output = {
             "ok": True,
@@ -462,6 +506,23 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["pool_candidates"][0]["token_mint_a"], wif_mint)
         self.assertEqual(payload["pool_candidates"][0]["token_mint_b"], METEORA_DLMM_SOL_MINT)
         self.assertNotIn("unsupported_pair", payload)
+
+    def test_build_orca_whirlpool_quote_payload_rejects_new_memes_without_curated_pools(self):
+        for mint in [
+            "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump",
+            "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+        ]:
+            payload = _build_orca_whirlpool_quote_payload(
+                input_mint=METEORA_DLMM_SOL_MINT,
+                output_mint=mint,
+                amount_raw=1000000000,
+                slippage_bps=50,
+                rpc_url="https://example.invalid",
+            )
+
+            self.assertEqual(payload["pool_candidates"], [])
+            self.assertTrue(payload["unsupported_pair"])
 
     def test_fetch_orca_whirlpool_quote_uses_subprocess_json_contract(self):
         helper_output = {
@@ -623,6 +684,24 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(payload["unsupported_pair"])
         self.assertIn("FIGURE docs-token pool only", payload["unsupported_pair_detail"])
 
+    def test_build_pumpswap_quote_payload_keeps_new_memes_fail_soft(self):
+        for mint in [
+            "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump",
+            "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+        ]:
+            payload = _build_pumpswap_quote_payload(
+                input_mint=METEORA_DLMM_SOL_MINT,
+                output_mint=mint,
+                amount_raw=1000000000,
+                slippage_bps=50,
+                rpc_url="https://example.invalid",
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+            self.assertEqual(payload["pool_candidates"], [])
+            self.assertTrue(payload["unsupported_pair"])
+
     def test_try_fetch_pumpswap_quote_handles_unsupported_pair_without_fake_card(self):
         payload = _build_pumpswap_quote_payload(
             input_mint=METEORA_DLMM_SOL_MINT,
@@ -732,6 +811,26 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["taker_address"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
         self.assertNotIn("unsupported_pair", payload)
         self.assertNotIn("skip_reason", payload)
+
+    def test_build_phantom_quote_payload_supports_sol_to_new_memes(self):
+        for mint in [
+            "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump",
+            "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+        ]:
+            payload = _build_phantom_quote_payload(
+                input_mint=METEORA_DLMM_SOL_MINT,
+                output_mint=mint,
+                amount_raw=1000000000,
+                slippage_bps=50,
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+            self.assertTrue(payload["sell_token_is_native"])
+            self.assertEqual(payload["buy_token_mint"], mint)
+            self.assertEqual(payload["taker_address"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
+            self.assertNotIn("unsupported_pair", payload)
+            self.assertNotIn("skip_reason", payload)
 
     def test_fetch_phantom_quote_uses_subprocess_json_contract(self):
         helper_output = {
@@ -1722,6 +1821,67 @@ class TestSanity(unittest.TestCase):
             self.assertTrue(option["is_comparison_only"])
             self.assertFalse(option["is_clickable"])
             self.assertIsNotNone(option["estimated_output_usd"])
+
+    def test_swap_quote_accepts_new_curated_meme_tokens_without_fake_cards(self):
+        sol_mint = "So11111111111111111111111111111111111111112"
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+        cases = [
+            ("POPCAT", "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr", "125000000000", 125.0, 0.06),
+            ("CHAD", "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump", "9000000", 9.0, 0.000007),
+            ("SPX6900", "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr", "25000000000", 250.0, 0.3),
+        ]
+
+        for symbol, mint, out_amount_raw, estimated_output, usd_price in cases:
+            jupiter_quote = {
+                "inputMint": sol_mint,
+                "inAmount": "1000000000",
+                "outputMint": mint,
+                "outAmount": out_amount_raw,
+                "otherAmountThreshold": str(int(out_amount_raw) - 1),
+                "slippageBps": 50,
+                "priceImpactPct": "0",
+                "swapUsdValue": "84",
+                "routePlan": [],
+            }
+
+            with (
+                patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+                patch(
+                    "api.main._try_fetch_jupiter_quote",
+                    return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+                ),
+                patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+                patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+                patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+                patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+                patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+                patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+                patch(
+                    "api.main._resolve_quote_reference_prices_usd",
+                    return_value={
+                        "SOL": {"usd": 84.0},
+                        symbol: {"usd": usd_price},
+                    },
+                ),
+            ):
+                response = swap_quote(from_token="SOL", to_token=symbol, amount=1.0)
+
+            self.assertEqual(response["to_token"], symbol)
+            self.assertEqual(response["recommended_option"]["provider"], "jupiter-metis")
+            self.assertAlmostEqual(response["recommended_option"]["estimated_output"], estimated_output)
+            visible = [
+                response["recommended_option"],
+                response["direct_route_check"],
+                *response["other_options"],
+            ]
+            visible_providers = {opt["provider"] for opt in visible if opt}
+            self.assertNotIn("meteora-dlmm", visible_providers)
+            self.assertNotIn("orca-whirlpool", visible_providers)
+            self.assertNotIn("phoenix-clob", visible_providers)
+            self.assertNotIn("pumpswap", visible_providers)
 
     def test_swap_quote_can_include_pumpswap_for_docs_token(self):
         sol_mint = "So11111111111111111111111111111111111111112"
