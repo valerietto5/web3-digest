@@ -187,13 +187,13 @@ def build_ui_html() -> str:
       <div class="muted" id="swapSpendValueHint">You spend: —</div>
       <div class="muted" id="swapIdealOutputHint">Ideal no-fee baseline: —</div>
       <div class="muted" id="swapBaselineDeltaHint">Difference vs best checked route: —</div>
-      <div class="muted" id="swapBaselineNote">Ideal no-fee reference for comparison.</div>
+      <div class="muted" id="swapBaselineNote" style="font-size:12px; opacity:0.78;">Ideal no-fee reference for comparison.</div>
     </div>
 
     <div class="card" id="swapQuoteCard" style="margin-top:10px;">
-      <div class="row">
-        <div><span class="pill warn" id="pillSwapState">state: Draft</span></div>
-        <div class="muted" id="swapStateText">Ready to request a swap quote.</div>
+      <div class="row" style="font-size:12px;">
+        <div><span class="pill warn" id="pillSwapState" style="font-size:11px; padding:2px 7px;">Draft</span></div>
+        <div class="muted" id="swapStateText" style="font-size:12px;">Ready to request a swap quote.</div>
       </div>
 
       <div class="muted" id="swapRecommendation" style="margin-top:8px;">recommendation: —</div>
@@ -201,12 +201,10 @@ def build_ui_html() -> str:
     </div>
 
     <div class="card" id="swapRecommendedCard" style="margin-top:10px;">
-      <h4 style="margin: 0 0 6px 0;">Recommended route</h4>
       <div class="muted" id="swapRecommendedBox">No quote yet.</div>
     </div>
 
     <div class="card" id="swapDirectCard" style="margin-top:10px;">
-      <h4 style="margin: 0 0 6px 0;">Direct route check</h4>
       <div class="muted" id="swapDirectBox">No direct-route check yet.</div>
     </div>
 
@@ -347,7 +345,7 @@ function setSwapPhase(phase, text) {
   const pill = $("pillSwapState");
   const line = $("swapStateText");
 
-  pill.textContent = "state: " + phase;
+  pill.textContent = phase;
 
   let kind = "warn";
   const p = String(phase || "").toLowerCase();
@@ -495,7 +493,7 @@ function renderSwapInlineBaseline(baseline, delta = null) {
 
   function referenceSourceLabel(source) {
     if (source === "dexscreener_solana") return "DexScreener reference";
-    if (source === "jupiter_price_v3") return "Jupiter reference";
+    if (source === "jupiter_price_v3") return "CoinGecko reference";
     if (source === "coingecko_simple_price") return "CoinGecko reference";
     if (source === "sqlite_usd_snapshots") return "SQLite cached reference";
     return "Cached reference";
@@ -556,16 +554,16 @@ function renderSwapInlineBaseline(baseline, delta = null) {
 
     if (source === "dexscreener_solana") {
       note.textContent = tsUtc
-        ? "Source: DexScreener Solana market pair at " + tsUtc + ". Not an executable quote."
-        : "Source: DexScreener Solana market pair. Not an executable quote.";
+        ? "Source detail: DexScreener Solana market pair at " + tsUtc + ". Not an executable quote."
+        : "Source detail: DexScreener Solana market pair. Not an executable quote.";
     } else if (source === "jupiter_price_v3") {
       note.textContent = tsUtc
-        ? "Source: Jupiter Price V3 market price at " + tsUtc + ". Not an executable quote."
-        : "Source: Jupiter Price V3 market price. Not an executable quote.";
+        ? "Source detail: Jupiter Price V3 market price at " + tsUtc + ". Not an executable quote."
+        : "Source detail: Jupiter Price V3 market price. Not an executable quote.";
     } else if (source === "coingecko_simple_price") {
       note.textContent = tsUtc
-        ? "Source: fresh CoinGecko market price at " + tsUtc + ". Not an executable quote."
-        : "Source: fresh CoinGecko market price. Not an executable quote.";
+        ? "Source detail: fresh CoinGecko market price at " + tsUtc + ". Not an executable quote."
+        : "Source detail: fresh CoinGecko market price. Not an executable quote.";
     } else if (source === "sqlite_usd_snapshots") {
       note.textContent = tsUtc
         ? "Source: cached SQLite USD price snapshot at " + tsUtc + ". Not an executable quote."
@@ -738,11 +736,11 @@ function surfaceRouteLabel(opt) {
 function swapOptionCardTitle(opt, opts = {}) {
   if (opts.title) return opts.title;
 
-  const surface = surfaceRouteLabel(opt);
   const kind = String(opt?.kind || "");
 
-  if (kind === "recommended") return "Recommended — " + surface;
-  if (kind === "direct") return "Direct / simple — " + surface;
+  if (kind === "recommended" && opt?.is_comparison_only === true) return "Best quote";
+  if (kind === "recommended") return "Recommended route";
+  if (kind === "direct") return "Direct / simple route";
 
   return opt?.label || opt?.execution_surface_label || "Route";
 }
@@ -890,6 +888,7 @@ function renderSwapOptionCard(opt, opts = {}) {
   return `
     <div class="card" style="margin-top:8px; position:relative;">
       <div><strong>${escapeHtml(title)}</strong></div>
+      <div style="margin-top:3px; font-weight:600;">${escapeHtml(routeLabel)}</div>
       ${
         isComparisonOnly
           ? `
@@ -940,9 +939,19 @@ function renderSwapOptionCard(opt, opts = {}) {
       </details>
     `
     : `
-      <div class="muted" style="margin-top:4px;">
-        ${escapeHtml(tradeCostLine)}
-      </div>
+      ${
+        compactDirect && Number.isFinite(executionCostUsd)
+          ? `
+            <div class="muted" style="margin-top:4px;">
+              Execution cost: ${escapeHtml(executionCostUsdText)}
+            </div>
+          `
+          : `
+            <div class="muted" style="margin-top:4px;">
+              ${escapeHtml(tradeCostLine)}
+            </div>
+          `
+      }
       ${
         compactDirect
           ? ""
@@ -1210,7 +1219,7 @@ async function previewSwap() {
     }) + (
       showExecutableRecommendation
         ? renderSwapOptionCard(executableRec, {
-            title: executableRec.label || "Recommended executable",
+            title: "Best executable route",
             note: "Best executable-capable route available from this preview.",
             showRecommendedAction: true
           })
