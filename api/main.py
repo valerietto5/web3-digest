@@ -1043,6 +1043,9 @@ METEORA_DLMM_BONK_SOL_CANDIDATE = {
     "token_x": METEORA_DLMM_BONK_MINT,
     "token_y": METEORA_DLMM_SOL_MINT,
 }
+METEORA_DLMM_DISCOVERY_API_URL = "https://dlmm.datapi.meteora.ag/pools"
+METEORA_DLMM_DISCOVERY_MIN_TVL_USD = 1000
+METEORA_DLMM_DISCOVERY_MIN_VOLUME_24H_USD = 1
 
 ORCA_WHIRLPOOL_SOL_MINT = "So11111111111111111111111111111111111111112"
 ORCA_WHIRLPOOL_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -1093,6 +1096,14 @@ def _build_meteora_dlmm_quote_payload(
         "amount_raw": str(amount_raw),
         "slippage_bps": int(slippage_bps),
         "pool_candidates": pool_candidates,
+        "discover_pools": len(pool_candidates) == 0,
+        "discovery": {
+            "api_url": METEORA_DLMM_DISCOVERY_API_URL,
+            "min_tvl_usd": METEORA_DLMM_DISCOVERY_MIN_TVL_USD,
+            "min_volume_24h_usd": METEORA_DLMM_DISCOVERY_MIN_VOLUME_24H_USD,
+            "sort_by": "tvl:desc",
+            "page_size": 20,
+        },
     }
 
 
