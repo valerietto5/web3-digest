@@ -1063,6 +1063,9 @@ ORCA_WHIRLPOOL_WIF_SOL_CANDIDATE = {
     "token_mint_a": ORCA_WHIRLPOOL_WIF_MINT,
     "token_mint_b": ORCA_WHIRLPOOL_SOL_MINT,
 }
+ORCA_WHIRLPOOL_DISCOVERY_API_URL = "https://api.orca.so/v2/solana/pools"
+ORCA_WHIRLPOOL_DISCOVERY_MIN_TVL_USDC = 10000
+ORCA_WHIRLPOOL_DISCOVERY_MIN_VOLUME_24H_USDC = 1
 
 PHOENIX_SOL_MINT = "So11111111111111111111111111111111111111112"
 PHOENIX_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -1194,15 +1197,24 @@ def _build_orca_whirlpool_quote_payload(
     elif {input_mint, output_mint} == {ORCA_WHIRLPOOL_SOL_MINT, ORCA_WHIRLPOOL_WIF_MINT}:
         payload["pool_candidates"].append(dict(ORCA_WHIRLPOOL_WIF_SOL_CANDIDATE))
 
-    supported_output_mints = {
-        ORCA_WHIRLPOOL_USDC_MINT,
-        ORCA_WHIRLPOOL_BONK_MINT,
-        ORCA_WHIRLPOOL_WIF_MINT,
+    payload["discover_pools"] = len(payload["pool_candidates"]) == 0
+    payload["discovery"] = {
+        "api_url": ORCA_WHIRLPOOL_DISCOVERY_API_URL,
+        "min_tvl_usdc": ORCA_WHIRLPOOL_DISCOVERY_MIN_TVL_USDC,
+        "min_volume_24h_usdc": ORCA_WHIRLPOOL_DISCOVERY_MIN_VOLUME_24H_USDC,
+        "sort_by": "tvl",
+        "page_size": 10,
     }
-    if input_mint != ORCA_WHIRLPOOL_SOL_MINT or output_mint not in supported_output_mints:
+
+    default_enabled_output_mints = {
+        (meta.get("mint") or "").strip()
+        for meta in TOKEN_META.values()
+        if meta.get("default_enabled") and (meta.get("mint") or "").strip()
+    }
+    if input_mint != ORCA_WHIRLPOOL_SOL_MINT or output_mint not in default_enabled_output_mints:
         payload["unsupported_pair"] = True
         payload["unsupported_pair_detail"] = (
-            "Orca Whirlpool quote helper currently supports SOL -> USDC, SOL -> BONK, and SOL -> WIF only."
+            "Orca Whirlpool quote helper currently supports SOL -> default-enabled registry tokens only."
         )
 
     return payload

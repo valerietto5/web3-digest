@@ -16,6 +16,11 @@ import {
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const DEFAULT_QUOTE_OWNER = "11111111111111111111111111111111";
+const DEFAULT_DISCOVERY_API_URL = "https://api.orca.so/v2/solana/pools";
+const DEFAULT_DISCOVERY_MIN_TVL_USDC = 10000;
+const DEFAULT_DISCOVERY_MIN_VOLUME_24H_USDC = 1;
+const DEFAULT_DISCOVERY_PAGE_SIZE = 10;
+const DISCOVERY_REQUEST_TIMEOUT_MS = 8000;
 
 function writeJson(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -230,8 +235,54 @@ function validateRequest(request) {
       amountRawString: request.amount_raw,
       slippageBps: slippage.value,
       poolCandidates: candidates,
+      discoverPools: request.discover_pools === true,
+      discovery: request.discovery && typeof request.discovery === "object" && !Array.isArray(request.discovery)
+        ? request.discovery
+        : {},
     },
   };
+}
+
+function numberOrZero(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isBlockedPool(pool) {
+  return Boolean(
+    pool?.isBlocked ||
+      pool?.is_blocked ||
+      pool?.blocked ||
+      pool?.hasWarning ||
+      pool?.has_warning ||
+      pool?.isBlacklisted ||
+      pool?.is_blacklisted ||
+      pool?.blacklisted,
+  );
+}
+
+function discoveryConfig(request) {
+  const config = request.discovery || {};
+  const minTvl = Number(config.min_tvl_usdc ?? config.min_tvl_usd ?? DEFAULT_DISCOVERY_MIN_TVL_USDC);
+  const minVolume = Number(
+    config.min_volume_24h_usdc ?? config.min_volume_24h_usd ?? config.min_volume_usdc ?? DEFAULT_DISCOVERY_MIN_VOLUME_24H_USDC,
+  );
+  const pageSize = Number(config.page_size ?? DEFAULT_DISCOVERY_PAGE_SIZE);
+  return {
+    apiUrl: typeof config.api_url === "string" && config.api_url.trim() ? config.api_url.trim() : DEFAULT_DISCOVERY_API_URL,
+    minTvlUsdc: Number.isFinite(minTvl) && minTvl >= 0 ? minTvl : DEFAULT_DISCOVERY_MIN_TVL_USDC,
+    minVolume24hUsdc: Number.isFinite(minVolume) && minVolume >= 0 ? minVolume : DEFAULT_DISCOVERY_MIN_VOLUME_24H_USDC,
+    pageSize: Number.isInteger(pageSize) && pageSize > 0 ? Math.min(pageSize, 25) : DEFAULT_DISCOVERY_PAGE_SIZE,
+    sortBy: typeof config.sort_by === "string" && config.sort_by.trim() ? config.sort_by.trim() : "tvl",
+  };
+}
+
+function poolTvlUsdc(pool) {
+  return numberOrZero(pool?.tvlUsdc ?? pool?.tvl_usdc ?? pool?.tvl);
+}
+
+function poolVolume24hUsdc(pool) {
+  return numberOrZero(pool?.stats?.["24h"]?.volume ?? pool?.volume24h ?? pool?.volume_24h ?? pool?.volume24hUsdc);
 }
 
 function poolInfoToCandidate(pool, index = undefined) {
@@ -270,6 +321,34 @@ function apiPoolToCandidate(pool, index = undefined) {
   };
 }
 
+function discoveryMetadata(config, discoveredPools, usablePools, rejected, selectedPool = null, lookupError = null) {
+  return {
+    source: "orca_public_api_pools_search",
+    api_url: config.apiUrl,
+    min_tvl_usdc: config.minTvlUsdc,
+    min_volume_24h_usdc: config.minVolume24hUsdc,
+    discovered_pool_count: discoveredPools.length,
+    usable_pool_count: usablePools.length,
+    rejected_blocked_count: rejected.blocked,
+    rejected_mint_mismatch_count: rejected.mintMismatch,
+    rejected_low_tvl_count: rejected.lowTvl,
+    rejected_low_volume_count: rejected.lowVolume,
+    selected_pool: selectedPool
+      ? {
+          address: selectedPool.address,
+          name: selectedPool.name,
+          tick_spacing: selectedPool.tickSpacing,
+          fee_rate: selectedPool.feeRate,
+          tvl_usdc: poolTvlUsdc(selectedPool),
+          volume_24h: poolVolume24hUsdc(selectedPool),
+          token_mint_a: selectedPool.tokenMintA,
+          token_mint_b: selectedPool.tokenMintB,
+        }
+      : null,
+    lookup_error: lookupError,
+  };
+}
+
 function quoteToJson(quote) {
   return {
     token_in_raw: quote.tokenIn?.toString() ?? null,
@@ -287,7 +366,12 @@ async function resolvePoolCandidates(request, rpc) {
       ok: true,
       source: "explicit_pool_candidates",
       candidates: request.poolCandidates,
+      discovery: null,
     };
+  }
+
+  if (request.discoverPools) {
+    return resolveApiDiscoveredPoolCandidates(request);
   }
 
   let pools = [];
@@ -316,6 +400,7 @@ async function resolvePoolCandidates(request, rpc) {
         source: "orca_public_api_pools_search",
         candidates: apiCandidates,
         sdk_lookup_error: sdkLookupError,
+        discovery: null,
       };
     }
     if (apiLookupError) {
@@ -343,7 +428,122 @@ async function resolvePoolCandidates(request, rpc) {
     ok: true,
     source: "orca_sdk_fetchWhirlpoolsByTokenPair",
     candidates,
+    discovery: null,
   };
+}
+
+async function resolveApiDiscoveredPoolCandidates(request) {
+  const config = discoveryConfig(request);
+  let discoveredPools = [];
+  try {
+    discoveredPools = await fetchOrcaApiPools(request, config);
+  } catch (err) {
+    return structuredError("DISCOVERY_REQUEST_FAILED", "Orca pool discovery request failed.", {
+      message: err instanceof Error ? err.message : String(err),
+      source: "orca_public_api_pools_search",
+    });
+  }
+
+  const rejected = {
+    blocked: 0,
+    mintMismatch: 0,
+    lowTvl: 0,
+    lowVolume: 0,
+  };
+  const usablePools = [];
+
+  for (const pool of discoveredPools) {
+    if (!pool || typeof pool !== "object") {
+      continue;
+    }
+
+    const mints = new Set([pool.tokenMintA, pool.tokenMintB]);
+    if (!mints.has(request.inputMintString) || !mints.has(request.outputMintString)) {
+      rejected.mintMismatch += 1;
+      continue;
+    }
+    if (isBlockedPool(pool)) {
+      rejected.blocked += 1;
+      continue;
+    }
+    if (poolTvlUsdc(pool) < config.minTvlUsdc) {
+      rejected.lowTvl += 1;
+      continue;
+    }
+    if (poolVolume24hUsdc(pool) < config.minVolume24hUsdc) {
+      rejected.lowVolume += 1;
+      continue;
+    }
+    usablePools.push(pool);
+  }
+
+  usablePools.sort((left, right) => {
+    const tvlDiff = poolTvlUsdc(right) - poolTvlUsdc(left);
+    if (tvlDiff !== 0) {
+      return tvlDiff;
+    }
+    return poolVolume24hUsdc(right) - poolVolume24hUsdc(left);
+  });
+
+  if (discoveredPools.length === 0) {
+    return structuredError("NO_DISCOVERED_POOL", "No Orca Whirlpool pools were discovered for the requested pair.", {
+      input_mint: request.inputMintString,
+      output_mint: request.outputMintString,
+      discovery: discoveryMetadata(config, discoveredPools, usablePools, rejected),
+    });
+  }
+
+  if (usablePools.length === 0) {
+    return structuredError(
+      "NO_USABLE_DISCOVERED_POOL",
+      "Discovered Orca Whirlpool pools did not pass quality filters.",
+      {
+        input_mint: request.inputMintString,
+        output_mint: request.outputMintString,
+        discovery: discoveryMetadata(config, discoveredPools, usablePools, rejected),
+      },
+    );
+  }
+
+  return {
+    ok: true,
+    source: "orca_public_api_pools_search",
+    candidates: usablePools.map((pool, index) => apiPoolToCandidate(pool, index)),
+    discovery: discoveryMetadata(config, discoveredPools, usablePools, rejected, usablePools[0]),
+  };
+}
+
+async function fetchOrcaApiPools(request, config) {
+  const url = new URL(config.apiUrl);
+  url.search = new URLSearchParams({
+    tokensBothOf: `${request.inputMintString},${request.outputMintString}`,
+    minTvl: config.minTvlUsdc.toString(),
+    minVolume: config.minVolume24hUsdc.toString(),
+    size: config.pageSize.toString(),
+    sortBy: config.sortBy,
+    sortDirection: "desc",
+    stats: "24h",
+  }).toString();
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DISCOVERY_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "web3-digest-orca-quote-research",
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    return Array.isArray(payload?.data) ? payload.data : [];
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function fetchOrcaApiPoolCandidates(request) {
@@ -379,7 +579,7 @@ async function fetchOrcaApiPoolCandidates(request) {
     .map((pool, index) => apiPoolToCandidate(pool, index));
 }
 
-async function quoteCandidate(request, rpc, candidate, index) {
+async function quoteCandidate(request, rpc, candidate, index, discovery = null) {
   const signer = createNoopSigner(address(DEFAULT_QUOTE_OWNER));
   const { quote, instructions, tradeEnableTimestamp } = await swapInstructions(
     rpc,
@@ -393,6 +593,9 @@ async function quoteCandidate(request, rpc, candidate, index) {
   );
 
   const quoteJson = quoteToJson(quote);
+  if (discovery) {
+    quoteJson.discovery = discovery;
+  }
   return {
     ok: true,
     provider: "orca_whirlpool",
@@ -411,6 +614,7 @@ async function quoteCandidate(request, rpc, candidate, index) {
     slippage_bps: request.slippageBps,
     trade_enable_timestamp: tradeEnableTimestamp.toString(),
     instructions_count: instructions.length,
+    discovery,
     raw_quote: quoteJson,
   };
 }
@@ -429,7 +633,7 @@ async function quoteOrcaWhirlpool(request) {
   const quoteErrors = [];
   for (const [index, candidate] of resolved.candidates.entries()) {
     try {
-      quoteResults.push(await quoteCandidate(request, rpc, candidate, index));
+      quoteResults.push(await quoteCandidate(request, rpc, candidate, index, resolved.discovery ?? null));
     } catch (err) {
       quoteErrors.push({
         candidate_index: index,

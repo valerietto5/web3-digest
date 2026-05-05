@@ -511,6 +511,9 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["rpc_url"], "https://example.invalid")
         self.assertEqual(payload["amount_raw"], "1000000000")
         self.assertEqual(payload["pool_candidates"], [])
+        self.assertTrue(payload["discover_pools"])
+        self.assertEqual(payload["discovery"]["api_url"], "https://api.orca.so/v2/solana/pools")
+        self.assertEqual(payload["discovery"]["min_tvl_usdc"], 10000)
         self.assertNotIn("unsupported_pair", payload)
 
     def test_build_orca_whirlpool_quote_payload_supports_sol_bonk(self):
@@ -531,6 +534,7 @@ class TestSanity(unittest.TestCase):
         )
         self.assertEqual(payload["pool_candidates"][0]["token_mint_a"], METEORA_DLMM_BONK_MINT)
         self.assertEqual(payload["pool_candidates"][0]["token_mint_b"], METEORA_DLMM_SOL_MINT)
+        self.assertFalse(payload["discover_pools"])
         self.assertNotIn("unsupported_pair", payload)
 
     def test_build_orca_whirlpool_quote_payload_supports_sol_wif(self):
@@ -552,9 +556,10 @@ class TestSanity(unittest.TestCase):
         )
         self.assertEqual(payload["pool_candidates"][0]["token_mint_a"], wif_mint)
         self.assertEqual(payload["pool_candidates"][0]["token_mint_b"], METEORA_DLMM_SOL_MINT)
+        self.assertFalse(payload["discover_pools"])
         self.assertNotIn("unsupported_pair", payload)
 
-    def test_build_orca_whirlpool_quote_payload_rejects_new_memes_without_curated_pools(self):
+    def test_build_orca_whirlpool_quote_payload_discovers_new_memes_without_curated_pools(self):
         for mint in [
             "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
             "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump",
@@ -569,7 +574,9 @@ class TestSanity(unittest.TestCase):
             )
 
             self.assertEqual(payload["pool_candidates"], [])
-            self.assertTrue(payload["unsupported_pair"])
+            self.assertTrue(payload["discover_pools"])
+            self.assertEqual(payload["discovery"]["min_tvl_usdc"], 10000)
+            self.assertNotIn("unsupported_pair", payload)
 
     def test_fetch_orca_whirlpool_quote_uses_subprocess_json_contract(self):
         helper_output = {
@@ -596,6 +603,45 @@ class TestSanity(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["status_code"], 504)
+
+    def test_try_fetch_orca_whirlpool_quote_handles_invalid_helper_json(self):
+        with patch(
+            "api.main.subprocess.run",
+            return_value=subprocess.CompletedProcess(["node"], 0, "{not-json", ""),
+        ):
+            result = _try_fetch_orca_whirlpool_quote({"amount_raw": "1000000000"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["status_code"], 502)
+        self.assertIn("invalid JSON", result["error"]["detail"])
+
+    def test_try_fetch_orca_whirlpool_quote_reports_low_quality_discovery(self):
+        helper_output = {
+            "ok": False,
+            "error": {
+                "code": "NO_USABLE_DISCOVERED_POOL",
+                "message": "Discovered Orca Whirlpool pools did not pass quality filters.",
+                "details": {
+                    "discovery": {
+                        "rejected_low_tvl_count": 2,
+                        "usable_pool_count": 0,
+                    },
+                },
+            },
+        }
+
+        with patch(
+            "api.main.subprocess.run",
+            return_value=subprocess.CompletedProcess(["node"], 1, json.dumps(helper_output), ""),
+        ):
+            result = _try_fetch_orca_whirlpool_quote({"amount_raw": "1000000000"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "NO_USABLE_DISCOVERED_POOL")
+        self.assertEqual(
+            result["error"]["helper_error"]["details"]["discovery"]["rejected_low_tvl_count"],
+            2,
+        )
 
     def test_try_fetch_orca_whirlpool_quote_handles_missing_helper(self):
         with patch("api.main.Path.exists", return_value=False):
@@ -1114,7 +1160,7 @@ class TestSanity(unittest.TestCase):
             "ok": True,
             "provider": "orca_whirlpool",
             "pool": {
-                "address": "FpCMFDFGYotvufJ7HrFHsWEiiQCGbkLCtwHiDnh7o28Q",
+                "address": "AHTTzwf3GmVMJdxWM8v2MSxyjZj8rQR6hyAC3g9477Yj",
                 "tick_spacing": 2,
                 "fee_rate": 200,
             },
@@ -1125,6 +1171,13 @@ class TestSanity(unittest.TestCase):
             "min_out_amount_raw": "83629750",
             "fee_raw": "200002",
             "slippage_bps": 50,
+            "discovery": {
+                "selected_pool": {
+                    "address": "AHTTzwf3GmVMJdxWM8v2MSxyjZj8rQR6hyAC3g9477Yj",
+                    "tvl_usdc": 26800,
+                    "volume_24h": 28500,
+                },
+            },
         }
 
         option = _normalize_orca_whirlpool_quote_option(
@@ -1153,6 +1206,8 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["route_steps"][0]["pool_address"], quote["pool"]["address"])
         self.assertEqual(option["route_steps"][0]["tick_spacing"], 2)
         self.assertTrue(option["explicit_route_fees"]["has_explicit_fees"])
+        self.assertEqual(option["raw_quote"]["discovery"]["selected_pool"]["tvl_usdc"], 26800)
+        self.assertEqual(option["raw_quote"]["discovery"]["selected_pool"]["volume_24h"], 28500)
 
     def test_normalize_phoenix_quote_option_marks_quote_only_non_clickable(self):
         quote = {
@@ -1873,6 +1928,7 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(response["to_token"], "WIF")
         self.assertEqual(fetch_orca.call_args.args[0]["pool_candidates"][0]["address"], "D6NdKrKNQPmRZCCnG1GqXtF7MMoHB7qR6GU5TkG59Qz1")
+        self.assertFalse(fetch_orca.call_args.args[0]["discover_pools"])
         self.assertEqual(fetch_phantom.call_args.args[0]["buy_token_mint"], wif_mint)
         self.assertEqual(fetch_meteora.call_args.args[0]["pool_candidates"], [])
         self.assertTrue(fetch_meteora.call_args.args[0]["discover_pools"])
@@ -1934,7 +1990,7 @@ class TestSanity(unittest.TestCase):
                 ),
                 patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
                 patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported) as fetch_meteora,
-                patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+                patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported) as fetch_orca,
                 patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
                 patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
                 patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
@@ -1953,6 +2009,8 @@ class TestSanity(unittest.TestCase):
             self.assertAlmostEqual(response["recommended_option"]["estimated_output"], estimated_output)
             self.assertEqual(fetch_meteora.call_args.args[0]["pool_candidates"], [])
             self.assertTrue(fetch_meteora.call_args.args[0]["discover_pools"])
+            self.assertEqual(fetch_orca.call_args.args[0]["pool_candidates"], [])
+            self.assertTrue(fetch_orca.call_args.args[0]["discover_pools"])
             visible = [
                 response["recommended_option"],
                 response["direct_route_check"],
@@ -2061,6 +2119,104 @@ class TestSanity(unittest.TestCase):
             self.assertTrue(meteora_option["is_comparison_only"])
             self.assertFalse(meteora_option["is_clickable"])
             self.assertEqual(meteora_option["raw_quote"]["discovery"]["selected_pool"]["address"], pool_address)
+
+    def test_swap_quote_popcat_and_spx_can_include_discovered_orca_quote(self):
+        sol_mint = "So11111111111111111111111111111111111111112"
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+        cases = [
+            (
+                "POPCAT",
+                "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+                "125000000000",
+                "123000000000",
+                "AHTTzwf3GmVMJdxWM8v2MSxyjZj8rQR6hyAC3g9477Yj",
+                0.06,
+            ),
+            (
+                "SPX6900",
+                "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr",
+                "25000000000",
+                "24800000000",
+                "orca_spx_pool",
+                0.3,
+            ),
+        ]
+
+        for symbol, mint, jupiter_out_raw, orca_out_raw, pool_address, usd_price in cases:
+            jupiter_quote = {
+                "inputMint": sol_mint,
+                "inAmount": "1000000000",
+                "outputMint": mint,
+                "outAmount": jupiter_out_raw,
+                "otherAmountThreshold": str(int(jupiter_out_raw) - 1),
+                "slippageBps": 50,
+                "priceImpactPct": "0",
+                "swapUsdValue": "84",
+                "routePlan": [],
+            }
+            orca_quote = {
+                "ok": True,
+                "provider": "orca_whirlpool",
+                "pool": {
+                    "address": pool_address,
+                    "name": f"{symbol}-SOL",
+                    "tick_spacing": 64,
+                    "fee_rate": 3000,
+                },
+                "input_mint": sol_mint,
+                "output_mint": mint,
+                "in_amount_raw": "1000000000",
+                "out_amount_raw": orca_out_raw,
+                "min_out_amount_raw": str(int(orca_out_raw) - 1),
+                "fee_raw": "3000000",
+                "slippage_bps": 50,
+                "discovery": {
+                    "selected_pool": {
+                        "address": pool_address,
+                        "tvl_usdc": 26800 if symbol == "POPCAT" else 100000,
+                        "volume_24h": 28500 if symbol == "POPCAT" else 50000,
+                    },
+                },
+            }
+
+            with (
+                patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+                patch(
+                    "api.main._try_fetch_jupiter_quote",
+                    return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+                ),
+                patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+                patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+                patch("api.main._try_fetch_orca_whirlpool_quote", return_value={"ok": True, "data": orca_quote}) as fetch_orca,
+                patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+                patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+                patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+                patch(
+                    "api.main._resolve_quote_reference_prices_usd",
+                    return_value={
+                        "SOL": {"usd": 84.0},
+                        symbol: {"usd": usd_price},
+                    },
+                ),
+            ):
+                response = swap_quote(from_token="SOL", to_token=symbol, amount=1.0)
+
+            self.assertEqual(fetch_orca.call_args.args[0]["pool_candidates"], [])
+            self.assertTrue(fetch_orca.call_args.args[0]["discover_pools"])
+            visible = [
+                response["recommended_option"],
+                response["direct_route_check"],
+                *response["other_options"],
+            ]
+            orca_option = next(opt for opt in visible if opt and opt["provider"] == "orca-whirlpool")
+            self.assertEqual(orca_option["quote_status"], "live")
+            self.assertEqual(orca_option["execution_status"], "quote_only")
+            self.assertTrue(orca_option["is_comparison_only"])
+            self.assertFalse(orca_option["is_clickable"])
+            self.assertEqual(orca_option["raw_quote"]["discovery"]["selected_pool"]["address"], pool_address)
 
     def test_swap_quote_can_include_pumpswap_for_docs_token(self):
         sol_mint = "So11111111111111111111111111111111111111112"
