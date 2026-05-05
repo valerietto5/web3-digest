@@ -661,3 +661,6 @@ First action:
 ```bash
 source .venv/bin/activate
 uvicorn api.main:app --reload --log-level debug
+
+Future dashboard / activity layer:
+Evaluate Helius getTransfersByAddress for parsed wallet transfer history, activity feed, and support-mode diagnostics.
