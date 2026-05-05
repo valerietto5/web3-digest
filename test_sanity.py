@@ -128,6 +128,43 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(by_symbol["FIGURE"]["verified"])
         self.assertNotIn("USDT", by_symbol)
 
+    def test_quote_coverage_audit_parses_explicit_pairs(self):
+        from tools.quote_coverage_audit import parse_pair
+
+        self.assertEqual(parse_pair("WIF:SOL"), ("WIF", "SOL"))
+        self.assertEqual(parse_pair("popcat:wif"), ("POPCAT", "WIF"))
+        self.assertEqual(parse_pair(" USDC : POPCAT "), ("USDC", "POPCAT"))
+
+    def test_quote_coverage_audit_supports_arbitrary_pair_metadata(self):
+        from tools import quote_coverage_audit
+
+        calls = []
+
+        def fake_quote_universe(universe, *, input_mint, output_mint, amount_raw, user_public_key):
+            calls.append((universe, input_mint, output_mint, amount_raw, user_public_key))
+            return {"ok": True, "data": {"outAmount": "1"}}
+
+        with (
+            patch.object(quote_coverage_audit, "UNIVERSES", ["Jupiter"]),
+            patch.object(quote_coverage_audit, "quote_universe", side_effect=fake_quote_universe),
+            patch.object(quote_coverage_audit.time, "sleep") as sleep,
+        ):
+            result = quote_coverage_audit.audit_pairs(
+                [("WIF", "SOL"), ("USDC", "POPCAT")],
+                amount=1.0,
+                user_public_key="wallet",
+                request_delay=0.01,
+            )
+
+        self.assertEqual([pair["pair"] for pair in result["pairs"]], ["WIF->SOL", "USDC->POPCAT"])
+        self.assertEqual(result["pairs"][0]["amount_raw"], "1000000")
+        self.assertEqual(result["pairs"][1]["amount_raw"], "1000000")
+        self.assertEqual(calls[0][1], "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm")
+        self.assertEqual(calls[0][2], METEORA_DLMM_SOL_MINT)
+        self.assertEqual(calls[1][1], METEORA_DLMM_USDC_MINT)
+        self.assertEqual(calls[1][2], "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr")
+        sleep.assert_called_once_with(0.01)
+
     def test_bonk_reference_prices_prefer_dexscreener(self):
         class Pair:
             price_usd = 0.000006
@@ -442,6 +479,19 @@ class TestSanity(unittest.TestCase):
             self.assertEqual(payload["discovery"]["api_url"], "https://dlmm.datapi.meteora.ag/pools")
             self.assertGreaterEqual(payload["discovery"]["min_tvl_usd"], 1000)
 
+    def test_build_meteora_dlmm_quote_payload_discovers_sideways_pairs(self):
+        payload = _build_meteora_dlmm_quote_payload(
+            input_mint="EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+            output_mint="7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            amount_raw=1000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+        )
+
+        self.assertEqual(payload["pool_candidates"], [])
+        self.assertTrue(payload["discover_pools"])
+        self.assertNotIn("unsupported_pair", payload)
+
     def test_fetch_meteora_dlmm_quote_uses_subprocess_json_contract(self):
         helper_output = {
             "ok": True,
@@ -577,6 +627,19 @@ class TestSanity(unittest.TestCase):
             self.assertTrue(payload["discover_pools"])
             self.assertEqual(payload["discovery"]["min_tvl_usdc"], 10000)
             self.assertNotIn("unsupported_pair", payload)
+
+    def test_build_orca_whirlpool_quote_payload_discovers_sideways_pairs(self):
+        payload = _build_orca_whirlpool_quote_payload(
+            input_mint="EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+            output_mint="7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            amount_raw=1000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+        )
+
+        self.assertEqual(payload["pool_candidates"], [])
+        self.assertTrue(payload["discover_pools"])
+        self.assertNotIn("unsupported_pair", payload)
 
     def test_fetch_orca_whirlpool_quote_uses_subprocess_json_contract(self):
         helper_output = {
@@ -866,6 +929,8 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(payload["sell_chain_id"], "solana:mainnet")
         self.assertTrue(payload["sell_token_is_native"])
+        self.assertFalse(payload["buy_token_is_native"])
+        self.assertEqual(payload["sell_token_mint"], METEORA_DLMM_SOL_MINT)
         self.assertEqual(payload["buy_token_mint"], METEORA_DLMM_USDC_MINT)
         self.assertEqual(payload["amount"], "1000000000")
         self.assertEqual(payload["amount_unit"], "base")
@@ -924,6 +989,41 @@ class TestSanity(unittest.TestCase):
             self.assertEqual(payload["taker_address"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
             self.assertNotIn("unsupported_pair", payload)
             self.assertNotIn("skip_reason", payload)
+
+    def test_build_phantom_quote_payload_supports_sideways_default_enabled_pairs(self):
+        wif_mint = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
+        popcat_mint = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr"
+        payload = _build_phantom_quote_payload(
+            input_mint=wif_mint,
+            output_mint=popcat_mint,
+            amount_raw=1000000,
+            slippage_bps=50,
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertFalse(payload["sell_token_is_native"])
+        self.assertEqual(payload["sell_token_mint"], wif_mint)
+        self.assertFalse(payload["buy_token_is_native"])
+        self.assertEqual(payload["buy_token_mint"], popcat_mint)
+        self.assertNotIn("unsupported_pair", payload)
+        self.assertNotIn("skip_reason", payload)
+
+    def test_build_phantom_quote_payload_supports_exit_to_sol(self):
+        wif_mint = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
+        payload = _build_phantom_quote_payload(
+            input_mint=wif_mint,
+            output_mint=METEORA_DLMM_SOL_MINT,
+            amount_raw=1000000,
+            slippage_bps=50,
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertFalse(payload["sell_token_is_native"])
+        self.assertEqual(payload["sell_token_mint"], wif_mint)
+        self.assertTrue(payload["buy_token_is_native"])
+        self.assertEqual(payload["buy_token_mint"], METEORA_DLMM_SOL_MINT)
+        self.assertNotIn("unsupported_pair", payload)
+        self.assertNotIn("skip_reason", payload)
 
     def test_fetch_phantom_quote_uses_subprocess_json_contract(self):
         helper_output = {

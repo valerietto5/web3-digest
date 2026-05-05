@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run live quote-universe coverage checks for supported SOL -> token pairs.
+Run live quote-universe coverage checks for supported swap token pairs.
 
 This script intentionally calls the same api.main quote/helper functions used by
 /swap/quote, but it does not invoke ranking, execution, or UI code.
@@ -91,6 +91,7 @@ def failure_kind(universe: str, status_code: int | None, code: str | None, detai
         or "sol -> usdc only" in text
         or "figure docs-token pool only" in text
         or "curated sol -> spl" in text
+        or "default-enabled registry token pairs" in text
     ):
         return "expected_unsupported"
     if code in {"NO_DISCOVERED_POOL", "NO_USABLE_DISCOVERED_POOL"}:
@@ -221,11 +222,30 @@ def quote_universe(
     }
 
 
-def audit_pair(to_symbol: str, *, amount: float, user_public_key: str | None, request_delay: float) -> dict:
-    input_meta = _resolve_swap_token_meta("SOL")
+def parse_pair(value: str) -> tuple[str, str]:
+    raw = (value or "").strip().upper()
+    if ":" not in raw:
+        raise argparse.ArgumentTypeError(f"Pair must use FROM:TO format: {value}")
+    left, right = [part.strip() for part in raw.split(":", 1)]
+    if not left or not right:
+        raise argparse.ArgumentTypeError(f"Pair must include both FROM and TO symbols: {value}")
+    if left == right:
+        raise argparse.ArgumentTypeError(f"Pair symbols must be different: {value}")
+    return left, right
+
+
+def audit_pair(
+    from_symbol: str,
+    to_symbol: str,
+    *,
+    amount: float,
+    user_public_key: str | None,
+    request_delay: float,
+) -> dict:
+    input_meta = _resolve_swap_token_meta(from_symbol)
     output_meta = _resolve_swap_token_meta(to_symbol)
     if not input_meta or not output_meta:
-        raise ValueError(f"Unsupported audit pair: SOL -> {to_symbol}")
+        raise ValueError(f"Unsupported audit pair: {from_symbol} -> {to_symbol}")
 
     amount_raw = to_raw_amount(amount, input_meta["decimals"])
     universes = []
@@ -243,8 +263,8 @@ def audit_pair(to_symbol: str, *, amount: float, user_public_key: str | None, re
 
     success_count = sum(1 for item in universes if item["success"])
     return {
-        "pair": f"SOL->{to_symbol}",
-        "from_token": "SOL",
+        "pair": f"{from_symbol}->{to_symbol}",
+        "from_token": from_symbol,
         "to_token": to_symbol,
         "amount": amount,
         "amount_raw": str(amount_raw),
@@ -254,24 +274,39 @@ def audit_pair(to_symbol: str, *, amount: float, user_public_key: str | None, re
     }
 
 
-def audit(tokens: list[str], *, amount: float, user_public_key: str | None, request_delay: float) -> dict:
+def audit_pairs(
+    pairs_to_audit: list[tuple[str, str]],
+    *,
+    amount: float,
+    user_public_key: str | None,
+    request_delay: float,
+) -> dict:
     pairs = []
-    for index, token in enumerate(tokens):
+    for index, (from_symbol, to_symbol) in enumerate(pairs_to_audit):
         pairs.append(
             audit_pair(
-                token.upper().strip(),
+                from_symbol.upper().strip(),
+                to_symbol.upper().strip(),
                 amount=amount,
                 user_public_key=user_public_key,
                 request_delay=request_delay,
             )
         )
-        if request_delay > 0 and index < len(tokens) - 1:
+        if request_delay > 0 and index < len(pairs_to_audit) - 1:
             time.sleep(request_delay)
     return {
-        "from_token": "SOL",
         "universes": UNIVERSES,
         "pairs": pairs,
     }
+
+
+def audit(tokens: list[str], *, amount: float, user_public_key: str | None, request_delay: float) -> dict:
+    return audit_pairs(
+        [("SOL", token.upper().strip()) for token in tokens],
+        amount=amount,
+        user_public_key=user_public_key,
+        request_delay=request_delay,
+    )
 
 
 def status_cell(item: dict) -> str:
@@ -319,14 +354,20 @@ def print_text_report(result: dict) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Audit quote-universe coverage for SOL -> token pairs.")
+    parser = argparse.ArgumentParser(description="Audit quote-universe coverage for supported token pairs.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument("--amount", type=float, default=1.0, help="SOL amount to quote. Default: 1.0")
     parser.add_argument(
         "--tokens",
         nargs="+",
         default=DEFAULT_TO_TOKENS,
-        help="Output token symbols to audit. Default: supported curated token set.",
+        help="Output token symbols to audit as SOL -> token. Ignored when --pairs is provided.",
+    )
+    parser.add_argument(
+        "--pairs",
+        nargs="+",
+        type=parse_pair,
+        help="Explicit FROM:TO pairs to audit, for example WIF:SOL POPCAT:WIF USDC:POPCAT.",
     )
     parser.add_argument(
         "--user-public-key",
@@ -344,12 +385,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    result = audit(
-        args.tokens,
-        amount=args.amount,
-        user_public_key=args.user_public_key,
-        request_delay=args.request_delay,
-    )
+    if args.pairs:
+        result = audit_pairs(
+            args.pairs,
+            amount=args.amount,
+            user_public_key=args.user_public_key,
+            request_delay=args.request_delay,
+        )
+    else:
+        result = audit(
+            args.tokens,
+            amount=args.amount,
+            user_public_key=args.user_public_key,
+            request_delay=args.request_delay,
+        )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:

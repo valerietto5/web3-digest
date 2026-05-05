@@ -1206,15 +1206,15 @@ def _build_orca_whirlpool_quote_payload(
         "page_size": 10,
     }
 
-    default_enabled_output_mints = {
+    default_enabled_mints = {
         (meta.get("mint") or "").strip()
         for meta in TOKEN_META.values()
         if meta.get("default_enabled") and (meta.get("mint") or "").strip()
     }
-    if input_mint != ORCA_WHIRLPOOL_SOL_MINT or output_mint not in default_enabled_output_mints:
+    if input_mint not in default_enabled_mints or output_mint not in default_enabled_mints:
         payload["unsupported_pair"] = True
         payload["unsupported_pair_detail"] = (
-            "Orca Whirlpool quote helper currently supports SOL -> default-enabled registry tokens only."
+            "Orca Whirlpool quote helper currently supports default-enabled registry token pairs only."
         )
 
     return payload
@@ -1532,6 +1532,8 @@ def _build_phantom_quote_payload(
     payload = {
         "sell_chain_id": "solana:mainnet",
         "sell_token_is_native": input_mint == PHANTOM_SOL_MINT,
+        "sell_token_mint": input_mint,
+        "buy_token_is_native": output_mint == PHANTOM_SOL_MINT,
         "buy_token_mint": output_mint,
         "amount": str(amount_raw),
         "amount_unit": "base",
@@ -1539,18 +1541,15 @@ def _build_phantom_quote_payload(
         "taker_address": user_public_key,
     }
 
-    supported_output_mints = {
-        PHANTOM_USDC_MINT,
-        PHANTOM_BONK_MINT,
-        PHANTOM_WIF_MINT,
-        PHANTOM_POPCAT_MINT,
-        PHANTOM_CHAD_MINT,
-        PHANTOM_SPX6900_MINT,
+    default_enabled_mints = {
+        (meta.get("mint") or "").strip()
+        for meta in TOKEN_META.values()
+        if meta.get("default_enabled") and (meta.get("mint") or "").strip()
     }
-    if input_mint != PHANTOM_SOL_MINT or output_mint not in supported_output_mints:
+    if input_mint not in default_enabled_mints or output_mint not in default_enabled_mints:
         payload["unsupported_pair"] = True
         payload["unsupported_pair_detail"] = (
-            "Phantom quote research helper currently supports curated SOL -> SPL quote pairs only."
+            "Phantom quote research helper currently supports default-enabled registry token pairs only."
         )
 
     if not user_public_key:
