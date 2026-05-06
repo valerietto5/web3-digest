@@ -38,8 +38,10 @@ from api.main import (
     _try_fetch_pumpswap_quote,
     swap_quote,
     swap_tokens,
+    token_resolve,
 )
 from api.ui_page import build_ui_html
+from providers.token_resolver import resolve_token
 
 from db import (
     init_db,
@@ -58,6 +60,52 @@ class TestSanity(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_token_resolver_resolves_known_symbol(self):
+        result = resolve_token("WIF")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["token"]["source"], "registry")
+        self.assertEqual(result["token"]["symbol"], "WIF")
+        self.assertEqual(result["token"]["name"], "dogwifhat")
+        self.assertEqual(result["token"]["mint"], "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm")
+        self.assertEqual(result["token"]["decimals"], 6)
+        self.assertTrue(result["token"]["verified"])
+        self.assertEqual(result["token"]["warnings"], [])
+
+    def test_token_resolver_resolves_known_mint(self):
+        result = resolve_token("7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["token"]["source"], "registry")
+        self.assertEqual(result["token"]["symbol"], "POPCAT")
+        self.assertEqual(result["token"]["display_name"], "Popcat")
+        self.assertEqual(result["token"]["decimals"], 9)
+
+    def test_token_resolver_rejects_empty_query(self):
+        result = resolve_token("  ")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "EMPTY_QUERY")
+
+    def test_token_resolver_unknown_mint_returns_external_lookup_required(self):
+        unknown_mint = "11111111111111111111111111111112"
+        result = resolve_token(unknown_mint)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "TOKEN_METADATA_LOOKUP_NOT_IMPLEMENTED")
+        self.assertEqual(result["token"]["source"], "unresolved_mint")
+        self.assertEqual(result["token"]["mint"], unknown_mint)
+        self.assertIsNone(result["token"]["decimals"])
+        self.assertIn("external_lookup_required", result["token"]["warnings"])
+
+    def test_token_resolve_endpoint_returns_expected_shape(self):
+        result = token_resolve(query="USDC")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["token"]["symbol"], "USDC")
+        self.assertEqual(result["token"]["mint"], "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        self.assertEqual(result["token"]["decimals"], 6)
 
     def test_swap_registry_resolves_curated_swap_tokens(self):
         sol = _resolve_swap_token_meta("SOL")

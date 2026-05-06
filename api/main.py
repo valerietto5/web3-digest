@@ -23,6 +23,7 @@ from fastapi import Body
 
 import requests
 from datetime import datetime, timezone
+from providers.token_resolver import resolve_token
 from token_registry import default_swap_token_meta_by_symbol, get_token_meta_by_symbol
 
 app = FastAPI(title="Web3 Digest API", version="0.1.0")
@@ -604,6 +605,11 @@ def swap_tokens():
         tokens.append(public_meta)
 
     return {"ok": True, "tokens": tokens}
+
+
+@app.get("/tokens/resolve")
+def token_resolve(query: str = Query("")):
+    return resolve_token(query)
 
 
 JUP_API_KEY = os.environ.get("JUP_API_KEY", "").strip()
