@@ -232,6 +232,32 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Route shape:", html)
         self.assertIn("Alternative ${idx + 1} — ${escapeHtml(routeLabel)}", html)
 
+    def test_swap_ui_renders_route_coverage_depth_logic(self):
+        html = build_ui_html()
+
+        self.assertIn('id="swapCoverageDepth"', html)
+        self.assertIn("function collectLiveRouteCoverageLabels(quote)", html)
+        self.assertIn('if (!opt || opt.quote_status !== "live") continue;', html)
+        self.assertIn("const key = String(label).trim().toLowerCase();", html)
+        self.assertIn("seen.has(key)", html)
+        self.assertIn("Limited live route coverage for this pair: ", html)
+        self.assertIn("live route options checked: ", html)
+        self.assertIn("renderSwapCoverageDepth(quote);", html)
+
+    def test_swap_ui_two_hop_route_display_is_user_facing(self):
+        html = build_ui_html()
+
+        self.assertIn("function routeTokenLabelFromMint(mint, opt)", html)
+        self.assertIn("function cleanContinuousRouteMints(opt)", html)
+        self.assertIn("function formatCleanRoutePath(opt)", html)
+        self.assertIn("if (steps.length < 2) return null;", html)
+        self.assertIn("return null;", html)
+        self.assertIn("mints[mints.length - 1] !== inputMint", html)
+        self.assertIn("return `${fromLabel} -> ${middleLabel} -> ${toLabel}`;", html)
+        self.assertIn("Route: ${escapeHtml(cleanRoutePath)}", html)
+        self.assertIn("Shape: two-hop · Steps: ${escapeHtml(String(routeSteps))}", html)
+        self.assertIn("Route shape: ${escapeHtml(routeShape)} · Steps: ${escapeHtml(String(routeSteps))}", html)
+
     def test_insert_and_get_latest_prices_with_ts(self):
         t1 = "2026-02-25T00:00:00+00:00"
         t2 = "2026-02-25T01:00:00+00:00"

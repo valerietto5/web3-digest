@@ -195,6 +195,7 @@ def build_ui_html() -> str:
         <div><span class="pill warn" id="pillSwapState" style="font-size:11px; padding:2px 7px;">Draft</span></div>
         <div class="muted" id="swapStateText" style="font-size:12px;">Ready to request a swap quote.</div>
       </div>
+      <div class="muted" id="swapCoverageDepth" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
 
       <div class="muted" id="swapRecommendation" style="margin-top:8px;">recommendation: —</div>
       <div class="muted" id="swapCompareSummary" style="margin-top:8px;">comparison summary: —</div>
@@ -579,6 +580,11 @@ function resetSwapQuoteDisplay() {
   $("swapCompareSummary").textContent = "";
   $("swapRecommendation").style.display = "none";
   $("swapCompareSummary").style.display = "none";
+  const coverage = $("swapCoverageDepth");
+  if (coverage) {
+    coverage.textContent = "";
+    coverage.style.display = "none";
+  }
   $("swapRecommendedBox").innerHTML = "<div class='muted'>No quote yet.</div>";
   $("swapAlternativesCard").style.display = "none";
   $("swapAlternativesBox").innerHTML = "<div class='muted'>No alternatives yet.</div>";
@@ -745,6 +751,144 @@ function swapOptionCardTitle(opt, opts = {}) {
   return opt?.label || opt?.execution_surface_label || "Route";
 }
 
+function routeTokenLabelFromMint(mint, opt) {
+  if (!mint) return "";
+
+  const steps = Array.isArray(opt?.route_steps) ? opt.route_steps : [];
+  const firstInput = steps.length ? steps[0]?.input_mint : null;
+  const lastOutput = steps.length ? steps[steps.length - 1]?.output_mint : null;
+
+  if (mint === firstInput && opt?.from_token) return opt.from_token;
+  if (mint === lastOutput && opt?.to_token) return opt.to_token;
+  return mintLabel(mint);
+}
+
+function cleanContinuousRouteMints(opt) {
+  const steps = Array.isArray(opt?.route_steps) ? opt.route_steps : [];
+  if (steps.length < 2) return null;
+
+  const mints = [];
+  for (const [idx, step] of steps.entries()) {
+    const inputMint = step?.input_mint;
+    const outputMint = step?.output_mint;
+
+    if (!inputMint || !outputMint) return null;
+
+    if (idx === 0) {
+      mints.push(inputMint);
+    } else if (mints[mints.length - 1] !== inputMint) {
+      return null;
+    }
+
+    mints.push(outputMint);
+  }
+
+  return mints;
+}
+
+function formatCleanRoutePath(opt) {
+  const routeMints = cleanContinuousRouteMints(opt);
+  if (!routeMints || routeMints.length !== 3) return null;
+
+  const firstInput = routeMints[0];
+  const middleMint = routeMints[1];
+  const lastOutput = routeMints[2];
+
+  const fromLabel = opt?.from_token || routeTokenLabelFromMint(firstInput, opt);
+  const middleLabel = routeTokenLabelFromMint(middleMint, opt);
+  const toLabel = opt?.to_token || routeTokenLabelFromMint(lastOutput, opt);
+
+  if (!fromLabel || !middleLabel || !toLabel) return null;
+  return `${fromLabel} -> ${middleLabel} -> ${toLabel}`;
+}
+
+function renderRouteShapeLine(opt, compact = false) {
+  const routeShape = opt?.route_shape || "unknown";
+  const routeSteps = Array.isArray(opt?.route_steps)
+    ? opt.route_steps.length
+    : Number(opt?.route_step_count || 0);
+  const cleanRoutePath = formatCleanRoutePath(opt);
+  const margin = compact ? "2px" : "4px";
+
+  if (cleanRoutePath) {
+    return `
+      <div class="muted" style="margin-top:${margin};">
+        Route: ${escapeHtml(cleanRoutePath)}
+      </div>
+      <div class="muted" style="margin-top:2px;">
+        Shape: two-hop · Steps: ${escapeHtml(String(routeSteps))}
+      </div>
+    `;
+  }
+
+  if (compact) {
+    const shapeText =
+      routeSteps > 1
+        ? `${routeSteps}-step path`
+        : (routeShape === "single-path" || routeShape === "direct")
+          ? "single-path"
+          : routeShape;
+
+    return `
+      <div class="muted" style="margin-top:2px;">
+        Shape: ${escapeHtml(shapeText)}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="muted" style="margin-top:4px;">
+      Route shape: ${escapeHtml(routeShape)} · Steps: ${escapeHtml(String(routeSteps))}
+    </div>
+  `;
+}
+
+function collectLiveRouteCoverageLabels(quote) {
+  const candidates = [
+    quote?.recommended_option || quote?.recommended || quote?.best_quote_option || null,
+    quote?.direct_route_check || null,
+    quote?.recommended_executable_option || null,
+    ...(Array.isArray(quote?.other_options) ? quote.other_options : [])
+  ];
+
+  const labels = [];
+  const seen = new Set();
+
+  for (const opt of candidates) {
+    if (!opt || opt.quote_status !== "live") continue;
+
+    const label = opt.execution_surface_label || opt.route_label || opt.provider;
+    if (!label) continue;
+
+    const key = String(label).trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+
+    seen.add(key);
+    labels.push(String(label).trim());
+  }
+
+  return labels;
+}
+
+function renderSwapCoverageDepth(quote) {
+  const box = $("swapCoverageDepth");
+  if (!box) return;
+
+  const labels = collectLiveRouteCoverageLabels(quote);
+  if (!labels.length) {
+    box.textContent = "";
+    box.style.display = "none";
+    return;
+  }
+
+  const prefix = labels.length <= 2
+    ? "Limited live route coverage for this pair: "
+    : `${labels.length} live route options checked: `;
+
+  box.textContent = prefix + labels.join(", ");
+  box.style.display = "block";
+}
+
 function renderSwapOptionCard(opt, opts = {}) {
   if (!opt) {
     return "<div class='muted'>No data.</div>";
@@ -764,30 +908,6 @@ function renderSwapOptionCard(opt, opts = {}) {
   const impact = formatImpactPct(opt.price_impact_pct);
   const slippage = formatSettingPctFromBps(opt?.protections?.slippage_bps ?? opt?.slippage_bps);
   const routeLabel = surfaceRouteLabel(opt);
-  const routeShape = opt.route_shape || "unknown";
-  const routeSteps = Array.isArray(opt.route_steps) ? opt.route_steps.length : 0;
-
-  const parts = [];
-  if (Array.isArray(opt.route_steps) && opt.route_steps.length) {
-    for (const leg of opt.route_steps) {
-      const inLabel = mintLabel(leg?.input_mint);
-      const outLabel = mintLabel(leg?.output_mint);
-
-      if (!parts.length) {
-        parts.push(inLabel);
-      } else if (parts[parts.length - 1] !== inLabel) {
-        parts.push(inLabel);
-      }
-
-      if (parts[parts.length - 1] !== outLabel) {
-        parts.push(outLabel);
-      }
-    }
-  }
-
-  const routePath = parts.length
-    ? parts.join(" → ")
-    : ((opt.from_token || "?") + " → " + (opt.to_token || "?"));
 
       const isRecommendedCard = (opt?.kind || "") === "recommended";
 
@@ -916,9 +1036,7 @@ function renderSwapOptionCard(opt, opts = {}) {
       <div class="muted" style="margin-top:6px; padding-right:220px;">
         Receive (est.): ${escapeHtml(estOut)} ${escapeHtml(opt.to_token || "")}${escapeHtml(receiveUsdText)}
       </div>
-      <div class="muted" style="margin-top:4px;">
-        Route shape: ${escapeHtml(routeShape)} · Steps: ${escapeHtml(String(routeSteps))}
-      </div>
+      ${renderRouteShapeLine(opt)}
       ${
   isRecommendedCard
     ? `
@@ -1009,14 +1127,6 @@ function renderCompactAlternativeCard(opt, idx = 0) {
     ? fmtUsdCost(executionCostUsd)
     : "n/a";
 
-  const stepCount = Number(opt?.route_step_count || 0);
-  const shapeText =
-    stepCount > 1
-      ? `${stepCount}-step path`
-      : (opt?.route_shape === "single-path" || opt?.route_shape === "direct")
-        ? "single-path"
-        : (opt?.route_shape || "unknown");
-
   return `
     <div class="card" style="margin-top:8px; position:relative;">
       <div><strong>Alternative ${idx + 1} — ${escapeHtml(routeLabel)}</strong></div>
@@ -1035,9 +1145,7 @@ function renderCompactAlternativeCard(opt, idx = 0) {
       <div class="muted" style="margin-top:2px;">
         Execution cost: ${escapeHtml(executionCostText)}
       </div>
-      <div class="muted" style="margin-top:2px;">
-        Shape: ${escapeHtml(shapeText)}
-      </div>
+      ${renderRouteShapeLine(opt, true)}
     </div>
   `;
 }
@@ -1142,6 +1250,7 @@ async function previewSwap() {
 
   const displayRec = recommended || bestQuote;
   const executableRec = recommendedExecutable || displayRec;
+  renderSwapCoverageDepth(quote);
 
   function sameOption(a, b) {
     if (!a || !b) return false;
