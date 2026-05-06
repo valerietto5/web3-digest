@@ -62,7 +62,8 @@ class TestSanity(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_token_resolver_resolves_known_symbol(self):
-        result = resolve_token("WIF")
+        with patch("providers.token_resolver.fetch_dexscreener_token_metadata") as fetch_external:
+            result = resolve_token("WIF")
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["token"]["source"], "registry")
@@ -72,15 +73,18 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["token"]["decimals"], 6)
         self.assertTrue(result["token"]["verified"])
         self.assertEqual(result["token"]["warnings"], [])
+        fetch_external.assert_not_called()
 
     def test_token_resolver_resolves_known_mint(self):
-        result = resolve_token("7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr")
+        with patch("providers.token_resolver.fetch_dexscreener_token_metadata") as fetch_external:
+            result = resolve_token("7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr")
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["token"]["source"], "registry")
         self.assertEqual(result["token"]["symbol"], "POPCAT")
         self.assertEqual(result["token"]["display_name"], "Popcat")
         self.assertEqual(result["token"]["decimals"], 9)
+        fetch_external.assert_not_called()
 
     def test_token_resolver_rejects_empty_query(self):
         result = resolve_token("  ")
@@ -90,7 +94,7 @@ class TestSanity(unittest.TestCase):
 
     def test_token_resolver_unknown_mint_returns_external_lookup_required(self):
         unknown_mint = "11111111111111111111111111111112"
-        result = resolve_token(unknown_mint)
+        result = resolve_token(unknown_mint, allow_external=False)
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "TOKEN_METADATA_LOOKUP_NOT_IMPLEMENTED")
@@ -99,13 +103,96 @@ class TestSanity(unittest.TestCase):
         self.assertIsNone(result["token"]["decimals"])
         self.assertIn("external_lookup_required", result["token"]["warnings"])
 
+    def test_token_resolver_unknown_mint_uses_mocked_dexscreener_success(self):
+        unknown_mint = "11111111111111111111111111111112"
+        external_result = {
+            "ok": True,
+            "token": {
+                "source": "dexscreener",
+                "symbol": "EXT",
+                "name": "External Token",
+                "display_name": "External Token",
+                "mint": unknown_mint,
+                "decimals": None,
+                "logo_uri": "https://example.invalid/logo.png",
+                "verified": False,
+                "default_enabled": False,
+                "tags": ["external", "dexscreener"],
+                "dexscreener_chain_id": "solana",
+                "liquidity_usd": 12345.0,
+                "price_usd": 0.001,
+                "pair_address": "pair",
+                "pair_url": "https://dexscreener.com/solana/pair",
+                "warnings": ["external_metadata_unverified", "decimals_unresolved"],
+            },
+        }
+
+        with patch("providers.token_resolver.fetch_dexscreener_token_metadata", return_value=external_result) as fetch_external:
+            result = resolve_token(unknown_mint)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["token"]["source"], "dexscreener")
+        self.assertEqual(result["token"]["symbol"], "EXT")
+        self.assertEqual(result["token"]["mint"], unknown_mint)
+        self.assertEqual(result["token"]["liquidity_usd"], 12345.0)
+        self.assertIn("decimals_unresolved", result["token"]["warnings"])
+        fetch_external.assert_called_once_with(unknown_mint)
+
+    def test_token_resolver_unknown_mint_reports_dexscreener_not_found(self):
+        unknown_mint = "11111111111111111111111111111112"
+        external_result = {
+            "ok": False,
+            "error": {
+                "code": "TOKEN_METADATA_NOT_FOUND",
+                "message": "DexScreener returned no token pairs for this mint.",
+                "provider": "dexscreener",
+            },
+        }
+
+        with patch("providers.token_resolver.fetch_dexscreener_token_metadata", return_value=external_result):
+            result = resolve_token(unknown_mint)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "TOKEN_METADATA_NOT_FOUND")
+        self.assertEqual(result["error"]["provider"], "dexscreener")
+
+    def test_token_resolver_unknown_mint_reports_dexscreener_failure(self):
+        unknown_mint = "11111111111111111111111111111112"
+        external_result = {
+            "ok": False,
+            "error": {
+                "code": "EXTERNAL_TOKEN_LOOKUP_FAILED",
+                "message": "DexScreener token metadata lookup failed.",
+                "provider": "dexscreener",
+                "failures": [{"error": "timeout"}],
+            },
+        }
+
+        with patch("providers.token_resolver.fetch_dexscreener_token_metadata", return_value=external_result):
+            result = resolve_token(unknown_mint)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "EXTERNAL_TOKEN_LOOKUP_FAILED")
+        self.assertEqual(result["error"]["provider"], "dexscreener")
+        self.assertEqual(result["error"]["failures"][0]["error"], "timeout")
+
     def test_token_resolve_endpoint_returns_expected_shape(self):
-        result = token_resolve(query="USDC")
+        result = token_resolve(query="USDC", allow_external=True)
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["token"]["symbol"], "USDC")
         self.assertEqual(result["token"]["mint"], "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
         self.assertEqual(result["token"]["decimals"], 6)
+
+    def test_token_resolve_endpoint_supports_allow_external_parameter(self):
+        unknown_mint = "11111111111111111111111111111112"
+
+        with patch("providers.token_resolver.fetch_dexscreener_token_metadata") as fetch_external:
+            result = token_resolve(query=unknown_mint, allow_external=False)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "TOKEN_METADATA_LOOKUP_NOT_IMPLEMENTED")
+        fetch_external.assert_not_called()
 
     def test_swap_registry_resolves_curated_swap_tokens(self):
         sol = _resolve_swap_token_meta("SOL")

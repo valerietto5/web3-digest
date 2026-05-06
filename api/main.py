@@ -608,8 +608,8 @@ def swap_tokens():
 
 
 @app.get("/tokens/resolve")
-def token_resolve(query: str = Query("")):
-    return resolve_token(query)
+def token_resolve(query: str = Query(""), allow_external: bool = Query(True)):
+    return resolve_token(query, allow_external=allow_external)
 
 
 JUP_API_KEY = os.environ.get("JUP_API_KEY", "").strip()

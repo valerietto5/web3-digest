@@ -3,10 +3,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import requests
+
 from token_registry import NATIVE_TOKENS, TOKENS
 
 
 _BASE58_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+DEXSCREENER_TIMEOUT_SECONDS = 8
 
 
 def _is_probable_solana_mint(value: str) -> bool:
@@ -64,13 +67,171 @@ def _resolve_registry_token(query: str) -> dict[str, Any] | None:
     return None
 
 
-def resolve_token(query: str) -> dict[str, Any]:
+def _to_float_or_none(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _pair_liquidity_usd(pair: dict[str, Any]) -> float:
+    return _to_float_or_none((pair.get("liquidity") or {}).get("usd")) or 0.0
+
+
+def _extract_pair_token(pair: dict[str, Any], mint: str) -> dict[str, Any] | None:
+    for key in ("baseToken", "quoteToken"):
+        token = pair.get(key)
+        if not isinstance(token, dict):
+            continue
+        if (token.get("address") or "").strip() == mint:
+            return token
+    return None
+
+
+def _dexscreener_token_from_pair(mint: str, pair: dict[str, Any]) -> dict[str, Any] | None:
+    pair_token = _extract_pair_token(pair, mint)
+    if not pair_token:
+        return None
+
+    symbol = (pair_token.get("symbol") or "").strip() or None
+    name = (pair_token.get("name") or "").strip() or None
+    if not symbol and not name:
+        return None
+
+    info = pair.get("info") if isinstance(pair.get("info"), dict) else {}
+    liquidity_usd = _to_float_or_none((pair.get("liquidity") or {}).get("usd"))
+    price_usd = _to_float_or_none(pair.get("priceUsd"))
+
+    return {
+        "source": "dexscreener",
+        "symbol": symbol,
+        "name": name or symbol,
+        "display_name": name or symbol,
+        "mint": mint,
+        "decimals": None,
+        "logo_uri": info.get("imageUrl"),
+        "verified": False,
+        "default_enabled": False,
+        "tags": ["external", "dexscreener"],
+        "coingecko_id": None,
+        "dexscreener_chain_id": pair.get("chainId") or "solana",
+        "liquidity_usd": liquidity_usd,
+        "price_usd": price_usd,
+        "pair_address": pair.get("pairAddress"),
+        "pair_url": pair.get("url"),
+        "warnings": ["external_metadata_unverified", "decimals_unresolved"],
+    }
+
+
+def fetch_dexscreener_token_metadata(mint: str, *, timeout: int = DEXSCREENER_TIMEOUT_SECONDS) -> dict[str, Any]:
+    urls = [
+        f"https://api.dexscreener.com/token-pairs/v1/solana/{mint}",
+        f"https://api.dexscreener.com/latest/dex/tokens/{mint}",
+    ]
+    pairs: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+
+    for url in urls:
+        try:
+            response = requests.get(
+                url,
+                timeout=timeout,
+                headers={"accept": "application/json", "user-agent": "web3-digest/0.1"},
+            )
+        except requests.RequestException as exc:
+            failures.append({"url": url, "error": str(exc)})
+            continue
+
+        if not response.ok:
+            failures.append({"url": url, "status_code": response.status_code})
+            continue
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            failures.append({"url": url, "error": f"invalid JSON: {exc}"})
+            continue
+
+        if isinstance(data, list):
+            pairs.extend([pair for pair in data if isinstance(pair, dict)])
+        elif isinstance(data, dict) and isinstance(data.get("pairs"), list):
+            pairs.extend([pair for pair in data["pairs"] if isinstance(pair, dict)])
+
+    if pairs:
+        pairs.sort(key=_pair_liquidity_usd, reverse=True)
+        for pair in pairs:
+            token = _dexscreener_token_from_pair(mint, pair)
+            if token:
+                return {"ok": True, "token": token}
+
+        return {
+            "ok": False,
+            "error": {
+                "code": "TOKEN_METADATA_NOT_FOUND",
+                "message": "DexScreener returned pairs, but none contained usable token metadata for this mint.",
+                "provider": "dexscreener",
+                "mint": mint,
+            },
+        }
+
+    if failures:
+        return {
+            "ok": False,
+            "error": {
+                "code": "EXTERNAL_TOKEN_LOOKUP_FAILED",
+                "message": "DexScreener token metadata lookup failed.",
+                "provider": "dexscreener",
+                "mint": mint,
+                "failures": failures,
+            },
+        }
+
+    return {
+        "ok": False,
+        "error": {
+            "code": "TOKEN_METADATA_NOT_FOUND",
+            "message": "DexScreener returned no token pairs for this mint.",
+            "provider": "dexscreener",
+            "mint": mint,
+        },
+    }
+
+
+def _unresolved_mint_response(mint: str, *, code: str = "TOKEN_METADATA_LOOKUP_NOT_IMPLEMENTED") -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": "Token is not in the local registry. External token metadata lookup is required.",
+            "query": mint,
+        },
+        "token": {
+            "source": "unresolved_mint",
+            "symbol": None,
+            "name": None,
+            "display_name": None,
+            "mint": mint,
+            "decimals": None,
+            "logo_uri": None,
+            "verified": False,
+            "default_enabled": False,
+            "tags": [],
+            "coingecko_id": None,
+            "dexscreener_chain_id": "solana",
+            "warnings": ["external_lookup_required"],
+        },
+    }
+
+
+def resolve_token(query: str, *, allow_external: bool = True) -> dict[str, Any]:
     """
     Resolve a swap token query without guessing.
 
     V1 intentionally resolves only existing curated registry entries. Unknown
-    Solana mints return a structured not-resolved result so later Jupiter,
-    DexScreener, or Helius metadata lookups can fill the same shape.
+    Solana mints can optionally use external metadata lookup. V1 keeps registry
+    entries authoritative and does not add unknown mints to the quote registry.
     """
     normalized = (query or "").strip()
     if not normalized:
@@ -90,29 +251,13 @@ def resolve_token(query: str) -> dict[str, Any]:
         }
 
     if _is_probable_solana_mint(normalized):
-        return {
-            "ok": False,
-            "error": {
-                "code": "TOKEN_METADATA_LOOKUP_NOT_IMPLEMENTED",
-                "message": "Token is not in the local registry. External token metadata lookup is required.",
-                "query": normalized,
-            },
-            "token": {
-                "source": "unresolved_mint",
-                "symbol": None,
-                "name": None,
-                "display_name": None,
-                "mint": normalized,
-                "decimals": None,
-                "logo_uri": None,
-                "verified": False,
-                "default_enabled": False,
-                "tags": [],
-                "coingecko_id": None,
-                "dexscreener_chain_id": "solana",
-                "warnings": ["external_lookup_required"],
-            },
-        }
+        if not allow_external:
+            return _unresolved_mint_response(normalized)
+
+        external = fetch_dexscreener_token_metadata(normalized)
+        if external.get("ok") is True:
+            return external
+        return external
 
     return {
         "ok": False,
