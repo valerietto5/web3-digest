@@ -236,6 +236,7 @@ function validateRequest(request) {
       slippageBps: slippage.value,
       poolCandidates: candidates,
       discoverPools: request.discover_pools === true,
+      enableTwoHopDiscovery: request.enable_two_hop_discovery === true,
       discovery: request.discovery && typeof request.discovery === "object" && !Array.isArray(request.discovery)
         ? request.discovery
         : {},
@@ -619,11 +620,7 @@ async function quoteCandidate(request, rpc, candidate, index, discovery = null) 
   };
 }
 
-async function quoteOrcaWhirlpool(request) {
-  await setWhirlpoolsConfig("solanaMainnet");
-  setNativeMintWrappingStrategy("none");
-
-  const rpc = createSolanaRpc(mainnet(request.rpcUrl));
+async function quoteSinglePoolRoute(request, rpc) {
   const resolved = await resolvePoolCandidates(request, rpc);
   if (!resolved.ok) {
     return resolved;
@@ -657,14 +654,18 @@ async function quoteOrcaWhirlpool(request) {
   });
 
   if (quoteResults.length === 0) {
+    const details = {
+      candidate_source: resolved.source,
+      candidates_checked: resolved.candidates.length,
+      quote_errors: quoteErrors,
+    };
+    if (resolved.discovery) {
+      details.discovery = resolved.discovery;
+    }
     return structuredError(
-      "QUOTE_NOT_IMPLEMENTED",
+      resolved.source === "orca_public_api_pools_search" ? "DISCOVERED_POOL_QUOTE_FAILED" : "QUOTE_NOT_IMPLEMENTED",
       "Orca SDK path was found, but no candidate pool produced a quote.",
-      {
-        candidate_source: resolved.source,
-        candidates_checked: resolved.candidates.length,
-        quote_errors: quoteErrors,
-      },
+      details,
     );
   }
 
@@ -676,6 +677,141 @@ async function quoteOrcaWhirlpool(request) {
     pool_quote_errors: quoteErrors,
     all_pool_quotes: quoteResults,
   };
+}
+
+function shouldAttemptTwoHop(request, directResult) {
+  if (request.enableTwoHopDiscovery !== true) {
+    return false;
+  }
+  if (request.inputMintString === SOL_MINT || request.outputMintString === SOL_MINT) {
+    return false;
+  }
+
+  const code = directResult?.error?.code;
+  return (
+    code === "NO_DISCOVERED_POOL" ||
+    code === "NO_USABLE_DISCOVERED_POOL" ||
+    code === "DISCOVERED_POOL_QUOTE_FAILED"
+  );
+}
+
+function twoHopLegRequest(request, inputMintString, outputMintString, amountRawString) {
+  return {
+    ...request,
+    inputMint: address(inputMintString),
+    outputMint: address(outputMintString),
+    inputMintString,
+    outputMintString,
+    amountRaw: BigInt(amountRawString),
+    amountRawString: String(amountRawString),
+    poolCandidates: [],
+    discoverPools: true,
+    enableTwoHopDiscovery: false,
+  };
+}
+
+function routeStepFromLeg(leg, label) {
+  const pool = leg.pool || {};
+  return {
+    label,
+    pool_address: pool.address,
+    pool_name: pool.name,
+    tick_spacing: pool.tick_spacing ?? pool.tickSpacing,
+    fee_rate: pool.fee_rate ?? pool.feeRate,
+    input_mint: leg.input_mint,
+    output_mint: leg.output_mint,
+    in_amount_raw: leg.in_amount_raw,
+    out_amount_raw: leg.out_amount_raw,
+    min_out_amount_raw: leg.min_out_amount_raw,
+    fee_raw: leg.fee_raw,
+    trade_fee_rate_min: leg.trade_fee_rate_min,
+    trade_fee_rate_max: leg.trade_fee_rate_max,
+    discovery: leg.discovery,
+  };
+}
+
+async function quoteTwoHopViaSol(request, rpc, directResult) {
+  const leg1Request = twoHopLegRequest(request, request.inputMintString, SOL_MINT, request.amountRawString);
+  const leg1 = await quoteSinglePoolRoute(leg1Request, rpc);
+  if (!leg1.ok) {
+    return structuredError("TWO_HOP_LEG_1_FAILED", "Orca Whirlpool two-hop quote failed on the input-to-SOL leg.", {
+      intermediate_mint: SOL_MINT,
+      direct_error: directResult?.error,
+      leg_1_error: leg1.error,
+    });
+  }
+
+  const leg2Request = twoHopLegRequest(request, SOL_MINT, request.outputMintString, leg1.out_amount_raw);
+  const leg2 = await quoteSinglePoolRoute(leg2Request, rpc);
+  if (!leg2.ok) {
+    return structuredError("TWO_HOP_LEG_2_FAILED", "Orca Whirlpool two-hop quote failed on the SOL-to-output leg.", {
+      intermediate_mint: SOL_MINT,
+      direct_error: directResult?.error,
+      leg_1: {
+        pool: leg1.pool,
+        out_amount_raw: leg1.out_amount_raw,
+      },
+      leg_2_error: leg2.error,
+    });
+  }
+
+  const routeSteps = [
+    routeStepFromLeg(leg1, "Orca Whirlpool leg 1"),
+    routeStepFromLeg(leg2, "Orca Whirlpool leg 2"),
+  ];
+
+  return {
+    ok: true,
+    provider: "orca_whirlpool",
+    quote_type: "research_helper",
+    execution_status: "quote_only",
+    route_shape: "two-hop",
+    route_steps: routeSteps,
+    pool: leg1.pool,
+    input_mint: request.inputMintString,
+    output_mint: request.outputMintString,
+    intermediate_mint: SOL_MINT,
+    in_amount_raw: leg1.in_amount_raw,
+    out_amount_raw: leg2.out_amount_raw,
+    min_out_amount_raw: leg2.min_out_amount_raw,
+    fee_raw: null,
+    trade_fee_rate_min: null,
+    trade_fee_rate_max: null,
+    slippage_bps: request.slippageBps,
+    discovery: {
+      route_type: "venue_restricted_two_hop",
+      direct_error: directResult?.error,
+      intermediate_mint: SOL_MINT,
+      legs: [
+        {
+          input_mint: leg1.input_mint,
+          output_mint: leg1.output_mint,
+          selected_pool: leg1.discovery?.selected_pool || leg1.pool,
+        },
+        {
+          input_mint: leg2.input_mint,
+          output_mint: leg2.output_mint,
+          selected_pool: leg2.discovery?.selected_pool || leg2.pool,
+        },
+      ],
+    },
+    leg_quotes: [leg1, leg2],
+    checked_pool_count: (leg1.checked_pool_count || 0) + (leg2.checked_pool_count || 0),
+    successful_quote_count: (leg1.successful_quote_count || 0) + (leg2.successful_quote_count || 0),
+  };
+}
+
+async function quoteOrcaWhirlpool(request) {
+  await setWhirlpoolsConfig("solanaMainnet");
+  setNativeMintWrappingStrategy("none");
+
+  const rpc = createSolanaRpc(mainnet(request.rpcUrl));
+  const directResult = await quoteSinglePoolRoute(request, rpc);
+  if (directResult.ok || !shouldAttemptTwoHop(request, directResult)) {
+    return directResult;
+  }
+
+  return quoteTwoHopViaSol(request, rpc, directResult);
 }
 
 async function main() {

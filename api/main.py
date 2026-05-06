@@ -1100,6 +1100,7 @@ def _build_meteora_dlmm_quote_payload(
         "slippage_bps": int(slippage_bps),
         "pool_candidates": pool_candidates,
         "discover_pools": len(pool_candidates) == 0,
+        "enable_two_hop_discovery": len(pool_candidates) == 0,
         "discovery": {
             "api_url": METEORA_DLMM_DISCOVERY_API_URL,
             "min_tvl_usd": METEORA_DLMM_DISCOVERY_MIN_TVL_USD,
@@ -1198,6 +1199,7 @@ def _build_orca_whirlpool_quote_payload(
         payload["pool_candidates"].append(dict(ORCA_WHIRLPOOL_WIF_SOL_CANDIDATE))
 
     payload["discover_pools"] = len(payload["pool_candidates"]) == 0
+    payload["enable_two_hop_discovery"] = len(payload["pool_candidates"]) == 0
     payload["discovery"] = {
         "api_url": ORCA_WHIRLPOOL_DISCOVERY_API_URL,
         "min_tvl_usdc": ORCA_WHIRLPOOL_DISCOVERY_MIN_TVL_USDC,
@@ -2276,17 +2278,24 @@ def _normalize_meteora_dlmm_quote_option(
     pool = quote.get("pool") or {}
     out_amount_raw = quote.get("out_amount_raw")
     threshold_raw = quote.get("min_out_amount_raw")
-    route_step = {
-        "label": "Meteora DLMM",
-        "pool_address": pool.get("address"),
-        "pool_name": pool.get("name"),
-        "bin_step": pool.get("bin_step"),
-        "input_mint": quote.get("input_mint"),
-        "output_mint": quote.get("output_mint"),
-        "in_amount_raw": quote.get("in_amount_raw"),
-        "out_amount_raw": out_amount_raw,
-        "bin_arrays": quote.get("bin_arrays") or [],
-    }
+    helper_route_steps = quote.get("route_steps")
+    if isinstance(helper_route_steps, list) and helper_route_steps:
+        route_steps = helper_route_steps
+    else:
+        route_steps = [
+            {
+                "label": "Meteora DLMM",
+                "pool_address": pool.get("address"),
+                "pool_name": pool.get("name"),
+                "bin_step": pool.get("bin_step"),
+                "input_mint": quote.get("input_mint"),
+                "output_mint": quote.get("output_mint"),
+                "in_amount_raw": quote.get("in_amount_raw"),
+                "out_amount_raw": out_amount_raw,
+                "bin_arrays": quote.get("bin_arrays") or [],
+            }
+        ]
+    route_shape = quote.get("route_shape") or "single-pool"
 
     return {
         "variant_id": variant_id,
@@ -2324,13 +2333,17 @@ def _normalize_meteora_dlmm_quote_option(
         "slippage_bps": quote.get("slippage_bps"),
         "route_label": "Meteora DLMM",
         "route_labels": ["Meteora DLMM"],
-        "route_steps": [route_step],
-        "route_step_count": 1,
-        "route_shape": "single-pool",
+        "route_steps": route_steps,
+        "route_step_count": len(route_steps),
+        "route_shape": route_shape,
         "protections": {
             "slippage_bps": quote.get("slippage_bps"),
         },
-        "explanation": "Meteora DLMM single-pool quote. Comparison-only for now.",
+        "explanation": (
+            "Meteora DLMM venue-restricted two-hop quote. Comparison-only for now."
+            if route_shape == "two-hop"
+            else "Meteora DLMM single-pool quote. Comparison-only for now."
+        ),
         "raw_quote": quote,
         "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
     }
@@ -2351,17 +2364,24 @@ def _normalize_orca_whirlpool_quote_option(
     pool = quote.get("pool") or {}
     out_amount_raw = quote.get("out_amount_raw")
     threshold_raw = quote.get("min_out_amount_raw")
-    route_step = {
-        "label": "Orca Whirlpool",
-        "pool_address": pool.get("address"),
-        "pool_name": pool.get("name"),
-        "tick_spacing": pool.get("tick_spacing") or pool.get("tickSpacing"),
-        "fee_rate": pool.get("fee_rate") or pool.get("feeRate"),
-        "input_mint": quote.get("input_mint"),
-        "output_mint": quote.get("output_mint"),
-        "in_amount_raw": quote.get("in_amount_raw"),
-        "out_amount_raw": out_amount_raw,
-    }
+    helper_route_steps = quote.get("route_steps")
+    if isinstance(helper_route_steps, list) and helper_route_steps:
+        route_steps = helper_route_steps
+    else:
+        route_steps = [
+            {
+                "label": "Orca Whirlpool",
+                "pool_address": pool.get("address"),
+                "pool_name": pool.get("name"),
+                "tick_spacing": pool.get("tick_spacing") or pool.get("tickSpacing"),
+                "fee_rate": pool.get("fee_rate") or pool.get("feeRate"),
+                "input_mint": quote.get("input_mint"),
+                "output_mint": quote.get("output_mint"),
+                "in_amount_raw": quote.get("in_amount_raw"),
+                "out_amount_raw": out_amount_raw,
+            }
+        ]
+    route_shape = quote.get("route_shape") or "single-pool"
 
     return {
         "variant_id": variant_id,
@@ -2399,13 +2419,17 @@ def _normalize_orca_whirlpool_quote_option(
         "slippage_bps": quote.get("slippage_bps"),
         "route_label": "Orca Whirlpool",
         "route_labels": ["Orca"],
-        "route_steps": [route_step],
-        "route_step_count": 1,
-        "route_shape": "single-pool",
+        "route_steps": route_steps,
+        "route_step_count": len(route_steps),
+        "route_shape": route_shape,
         "protections": {
             "slippage_bps": quote.get("slippage_bps"),
         },
-        "explanation": "Orca Whirlpool single-pool SDK quote. Comparison-only for now.",
+        "explanation": (
+            "Orca Whirlpool venue-restricted two-hop quote. Comparison-only for now."
+            if route_shape == "two-hop"
+            else "Orca Whirlpool single-pool SDK quote. Comparison-only for now."
+        ),
         "raw_quote": quote,
         "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
     }

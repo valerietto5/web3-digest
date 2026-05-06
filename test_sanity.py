@@ -424,6 +424,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["amount_raw"], "1000000000")
         self.assertEqual(len(payload["pool_candidates"]), 1)
         self.assertFalse(payload["discover_pools"])
+        self.assertFalse(payload["enable_two_hop_discovery"])
         self.assertEqual(
             payload["pool_candidates"][0]["address"],
             "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
@@ -440,6 +441,7 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(len(payload["pool_candidates"]), 1)
         self.assertFalse(payload["discover_pools"])
+        self.assertFalse(payload["enable_two_hop_discovery"])
         self.assertEqual(
             payload["pool_candidates"][0]["address"],
             "6oFWm7KPLfxnwMb3z5xwBoXNSPP3JJyirAPqPSiVcnsp",
@@ -458,6 +460,7 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(payload["pool_candidates"], [])
         self.assertTrue(payload["discover_pools"])
+        self.assertTrue(payload["enable_two_hop_discovery"])
         self.assertGreaterEqual(payload["discovery"]["min_tvl_usd"], 1000)
 
     def test_build_meteora_dlmm_quote_payload_discovers_new_meme_candidates(self):
@@ -476,6 +479,7 @@ class TestSanity(unittest.TestCase):
 
             self.assertEqual(payload["pool_candidates"], [])
             self.assertTrue(payload["discover_pools"])
+            self.assertTrue(payload["enable_two_hop_discovery"])
             self.assertEqual(payload["discovery"]["api_url"], "https://dlmm.datapi.meteora.ag/pools")
             self.assertGreaterEqual(payload["discovery"]["min_tvl_usd"], 1000)
 
@@ -490,7 +494,21 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(payload["pool_candidates"], [])
         self.assertTrue(payload["discover_pools"])
+        self.assertTrue(payload["enable_two_hop_discovery"])
         self.assertNotIn("unsupported_pair", payload)
+
+    def test_build_meteora_dlmm_quote_payload_enables_two_hop_for_wif_usdc(self):
+        payload = _build_meteora_dlmm_quote_payload(
+            input_mint="EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+            output_mint=METEORA_DLMM_USDC_MINT,
+            amount_raw=1000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+        )
+
+        self.assertEqual(payload["pool_candidates"], [])
+        self.assertTrue(payload["discover_pools"])
+        self.assertTrue(payload["enable_two_hop_discovery"])
 
     def test_fetch_meteora_dlmm_quote_uses_subprocess_json_contract(self):
         helper_output = {
@@ -562,6 +580,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["amount_raw"], "1000000000")
         self.assertEqual(payload["pool_candidates"], [])
         self.assertTrue(payload["discover_pools"])
+        self.assertTrue(payload["enable_two_hop_discovery"])
         self.assertEqual(payload["discovery"]["api_url"], "https://api.orca.so/v2/solana/pools")
         self.assertEqual(payload["discovery"]["min_tvl_usdc"], 10000)
         self.assertNotIn("unsupported_pair", payload)
@@ -585,6 +604,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["pool_candidates"][0]["token_mint_a"], METEORA_DLMM_BONK_MINT)
         self.assertEqual(payload["pool_candidates"][0]["token_mint_b"], METEORA_DLMM_SOL_MINT)
         self.assertFalse(payload["discover_pools"])
+        self.assertFalse(payload["enable_two_hop_discovery"])
         self.assertNotIn("unsupported_pair", payload)
 
     def test_build_orca_whirlpool_quote_payload_supports_sol_wif(self):
@@ -607,6 +627,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["pool_candidates"][0]["token_mint_a"], wif_mint)
         self.assertEqual(payload["pool_candidates"][0]["token_mint_b"], METEORA_DLMM_SOL_MINT)
         self.assertFalse(payload["discover_pools"])
+        self.assertFalse(payload["enable_two_hop_discovery"])
         self.assertNotIn("unsupported_pair", payload)
 
     def test_build_orca_whirlpool_quote_payload_discovers_new_memes_without_curated_pools(self):
@@ -625,6 +646,7 @@ class TestSanity(unittest.TestCase):
 
             self.assertEqual(payload["pool_candidates"], [])
             self.assertTrue(payload["discover_pools"])
+            self.assertTrue(payload["enable_two_hop_discovery"])
             self.assertEqual(payload["discovery"]["min_tvl_usdc"], 10000)
             self.assertNotIn("unsupported_pair", payload)
 
@@ -639,7 +661,21 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(payload["pool_candidates"], [])
         self.assertTrue(payload["discover_pools"])
+        self.assertTrue(payload["enable_two_hop_discovery"])
         self.assertNotIn("unsupported_pair", payload)
+
+    def test_build_orca_whirlpool_quote_payload_enables_two_hop_for_wif_usdc(self):
+        payload = _build_orca_whirlpool_quote_payload(
+            input_mint="EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+            output_mint=METEORA_DLMM_USDC_MINT,
+            amount_raw=1000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+        )
+
+        self.assertEqual(payload["pool_candidates"], [])
+        self.assertTrue(payload["discover_pools"])
+        self.assertTrue(payload["enable_two_hop_discovery"])
 
     def test_fetch_orca_whirlpool_quote_uses_subprocess_json_contract(self):
         helper_output = {
@@ -1255,6 +1291,71 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["raw_quote"]["discovery"]["selected_pool"]["tvl"], 100000)
         self.assertEqual(option["_sort_out_amount_raw"], 84019465)
 
+    def test_normalize_meteora_dlmm_two_hop_quote_option_marks_comparison_only(self):
+        wif_mint = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
+        quote = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "route_shape": "two-hop",
+            "pool": {
+                "address": "8Ve9KtGNtLRxCQNAVfkHEP5GRZHjdj6BjB1RQFZewG6V",
+                "name": "$WIF-SOL",
+                "bin_step": 50,
+            },
+            "input_mint": wif_mint,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "intermediate_mint": METEORA_DLMM_SOL_MINT,
+            "in_amount_raw": "1000000",
+            "out_amount_raw": "180000",
+            "min_out_amount_raw": "179100",
+            "price_impact": "0",
+            "route_steps": [
+                {
+                    "label": "Meteora DLMM leg 1",
+                    "pool_address": "8Ve9KtGNtLRxCQNAVfkHEP5GRZHjdj6BjB1RQFZewG6V",
+                    "input_mint": wif_mint,
+                    "output_mint": METEORA_DLMM_SOL_MINT,
+                    "out_amount_raw": "2140000",
+                },
+                {
+                    "label": "Meteora DLMM leg 2",
+                    "pool_address": "BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y",
+                    "input_mint": METEORA_DLMM_SOL_MINT,
+                    "output_mint": METEORA_DLMM_USDC_MINT,
+                    "out_amount_raw": "180000",
+                },
+            ],
+            "discovery": {
+                "route_type": "venue_restricted_two_hop",
+                "intermediate_mint": METEORA_DLMM_SOL_MINT,
+            },
+        }
+
+        option = _normalize_meteora_dlmm_quote_option(
+            variant_id="meteora_dlmm_quote",
+            label="Via Meteora",
+            kind="alternative",
+            quote=quote,
+            from_token="WIF",
+            to_token="USDC",
+            input_amount=1.0,
+            input_amount_raw=1000000,
+            output_decimals=6,
+        )
+
+        self.assertEqual(option["provider"], "meteora-dlmm")
+        self.assertEqual(option["quote_status"], "live")
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["is_comparison_only"])
+        self.assertFalse(option["is_clickable"])
+        self.assertEqual(option["route_shape"], "two-hop")
+        self.assertEqual(option["route_step_count"], 2)
+        self.assertEqual(option["route_steps"][0]["pool_address"], "8Ve9KtGNtLRxCQNAVfkHEP5GRZHjdj6BjB1RQFZewG6V")
+        self.assertEqual(option["route_steps"][1]["pool_address"], "BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y")
+        self.assertEqual(option["estimated_output"], 0.18)
+        self.assertEqual(option["min_received"], 0.1791)
+        self.assertEqual(option["_sort_out_amount_raw"], 180000)
+
     def test_normalize_orca_whirlpool_quote_option_marks_quote_only_non_clickable(self):
         quote = {
             "ok": True,
@@ -1308,6 +1409,71 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(option["explicit_route_fees"]["has_explicit_fees"])
         self.assertEqual(option["raw_quote"]["discovery"]["selected_pool"]["tvl_usdc"], 26800)
         self.assertEqual(option["raw_quote"]["discovery"]["selected_pool"]["volume_24h"], 28500)
+
+    def test_normalize_orca_whirlpool_two_hop_quote_option_marks_quote_only_non_clickable(self):
+        wif_mint = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
+        quote = {
+            "ok": True,
+            "provider": "orca_whirlpool",
+            "route_shape": "two-hop",
+            "pool": {
+                "address": "D6NdKrKNQPmRZCCnG1GqXtF7MMoHB7qR6GU5TkG59Qz1",
+                "name": "WIF-SOL",
+                "tick_spacing": 4,
+                "fee_rate": 400,
+            },
+            "input_mint": wif_mint,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "intermediate_mint": METEORA_DLMM_SOL_MINT,
+            "in_amount_raw": "1000000",
+            "out_amount_raw": "180000",
+            "min_out_amount_raw": "179100",
+            "route_steps": [
+                {
+                    "label": "Orca Whirlpool leg 1",
+                    "pool_address": "D6NdKrKNQPmRZCCnG1GqXtF7MMoHB7qR6GU5TkG59Qz1",
+                    "input_mint": wif_mint,
+                    "output_mint": METEORA_DLMM_SOL_MINT,
+                    "out_amount_raw": "2140000",
+                },
+                {
+                    "label": "Orca Whirlpool leg 2",
+                    "pool_address": "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+                    "input_mint": METEORA_DLMM_SOL_MINT,
+                    "output_mint": METEORA_DLMM_USDC_MINT,
+                    "out_amount_raw": "180000",
+                },
+            ],
+            "discovery": {
+                "route_type": "venue_restricted_two_hop",
+                "intermediate_mint": METEORA_DLMM_SOL_MINT,
+            },
+        }
+
+        option = _normalize_orca_whirlpool_quote_option(
+            variant_id="orca_whirlpool_quote",
+            label="Via Orca",
+            kind="alternative",
+            quote=quote,
+            from_token="WIF",
+            to_token="USDC",
+            input_amount=1.0,
+            input_amount_raw=1000000,
+            output_decimals=6,
+        )
+
+        self.assertEqual(option["provider"], "orca-whirlpool")
+        self.assertEqual(option["quote_status"], "live")
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["is_comparison_only"])
+        self.assertFalse(option["is_clickable"])
+        self.assertEqual(option["route_shape"], "two-hop")
+        self.assertEqual(option["route_step_count"], 2)
+        self.assertEqual(option["route_steps"][0]["pool_address"], "D6NdKrKNQPmRZCCnG1GqXtF7MMoHB7qR6GU5TkG59Qz1")
+        self.assertEqual(option["route_steps"][1]["pool_address"], "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE")
+        self.assertEqual(option["estimated_output"], 0.18)
+        self.assertEqual(option["min_received"], 0.1791)
+        self.assertEqual(option["_sort_out_amount_raw"], 180000)
 
     def test_normalize_phoenix_quote_option_marks_quote_only_non_clickable(self):
         quote = {
@@ -2121,6 +2287,312 @@ class TestSanity(unittest.TestCase):
             self.assertNotIn("orca-whirlpool", visible_providers)
             self.assertNotIn("phoenix-clob", visible_providers)
             self.assertNotIn("pumpswap", visible_providers)
+
+    def test_swap_quote_wif_usdc_can_include_meteora_two_hop_quote(self):
+        wif_mint = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
+        jupiter_quote = {
+            "inputMint": wif_mint,
+            "inAmount": "1000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "178000",
+            "otherAmountThreshold": "177110",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "0.18",
+            "routePlan": [],
+        }
+        meteora_quote = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "route_shape": "two-hop",
+            "pool": {
+                "address": "8Ve9KtGNtLRxCQNAVfkHEP5GRZHjdj6BjB1RQFZewG6V",
+                "name": "$WIF-SOL",
+                "bin_step": 50,
+            },
+            "input_mint": wif_mint,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "intermediate_mint": METEORA_DLMM_SOL_MINT,
+            "in_amount_raw": "1000000",
+            "out_amount_raw": "180000",
+            "min_out_amount_raw": "179100",
+            "route_steps": [
+                {
+                    "pool_address": "8Ve9KtGNtLRxCQNAVfkHEP5GRZHjdj6BjB1RQFZewG6V",
+                    "input_mint": wif_mint,
+                    "output_mint": METEORA_DLMM_SOL_MINT,
+                },
+                {
+                    "pool_address": "BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y",
+                    "input_mint": METEORA_DLMM_SOL_MINT,
+                    "output_mint": METEORA_DLMM_USDC_MINT,
+                },
+            ],
+            "discovery": {
+                "route_type": "venue_restricted_two_hop",
+                "intermediate_mint": METEORA_DLMM_SOL_MINT,
+            },
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": meteora_quote}) as fetch_meteora,
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+            patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "WIF": {"usd": 0.18},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="WIF", to_token="USDC", amount=1.0)
+
+        self.assertTrue(fetch_meteora.call_args.args[0]["discover_pools"])
+        self.assertTrue(fetch_meteora.call_args.args[0]["enable_two_hop_discovery"])
+        self.assertEqual(fetch_meteora.call_args.args[0]["pool_candidates"], [])
+        visible = [
+            response["recommended_option"],
+            response["direct_route_check"],
+            *response["other_options"],
+        ]
+        meteora_option = next(opt for opt in visible if opt and opt["provider"] == "meteora-dlmm")
+        self.assertEqual(meteora_option["route_shape"], "two-hop")
+        self.assertEqual(meteora_option["route_step_count"], 2)
+        self.assertTrue(meteora_option["is_comparison_only"])
+        self.assertFalse(meteora_option["is_clickable"])
+
+    def test_swap_quote_meteora_two_hop_leg_failures_do_not_create_fake_card(self):
+        wif_mint = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
+        jupiter_quote = {
+            "inputMint": wif_mint,
+            "inAmount": "1000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "178000",
+            "otherAmountThreshold": "177110",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "0.18",
+            "routePlan": [],
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        cases = [
+            ("TWO_HOP_LEG_1_FAILED", "Meteora DLMM two-hop quote failed on the input-to-SOL leg."),
+            ("TWO_HOP_LEG_2_FAILED", "Meteora DLMM two-hop quote failed on the SOL-to-output leg."),
+        ]
+        for code, detail in cases:
+            with self.subTest(code=code):
+                meteora_leg_failure = {
+                    "ok": False,
+                    "error": {
+                        "status_code": 502,
+                        "detail": detail,
+                        "code": code,
+                    },
+                }
+
+                with (
+                    patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+                    patch(
+                        "api.main._try_fetch_jupiter_quote",
+                        return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+                    ),
+                    patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+                    patch("api.main._try_fetch_meteora_dlmm_quote", return_value=meteora_leg_failure),
+                    patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+                    patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+                    patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+                    patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+                    patch(
+                        "api.main._resolve_quote_reference_prices_usd",
+                        return_value={
+                            "WIF": {"usd": 0.18},
+                            "USDC": {"usd": 1.0},
+                        },
+                    ),
+                ):
+                    response = swap_quote(from_token="WIF", to_token="USDC", amount=1.0)
+
+                visible = [
+                    response["recommended_option"],
+                    response["direct_route_check"],
+                    *response["other_options"],
+                ]
+                self.assertNotIn("meteora-dlmm", {opt["provider"] for opt in visible if opt})
+                meteora_errors = [
+                    item for item in response["debug"]["variant_errors"]
+                    if item["variant_id"] == "meteora_dlmm_quote"
+                ]
+                self.assertEqual(meteora_errors[0]["code"], code)
+
+    def test_swap_quote_wif_usdc_can_include_orca_two_hop_quote(self):
+        wif_mint = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
+        jupiter_quote = {
+            "inputMint": wif_mint,
+            "inAmount": "1000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "178000",
+            "otherAmountThreshold": "177110",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "0.18",
+            "routePlan": [],
+        }
+        orca_quote = {
+            "ok": True,
+            "provider": "orca_whirlpool",
+            "route_shape": "two-hop",
+            "pool": {
+                "address": "D6NdKrKNQPmRZCCnG1GqXtF7MMoHB7qR6GU5TkG59Qz1",
+                "name": "WIF-SOL",
+                "tick_spacing": 4,
+                "fee_rate": 400,
+            },
+            "input_mint": wif_mint,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "intermediate_mint": METEORA_DLMM_SOL_MINT,
+            "in_amount_raw": "1000000",
+            "out_amount_raw": "181000",
+            "min_out_amount_raw": "180095",
+            "route_steps": [
+                {
+                    "pool_address": "D6NdKrKNQPmRZCCnG1GqXtF7MMoHB7qR6GU5TkG59Qz1",
+                    "input_mint": wif_mint,
+                    "output_mint": METEORA_DLMM_SOL_MINT,
+                },
+                {
+                    "pool_address": "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+                    "input_mint": METEORA_DLMM_SOL_MINT,
+                    "output_mint": METEORA_DLMM_USDC_MINT,
+                },
+            ],
+            "discovery": {
+                "route_type": "venue_restricted_two_hop",
+                "intermediate_mint": METEORA_DLMM_SOL_MINT,
+            },
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value={"ok": True, "data": orca_quote}) as fetch_orca,
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+            patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "WIF": {"usd": 0.18},
+                    "USDC": {"usd": 1.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="WIF", to_token="USDC", amount=1.0)
+
+        self.assertTrue(fetch_orca.call_args.args[0]["discover_pools"])
+        self.assertTrue(fetch_orca.call_args.args[0]["enable_two_hop_discovery"])
+        self.assertEqual(fetch_orca.call_args.args[0]["pool_candidates"], [])
+        visible = [
+            response["recommended_option"],
+            response["direct_route_check"],
+            *response["other_options"],
+        ]
+        orca_option = next(opt for opt in visible if opt and opt["provider"] == "orca-whirlpool")
+        self.assertEqual(orca_option["route_shape"], "two-hop")
+        self.assertEqual(orca_option["route_step_count"], 2)
+        self.assertTrue(orca_option["is_comparison_only"])
+        self.assertFalse(orca_option["is_clickable"])
+
+    def test_swap_quote_orca_two_hop_leg_failures_do_not_create_fake_card(self):
+        wif_mint = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
+        jupiter_quote = {
+            "inputMint": wif_mint,
+            "inAmount": "1000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "178000",
+            "otherAmountThreshold": "177110",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "0.18",
+            "routePlan": [],
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+        cases = [
+            ("TWO_HOP_LEG_1_FAILED", "Orca Whirlpool two-hop quote failed on the input-to-SOL leg."),
+            ("TWO_HOP_LEG_2_FAILED", "Orca Whirlpool two-hop quote failed on the SOL-to-output leg."),
+        ]
+        for code, detail in cases:
+            with self.subTest(code=code):
+                orca_leg_failure = {
+                    "ok": False,
+                    "error": {
+                        "status_code": 502,
+                        "detail": detail,
+                        "code": code,
+                    },
+                }
+
+                with (
+                    patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+                    patch(
+                        "api.main._try_fetch_jupiter_quote",
+                        return_value={"ok": False, "error": {"status_code": 502, "detail": "mock"}},
+                    ),
+                    patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+                    patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+                    patch("api.main._try_fetch_orca_whirlpool_quote", return_value=orca_leg_failure),
+                    patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+                    patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+                    patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+                    patch(
+                        "api.main._resolve_quote_reference_prices_usd",
+                        return_value={
+                            "WIF": {"usd": 0.18},
+                            "USDC": {"usd": 1.0},
+                        },
+                    ),
+                ):
+                    response = swap_quote(from_token="WIF", to_token="USDC", amount=1.0)
+
+                visible = [
+                    response["recommended_option"],
+                    response["direct_route_check"],
+                    *response["other_options"],
+                ]
+                self.assertNotIn("orca-whirlpool", {opt["provider"] for opt in visible if opt})
+                orca_errors = [
+                    item for item in response["debug"]["variant_errors"]
+                    if item["variant_id"] == "orca_whirlpool_quote"
+                ]
+                self.assertEqual(orca_errors[0]["code"], code)
 
     def test_swap_quote_popcat_and_spx_can_include_discovered_meteora_quote(self):
         sol_mint = "So11111111111111111111111111111111111111112"

@@ -12,6 +12,7 @@ const DEFAULT_DISCOVERY_MIN_TVL_USD = 1000;
 const DEFAULT_DISCOVERY_MIN_VOLUME_24H_USD = 1;
 const DEFAULT_DISCOVERY_PAGE_SIZE = 20;
 const DISCOVERY_REQUEST_TIMEOUT_MS = 8000;
+const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 function writeJson(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -339,11 +340,7 @@ async function quoteCandidate(request, candidate, discoveryMetadata = null) {
   };
 }
 
-async function quoteMeteoraDlmm(request) {
-  if (request.pool_candidates.length > 0) {
-    return quoteCandidate(request, request.pool_candidates[0], null);
-  }
-
+async function quoteDiscoveredSinglePool(request) {
   const discovered = await discoverPoolCandidates(request);
   if (!discovered.ok) {
     return discovered;
@@ -373,6 +370,133 @@ async function quoteMeteoraDlmm(request) {
     discovery: discovered.metadata,
     quote_failures: failures,
   });
+}
+
+function shouldAttemptTwoHop(request, directResult) {
+  if (request.enable_two_hop_discovery !== true) {
+    return false;
+  }
+  if (request.input_mint === SOL_MINT || request.output_mint === SOL_MINT) {
+    return false;
+  }
+
+  const code = directResult?.error?.code;
+  return (
+    code === "NO_DISCOVERED_POOL" ||
+    code === "NO_USABLE_DISCOVERED_POOL" ||
+    code === "DISCOVERED_POOL_QUOTE_FAILED"
+  );
+}
+
+function twoHopLegRequest(request, inputMint, outputMint, amountRaw) {
+  return {
+    ...request,
+    input_mint: inputMint,
+    output_mint: outputMint,
+    amount_raw: String(amountRaw),
+    pool_candidates: [],
+    discover_pools: true,
+    enable_two_hop_discovery: false,
+  };
+}
+
+function routeStepFromLeg(leg, label) {
+  const pool = leg.pool || {};
+  return {
+    label,
+    pool_address: pool.address,
+    pool_name: pool.name,
+    bin_step: pool.bin_step,
+    input_mint: leg.input_mint,
+    output_mint: leg.output_mint,
+    in_amount_raw: leg.in_amount_raw,
+    out_amount_raw: leg.out_amount_raw,
+    min_out_amount_raw: leg.min_out_amount_raw,
+    fee_raw: leg.fee_raw,
+    protocol_fee_raw: leg.protocol_fee_raw,
+    bin_arrays: leg.bin_arrays || [],
+    discovery: leg.discovery,
+  };
+}
+
+async function quoteTwoHopViaSol(request, directResult) {
+  const leg1Request = twoHopLegRequest(request, request.input_mint, SOL_MINT, request.amount_raw);
+  const leg1 = await quoteDiscoveredSinglePool(leg1Request);
+  if (!leg1.ok) {
+    return structuredError("TWO_HOP_LEG_1_FAILED", "Meteora DLMM two-hop quote failed on the input-to-SOL leg.", {
+      intermediate_mint: SOL_MINT,
+      direct_error: directResult?.error,
+      leg_1_error: leg1.error,
+    });
+  }
+
+  const leg2Request = twoHopLegRequest(request, SOL_MINT, request.output_mint, leg1.out_amount_raw);
+  const leg2 = await quoteDiscoveredSinglePool(leg2Request);
+  if (!leg2.ok) {
+    return structuredError("TWO_HOP_LEG_2_FAILED", "Meteora DLMM two-hop quote failed on the SOL-to-output leg.", {
+      intermediate_mint: SOL_MINT,
+      direct_error: directResult?.error,
+      leg_1: {
+        pool: leg1.pool,
+        out_amount_raw: leg1.out_amount_raw,
+      },
+      leg_2_error: leg2.error,
+    });
+  }
+
+  const routeSteps = [
+    routeStepFromLeg(leg1, "Meteora DLMM leg 1"),
+    routeStepFromLeg(leg2, "Meteora DLMM leg 2"),
+  ];
+
+  return {
+    ok: true,
+    provider: "meteora_dlmm",
+    route_shape: "two-hop",
+    route_steps: routeSteps,
+    pool: leg1.pool,
+    input_mint: request.input_mint,
+    output_mint: request.output_mint,
+    intermediate_mint: SOL_MINT,
+    in_amount_raw: leg1.in_amount_raw,
+    out_amount_raw: leg2.out_amount_raw,
+    min_out_amount_raw: leg2.min_out_amount_raw,
+    fee_raw: null,
+    protocol_fee_raw: null,
+    price_impact: leg2.price_impact,
+    bin_arrays: [],
+    discovery: {
+      route_type: "venue_restricted_two_hop",
+      direct_error: directResult?.error,
+      intermediate_mint: SOL_MINT,
+      legs: [
+        {
+          input_mint: leg1.input_mint,
+          output_mint: leg1.output_mint,
+          selected_pool: leg1.discovery?.selected_pool || leg1.pool,
+        },
+        {
+          input_mint: leg2.input_mint,
+          output_mint: leg2.output_mint,
+          selected_pool: leg2.discovery?.selected_pool || leg2.pool,
+        },
+      ],
+    },
+    leg_quotes: [leg1, leg2],
+  };
+}
+
+async function quoteMeteoraDlmm(request) {
+  if (request.pool_candidates.length > 0) {
+    return quoteCandidate(request, request.pool_candidates[0], null);
+  }
+
+  const directResult = await quoteDiscoveredSinglePool(request);
+  if (directResult.ok || !shouldAttemptTwoHop(request, directResult)) {
+    return directResult;
+  }
+
+  return quoteTwoHopViaSol(request, directResult);
 }
 
 async function main() {
