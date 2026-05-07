@@ -142,6 +142,40 @@ def _external_token_response_meta(side: str, meta: dict) -> dict | None:
     }
 
 
+def _external_token_reference_price_row(meta: dict | None) -> dict | None:
+    if not meta or not meta.get("external"):
+        return None
+
+    price_usd = _safe_float(meta.get("price_usd"))
+    if price_usd is None or price_usd <= 0:
+        return None
+
+    return {
+        "usd": price_usd,
+        "pricing_source": "dexscreener_solana",
+        "pricing_ts": None,
+        "pricing_source_detail": {
+            "source": meta.get("resolver_source") or meta.get("source"),
+            "mint": meta.get("mint"),
+            "pair_address": meta.get("pair_address"),
+            "pair_url": meta.get("pair_url"),
+            "liquidity_usd": meta.get("liquidity_usd"),
+            "external_token_metadata": True,
+        },
+    }
+
+
+def _apply_external_token_reference_prices(reference_prices: dict, token_meta_by_label: dict) -> dict:
+    prices = dict(reference_prices or {})
+    for token_label, meta in (token_meta_by_label or {}).items():
+        if token_label in prices:
+            continue
+        row = _external_token_reference_price_row(meta)
+        if row:
+            prices[token_label] = row
+    return prices
+
+
 def _coingecko_id_for_quote_token(token_symbol: str) -> str | None:
     meta = _resolve_swap_token_meta(token_symbol)
     if meta and meta.get("coingecko_id"):
@@ -3490,6 +3524,13 @@ def swap_quote(
         reference_prices = _resolve_quote_reference_prices_usd([from_token, to_token, "SOL"])
     except Exception:
         reference_prices = {}
+    reference_prices = _apply_external_token_reference_prices(
+        reference_prices,
+        {
+            from_token: input_meta,
+            to_token: output_meta,
+        },
+    )
 
     inline_baseline, inline_baseline_vs_recommended = _build_fresh_quote_reference_baseline(
         from_token=from_token,

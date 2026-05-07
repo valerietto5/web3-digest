@@ -159,12 +159,14 @@ def build_ui_html() -> str:
       <div>
         <label>From token</label>
         <input id="swapFromToken" list="swapTokenChoices" value="SOL" placeholder="SOL or token mint" autocomplete="off" />
+        <div class="muted" style="margin-top:4px; font-size:12px;">Choose a saved token or paste a Solana mint.</div>
         <div class="muted" id="swapFromTokenPreview" style="margin-top:4px; font-size:12px;"></div>
       </div>
 
       <div>
         <label>To token</label>
         <input id="swapToToken" list="swapTokenChoices" value="USDC" placeholder="USDC or token mint" autocomplete="off" />
+        <div class="muted" style="margin-top:4px; font-size:12px;">Choose a saved token or paste a Solana mint.</div>
         <div class="muted" id="swapToTokenPreview" style="margin-top:4px; font-size:12px;"></div>
       </div>
 
@@ -781,7 +783,13 @@ function swapOptionCardTitle(opt, opts = {}) {
   return opt?.label || opt?.execution_surface_label || "Route";
 }
 
-function routeTokenLabelFromMint(mint, opt) {
+function tokenListSymbolForMint(mint) {
+  if (!mint) return "";
+  const match = swapTokenList.find((token) => token?.mint === mint);
+  return match?.symbol || "";
+}
+
+function routeTokenLabelFromMint(mint, opt, fallbackLabel = "") {
   if (!mint) return "";
 
   const steps = Array.isArray(opt?.route_steps) ? opt.route_steps : [];
@@ -790,7 +798,10 @@ function routeTokenLabelFromMint(mint, opt) {
 
   if (mint === firstInput && opt?.from_token) return opt.from_token;
   if (mint === lastOutput && opt?.to_token) return opt.to_token;
-  return mintLabel(mint);
+
+  const knownLabel = mintLabel(mint);
+  if (knownLabel !== shortenMiddle(String(mint), 4, 4)) return knownLabel;
+  return fallbackLabel || knownLabel;
 }
 
 function cleanContinuousRouteMints(opt) {
@@ -825,7 +836,7 @@ function formatCleanRoutePath(opt) {
   const lastOutput = routeMints[2];
 
   const fromLabel = opt?.from_token || routeTokenLabelFromMint(firstInput, opt);
-  const middleLabel = routeTokenLabelFromMint(middleMint, opt);
+  const middleLabel = routeTokenLabelFromMint(middleMint, opt, "intermediate token");
   const toLabel = opt?.to_token || routeTokenLabelFromMint(lastOutput, opt);
 
   if (!fromLabel || !middleLabel || !toLabel) return null;
@@ -1464,12 +1475,14 @@ async function previewSwap() {
 
 
 
-  function mintLabel(mint) {
+function mintLabel(mint) {
     if (!mint) return "unknown";
     if (mint === "So11111111111111111111111111111111111111112") return "SOL";
     if (mint === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v") return "USDC";
     if (mint === "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB") return "USDT";
     if (mint === "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB") return "USD1";
+    const knownSymbol = tokenListSymbolForMint(mint);
+    if (knownSymbol) return knownSymbol;
     return shortenMiddle(String(mint), 4, 4);
   }
   

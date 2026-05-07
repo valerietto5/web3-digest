@@ -525,6 +525,73 @@ class TestSanity(unittest.TestCase):
         self.assertIn("phoenix_quote", diagnostic_variants)
         self.assertIn("pumpswap_quote", diagnostic_variants)
 
+    def test_swap_quote_uses_external_resolver_price_for_usd_and_reference(self):
+        ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": ext_mint,
+            "outAmount": "2000000",
+            "otherAmountThreshold": "1990000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [],
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch(
+                "api.main.resolve_token",
+                return_value={
+                    "ok": True,
+                    "token": {
+                        "source": "dexscreener",
+                        "symbol": "JUP",
+                        "name": "Jupiter",
+                        "display_name": "Jupiter",
+                        "mint": ext_mint,
+                        "decimals": 6,
+                        "verified": False,
+                        "warnings": ["external_metadata_unverified"],
+                        "liquidity_usd": 1000000.0,
+                        "price_usd": 0.2,
+                        "pair_address": "pair",
+                        "pair_url": "https://dexscreener.com/solana/pair",
+                    },
+                },
+            ),
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch("api.main._try_fetch_jupiter_quote", return_value=unsupported),
+            patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+            patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0, "pricing_source": "coingecko_simple_price"},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token=ext_mint, amount=1.0)
+
+        self.assertEqual(response["to_token"], "JUP")
+        self.assertAlmostEqual(response["recommended_option"]["estimated_output_usd"], 0.4)
+        self.assertEqual(response["inline_baseline"]["pricing_source"], "dexscreener_solana")
+        self.assertEqual(response["inline_baseline"]["output_token"], "JUP")
+        self.assertAlmostEqual(response["inline_baseline"]["output_usd_price"], 0.2)
+        self.assertIsNotNone(response["inline_baseline"]["ideal_output_amount"])
+        self.assertEqual(
+            response["inline_baseline"]["pricing_source_detail"]["to_token"]["pair_url"],
+            "https://dexscreener.com/solana/pair",
+        )
+
     def test_swap_quote_accepts_external_mint_as_from_token_with_mocked_jupiter(self):
         ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
         jupiter_quote = {
@@ -818,6 +885,7 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn('id="swapFromToken" list="swapTokenChoices"', html)
         self.assertIn('id="swapToToken" list="swapTokenChoices"', html)
+        self.assertIn("Choose a saved token or paste a Solana mint.", html)
         self.assertIn('id="swapTokenChoices"', html)
         self.assertIn('id="swapFromTokenPreview"', html)
         self.assertIn('id="swapToTokenPreview"', html)
@@ -854,13 +922,16 @@ class TestSanity(unittest.TestCase):
     def test_swap_ui_two_hop_route_display_is_user_facing(self):
         html = build_ui_html()
 
-        self.assertIn("function routeTokenLabelFromMint(mint, opt)", html)
+        self.assertIn("function tokenListSymbolForMint(mint)", html)
+        self.assertIn("function routeTokenLabelFromMint(mint, opt, fallbackLabel", html)
         self.assertIn("function cleanContinuousRouteMints(opt)", html)
         self.assertIn("function formatCleanRoutePath(opt)", html)
         self.assertIn("if (steps.length < 2) return null;", html)
         self.assertIn("return null;", html)
         self.assertIn("mints[mints.length - 1] !== inputMint", html)
         self.assertIn("return `${fromLabel} -> ${middleLabel} -> ${toLabel}`;", html)
+        self.assertIn('routeTokenLabelFromMint(middleMint, opt, "intermediate token")', html)
+        self.assertIn("return fallbackLabel || knownLabel;", html)
         self.assertIn("Route: ${escapeHtml(cleanRoutePath)}", html)
         self.assertIn("Shape: two-hop · Steps: ${escapeHtml(String(routeSteps))}", html)
         self.assertIn("Route shape: ${escapeHtml(routeShape)} · Steps: ${escapeHtml(String(routeSteps))}", html)
