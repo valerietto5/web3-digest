@@ -5,6 +5,7 @@ from typing import Any
 
 import requests
 
+from providers.solana_token_metadata import fetch_solana_mint_decimals
 from token_registry import NATIVE_TOKENS, TOKENS
 
 
@@ -199,6 +200,35 @@ def fetch_dexscreener_token_metadata(mint: str, *, timeout: int = DEXSCREENER_TI
     }
 
 
+def _with_decimals_lookup(token: dict[str, Any]) -> dict[str, Any]:
+    mint = (token.get("mint") or "").strip()
+    if not mint:
+        return token
+
+    decimals_result = fetch_solana_mint_decimals(mint)
+    if decimals_result.get("ok") is True:
+        token["decimals"] = decimals_result.get("decimals")
+        token["decimals_source"] = decimals_result.get("source") or "solana_rpc"
+        if decimals_result.get("owner"):
+            token["mint_account_owner"] = decimals_result.get("owner")
+        token["warnings"] = [
+            warning
+            for warning in (token.get("warnings") or [])
+            if warning != "decimals_unresolved"
+        ]
+        return token
+
+    token["decimals_error"] = decimals_result.get("error") or {
+        "code": "TOKEN_DECIMALS_LOOKUP_FAILED",
+        "message": "Token decimals lookup failed.",
+    }
+    warnings = list(token.get("warnings") or [])
+    if "decimals_unresolved" not in warnings:
+        warnings.append("decimals_unresolved")
+    token["warnings"] = warnings
+    return token
+
+
 def _unresolved_mint_response(mint: str, *, code: str = "TOKEN_METADATA_LOOKUP_NOT_IMPLEMENTED") -> dict[str, Any]:
     return {
         "ok": False,
@@ -256,6 +286,9 @@ def resolve_token(query: str, *, allow_external: bool = True) -> dict[str, Any]:
 
         external = fetch_dexscreener_token_metadata(normalized)
         if external.get("ok") is True:
+            token = external.get("token")
+            if isinstance(token, dict):
+                external["token"] = _with_decimals_lookup(token)
             return external
         return external
 

@@ -2,6 +2,7 @@ import unittest
 import tempfile
 import json
 import subprocess
+import requests
 from pathlib import Path
 from unittest.mock import patch
 from api.main import (
@@ -42,6 +43,7 @@ from api.main import (
 )
 from api.ui_page import build_ui_html
 from providers.token_resolver import resolve_token
+from providers.solana_token_metadata import fetch_solana_mint_decimals
 
 from db import (
     init_db,
@@ -62,7 +64,10 @@ class TestSanity(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_token_resolver_resolves_known_symbol(self):
-        with patch("providers.token_resolver.fetch_dexscreener_token_metadata") as fetch_external:
+        with (
+            patch("providers.token_resolver.fetch_dexscreener_token_metadata") as fetch_external,
+            patch("providers.token_resolver.fetch_solana_mint_decimals") as fetch_decimals,
+        ):
             result = resolve_token("WIF")
 
         self.assertTrue(result["ok"])
@@ -74,9 +79,13 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(result["token"]["verified"])
         self.assertEqual(result["token"]["warnings"], [])
         fetch_external.assert_not_called()
+        fetch_decimals.assert_not_called()
 
     def test_token_resolver_resolves_known_mint(self):
-        with patch("providers.token_resolver.fetch_dexscreener_token_metadata") as fetch_external:
+        with (
+            patch("providers.token_resolver.fetch_dexscreener_token_metadata") as fetch_external,
+            patch("providers.token_resolver.fetch_solana_mint_decimals") as fetch_decimals,
+        ):
             result = resolve_token("7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr")
 
         self.assertTrue(result["ok"])
@@ -85,6 +94,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["token"]["display_name"], "Popcat")
         self.assertEqual(result["token"]["decimals"], 9)
         fetch_external.assert_not_called()
+        fetch_decimals.assert_not_called()
 
     def test_token_resolver_rejects_empty_query(self):
         result = resolve_token("  ")
@@ -127,16 +137,73 @@ class TestSanity(unittest.TestCase):
             },
         }
 
-        with patch("providers.token_resolver.fetch_dexscreener_token_metadata", return_value=external_result) as fetch_external:
+        with (
+            patch("providers.token_resolver.fetch_dexscreener_token_metadata", return_value=external_result) as fetch_external,
+            patch(
+                "providers.token_resolver.fetch_solana_mint_decimals",
+                return_value={
+                    "ok": True,
+                    "decimals": 6,
+                    "source": "solana_rpc",
+                    "mint": unknown_mint,
+                    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                },
+            ) as fetch_decimals,
+        ):
             result = resolve_token(unknown_mint)
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["token"]["source"], "dexscreener")
         self.assertEqual(result["token"]["symbol"], "EXT")
         self.assertEqual(result["token"]["mint"], unknown_mint)
+        self.assertEqual(result["token"]["decimals"], 6)
+        self.assertEqual(result["token"]["decimals_source"], "solana_rpc")
         self.assertEqual(result["token"]["liquidity_usd"], 12345.0)
-        self.assertIn("decimals_unresolved", result["token"]["warnings"])
+        self.assertNotIn("decimals_unresolved", result["token"]["warnings"])
         fetch_external.assert_called_once_with(unknown_mint)
+        fetch_decimals.assert_called_once_with(unknown_mint)
+
+    def test_token_resolver_dexscreener_success_keeps_warning_when_decimals_fail(self):
+        unknown_mint = "11111111111111111111111111111112"
+        external_result = {
+            "ok": True,
+            "token": {
+                "source": "dexscreener",
+                "symbol": "EXT",
+                "name": "External Token",
+                "display_name": "External Token",
+                "mint": unknown_mint,
+                "decimals": None,
+                "logo_uri": None,
+                "verified": False,
+                "default_enabled": False,
+                "tags": ["external", "dexscreener"],
+                "dexscreener_chain_id": "solana",
+                "liquidity_usd": 12345.0,
+                "price_usd": 0.001,
+                "warnings": ["external_metadata_unverified", "decimals_unresolved"],
+            },
+        }
+
+        with (
+            patch("providers.token_resolver.fetch_dexscreener_token_metadata", return_value=external_result),
+            patch(
+                "providers.token_resolver.fetch_solana_mint_decimals",
+                return_value={
+                    "ok": False,
+                    "error": {
+                        "code": "TOKEN_DECIMALS_LOOKUP_FAILED",
+                        "message": "timeout",
+                    },
+                },
+            ),
+        ):
+            result = resolve_token(unknown_mint)
+
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["token"]["decimals"])
+        self.assertIn("decimals_unresolved", result["token"]["warnings"])
+        self.assertEqual(result["token"]["decimals_error"]["code"], "TOKEN_DECIMALS_LOOKUP_FAILED")
 
     def test_token_resolver_unknown_mint_reports_dexscreener_not_found(self):
         unknown_mint = "11111111111111111111111111111112"
@@ -193,6 +260,99 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "TOKEN_METADATA_LOOKUP_NOT_IMPLEMENTED")
         fetch_external.assert_not_called()
+
+    def test_solana_mint_decimals_rpc_helper_parses_json_parsed_account(self):
+        class Response:
+            ok = True
+            status_code = 200
+
+            def json(self):
+                return {
+                    "result": {
+                        "value": {
+                            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+                            "data": {
+                                "parsed": {
+                                    "type": "mint",
+                                    "info": {"decimals": 8},
+                                },
+                            },
+                        },
+                    },
+                }
+
+        with patch("providers.solana_token_metadata.requests.post", return_value=Response()) as post:
+            result = fetch_solana_mint_decimals("mint", rpc_url="https://example.invalid")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["decimals"], 8)
+        self.assertEqual(result["source"], "solana_rpc")
+        self.assertEqual(result["owner"], "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+        self.assertEqual(post.call_args.kwargs["json"]["method"], "getAccountInfo")
+        self.assertEqual(post.call_args.kwargs["json"]["params"][1]["encoding"], "jsonParsed")
+
+    def test_solana_mint_decimals_rpc_helper_reports_not_found(self):
+        class MissingResponse:
+            ok = True
+            status_code = 200
+
+            def json(self):
+                return {"result": {"value": None}}
+
+        class MissingDecimalsResponse:
+            ok = True
+            status_code = 200
+
+            def json(self):
+                return {"result": {"value": {"data": {"parsed": {"info": {}}}}}}
+
+        for response in (MissingResponse(), MissingDecimalsResponse()):
+            with self.subTest(response=response.__class__.__name__):
+                with patch("providers.solana_token_metadata.requests.post", return_value=response):
+                    result = fetch_solana_mint_decimals("mint", rpc_url="https://example.invalid")
+
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"]["code"], "TOKEN_DECIMALS_NOT_FOUND")
+
+    def test_solana_mint_decimals_rpc_helper_reports_lookup_failure(self):
+        class RpcErrorResponse:
+            ok = True
+            status_code = 200
+
+            def json(self):
+                return {"error": {"code": -32000, "message": "bad"}}
+
+        class HttpErrorResponse:
+            ok = False
+            status_code = 429
+
+            def json(self):
+                return {}
+
+        cases = [
+            requests.Timeout("timeout"),
+            RpcErrorResponse(),
+            HttpErrorResponse(),
+        ]
+
+        for case in cases:
+            with self.subTest(case=case.__class__.__name__):
+                if isinstance(case, Exception):
+                    side_effect = case
+                    return_value = None
+                else:
+                    side_effect = None
+                    return_value = case
+
+                with patch(
+                    "providers.solana_token_metadata.requests.post",
+                    side_effect=side_effect,
+                    return_value=return_value,
+                ):
+                    result = fetch_solana_mint_decimals("mint", rpc_url="https://example.invalid")
+
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"]["code"], "TOKEN_DECIMALS_LOOKUP_FAILED")
 
     def test_swap_registry_resolves_curated_swap_tokens(self):
         sol = _resolve_swap_token_meta("SOL")
