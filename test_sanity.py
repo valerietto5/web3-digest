@@ -9,6 +9,7 @@ from api.main import (
     METEORA_DLMM_SOL_MINT,
     METEORA_DLMM_USDC_MINT,
     METEORA_DLMM_BONK_MINT,
+    TOKEN_META,
     _build_meteora_dlmm_quote_payload,
     _build_orca_whirlpool_quote_payload,
     _build_phantom_quote_payload,
@@ -30,6 +31,7 @@ from api.main import (
     _build_reference_baseline_from_resolved_prices,
     _resolve_quote_benchmark_prices_usd,
     _resolve_swap_token_meta,
+    _resolve_swap_token_for_quote,
     _select_direct_route_option,
     _select_diverse_other_options,
     _try_fetch_meteora_dlmm_quote,
@@ -353,6 +355,278 @@ class TestSanity(unittest.TestCase):
 
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["error"]["code"], "TOKEN_DECIMALS_LOOKUP_FAILED")
+
+    def test_resolve_swap_token_for_quote_keeps_registry_metadata(self):
+        with patch("api.main.resolve_token") as resolver:
+            meta = _resolve_swap_token_for_quote("WIF")
+
+        self.assertEqual(meta["source"], "registry")
+        self.assertFalse(meta["external"])
+        self.assertEqual(meta["quote_label"], "WIF")
+        self.assertEqual(meta["mint"], "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm")
+        self.assertEqual(meta["decimals"], 6)
+        resolver.assert_not_called()
+
+    def test_resolve_swap_token_for_quote_accepts_external_mint_with_decimals(self):
+        mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+        with patch(
+            "api.main.resolve_token",
+            return_value={
+                "ok": True,
+                "token": {
+                    "source": "dexscreener",
+                    "symbol": "JUP",
+                    "name": "Jupiter",
+                    "display_name": "Jupiter",
+                    "mint": mint,
+                    "decimals": 6,
+                    "verified": False,
+                    "default_enabled": False,
+                    "tags": ["external", "dexscreener"],
+                    "warnings": ["external_metadata_unverified"],
+                    "liquidity_usd": 1000000.0,
+                    "price_usd": 0.2,
+                    "pair_address": "pair",
+                    "pair_url": "https://dexscreener.com/solana/pair",
+                },
+            },
+        ):
+            meta = _resolve_swap_token_for_quote(mint)
+
+        self.assertTrue(meta["external"])
+        self.assertEqual(meta["source"], "external_resolver")
+        self.assertEqual(meta["resolver_source"], "dexscreener")
+        self.assertEqual(meta["symbol"], "JUP")
+        self.assertEqual(meta["quote_label"], "JUP")
+        self.assertEqual(meta["mint"], mint)
+        self.assertEqual(meta["decimals"], 6)
+
+    def test_resolve_swap_token_for_quote_rejects_external_mint_without_decimals(self):
+        mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+        with patch(
+            "api.main.resolve_token",
+            return_value={
+                "ok": True,
+                "token": {
+                    "source": "dexscreener",
+                    "symbol": "JUP",
+                    "display_name": "Jupiter",
+                    "mint": mint,
+                    "decimals": None,
+                },
+            },
+        ):
+            meta = _resolve_swap_token_for_quote(mint)
+
+        self.assertTrue(meta["external"])
+        self.assertEqual(meta["resolution_error"]["code"], "TOKEN_RESOLUTION_INCOMPLETE")
+
+    def test_resolve_swap_token_for_quote_reports_external_not_found(self):
+        mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+        with patch(
+            "api.main.resolve_token",
+            return_value={
+                "ok": False,
+                "error": {"code": "TOKEN_METADATA_NOT_FOUND", "message": "not found"},
+            },
+        ):
+            meta = _resolve_swap_token_for_quote(mint)
+
+        self.assertTrue(meta["external"])
+        self.assertEqual(meta["resolution_error"]["code"], "TOKEN_METADATA_NOT_FOUND")
+
+    def test_swap_quote_accepts_external_mint_as_to_token_with_mocked_quotes(self):
+        ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+        self.assertNotIn(ext_mint, {meta.get("mint") for meta in TOKEN_META.values()})
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": ext_mint,
+            "outAmount": "2000000",
+            "otherAmountThreshold": "1990000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [],
+        }
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": METEORA_DLMM_SOL_MINT,
+                "inputAmount": "1000000000",
+                "outputMint": ext_mint,
+                "outputAmount": "1900000",
+                "otherAmountThreshold": "1890000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch(
+                "api.main.resolve_token",
+                return_value={
+                    "ok": True,
+                    "token": {
+                        "source": "dexscreener",
+                        "symbol": "JUP",
+                        "name": "Jupiter",
+                        "display_name": "Jupiter",
+                        "mint": ext_mint,
+                        "decimals": 6,
+                        "verified": False,
+                        "warnings": ["external_metadata_unverified"],
+                        "liquidity_usd": 1000000.0,
+                        "price_usd": 0.2,
+                        "pair_address": "pair",
+                        "pair_url": "https://dexscreener.com/solana/pair",
+                    },
+                },
+            ) as resolver,
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote) as fetch_jupiter,
+            patch("api.main._try_fetch_jupiter_quote", return_value=unsupported),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+            patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "JUP": {"usd": 0.2},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token=ext_mint, amount=1.0)
+
+        self.assertEqual(response["to_token"], "JUP")
+        self.assertEqual(response["recommended_option"]["estimated_output"], 2.0)
+        self.assertEqual(response["external_tokens"][0]["side"], "to")
+        self.assertEqual(response["external_tokens"][0]["mint"], ext_mint)
+        self.assertEqual(response["external_tokens"][0]["source"], "dexscreener")
+        self.assertFalse(response["external_tokens"][0]["verified"])
+        self.assertTrue(response["summary"]["uses_external_tokens"])
+        self.assertNotIn(ext_mint, {meta.get("mint") for meta in TOKEN_META.values()})
+        fetch_jupiter.assert_called_once()
+        self.assertEqual(fetch_jupiter.call_args.args[0]["outputMint"], ext_mint)
+        resolver.assert_called_once_with(ext_mint, allow_external=True)
+
+        raydium_option = next(opt for opt in response["other_options"] if opt["provider"] == "raydium-trade-api")
+        self.assertTrue(raydium_option["is_comparison_only"])
+        self.assertFalse(raydium_option["is_clickable"])
+        diagnostic_variants = {item["variant_id"] for item in response["debug"]["variant_errors"]}
+        self.assertIn("phoenix_quote", diagnostic_variants)
+        self.assertIn("pumpswap_quote", diagnostic_variants)
+
+    def test_swap_quote_accepts_external_mint_as_from_token_with_mocked_jupiter(self):
+        ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+        jupiter_quote = {
+            "inputMint": ext_mint,
+            "inAmount": "2500000",
+            "outputMint": METEORA_DLMM_SOL_MINT,
+            "outAmount": "5000000",
+            "otherAmountThreshold": "4975000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "0.5",
+            "routePlan": [],
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch(
+                "api.main.resolve_token",
+                return_value={
+                    "ok": True,
+                    "token": {
+                        "source": "dexscreener",
+                        "symbol": "JUP",
+                        "display_name": "Jupiter",
+                        "mint": ext_mint,
+                        "decimals": 6,
+                        "verified": False,
+                        "warnings": ["external_metadata_unverified"],
+                    },
+                },
+            ),
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote) as fetch_jupiter,
+            patch("api.main._try_fetch_jupiter_quote", return_value=unsupported),
+            patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+            patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "JUP": {"usd": 0.2},
+                    "SOL": {"usd": 84.0},
+                },
+            ),
+        ):
+            response = swap_quote(from_token=ext_mint, to_token="SOL", amount=2.5)
+
+        self.assertEqual(response["from_token"], "JUP")
+        self.assertEqual(response["to_token"], "SOL")
+        self.assertEqual(response["input_amount_raw"], 2500000)
+        self.assertEqual(response["external_tokens"][0]["side"], "from")
+        self.assertEqual(response["recommended_option"]["estimated_output_raw"], "5000000")
+        self.assertEqual(fetch_jupiter.call_args.args[0]["inputMint"], ext_mint)
+
+    def test_swap_quote_rejects_external_mint_without_decimals(self):
+        ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+        with patch(
+            "api.main.resolve_token",
+            return_value={
+                "ok": True,
+                "token": {
+                    "source": "dexscreener",
+                    "symbol": "JUP",
+                    "display_name": "Jupiter",
+                    "mint": ext_mint,
+                    "decimals": None,
+                },
+            },
+        ):
+            with self.assertRaises(Exception) as ctx:
+                swap_quote(from_token="SOL", to_token=ext_mint, amount=1.0)
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail["side"], "to")
+        self.assertEqual(
+            ctx.exception.detail["error"]["code"],
+            "TOKEN_RESOLUTION_INCOMPLETE",
+        )
+
+    def test_swap_quote_rejects_external_mint_not_found(self):
+        ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+        with patch(
+            "api.main.resolve_token",
+            return_value={
+                "ok": False,
+                "error": {"code": "TOKEN_METADATA_NOT_FOUND", "message": "not found"},
+            },
+        ):
+            with self.assertRaises(Exception) as ctx:
+                swap_quote(from_token="SOL", to_token=ext_mint, amount=1.0)
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail["side"], "to")
+        self.assertEqual(
+            ctx.exception.detail["error"]["code"],
+            "TOKEN_METADATA_NOT_FOUND",
+        )
 
     def test_swap_registry_resolves_curated_swap_tokens(self):
         sol = _resolve_swap_token_meta("SOL")

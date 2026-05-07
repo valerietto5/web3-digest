@@ -47,6 +47,101 @@ def _resolve_swap_token_meta(token_symbol: str) -> dict | None:
     return dict(meta)
 
 
+def _resolve_swap_token_for_quote(query: str) -> dict | None:
+    raw_query = (query or "").strip()
+    if not raw_query:
+        return None
+
+    registry_meta = _resolve_swap_token_meta(raw_query)
+    if registry_meta:
+        out = dict(registry_meta)
+        out["source"] = "registry"
+        out["quote_label"] = (out.get("symbol") or raw_query).strip().upper()
+        out["external"] = False
+        return out
+
+    resolved = resolve_token(raw_query, allow_external=True)
+    if resolved.get("ok") is not True:
+        return {
+            "source": "external_resolver",
+            "external": True,
+            "resolution_error": resolved.get("error") or {
+                "code": "TOKEN_RESOLUTION_FAILED",
+                "message": "Token could not be resolved.",
+            },
+        }
+
+    token = resolved.get("token") if isinstance(resolved, dict) else None
+    if not isinstance(token, dict):
+        return {
+            "source": "external_resolver",
+            "external": True,
+            "resolution_error": {
+                "code": "TOKEN_RESOLUTION_FAILED",
+                "message": "Token resolver returned no token metadata.",
+            },
+        }
+
+    mint = (token.get("mint") or "").strip()
+    decimals = token.get("decimals")
+    symbol = (token.get("symbol") or "").strip()
+    display_name = (token.get("display_name") or token.get("name") or symbol).strip()
+    if not mint or not isinstance(decimals, int) or decimals < 0 or not (symbol or display_name):
+        return {
+            "source": "external_resolver",
+            "external": True,
+            "mint": mint,
+            "resolution_error": {
+                "code": "TOKEN_RESOLUTION_INCOMPLETE",
+                "message": "External token metadata is missing mint, decimals, or display label.",
+                "token": token,
+            },
+        }
+
+    return {
+        "asset": f"external:{mint}",
+        "symbol": symbol or display_name,
+        "name": token.get("name") or display_name or symbol,
+        "display_name": display_name or symbol,
+        "mint": mint,
+        "decimals": decimals,
+        "logo_uri": token.get("logo_uri"),
+        "verified": bool(token.get("verified")),
+        "default_enabled": False,
+        "tags": token.get("tags") or [],
+        "coingecko_id": token.get("coingecko_id"),
+        "dexscreener_chain_id": token.get("dexscreener_chain_id"),
+        "source": "external_resolver",
+        "resolver_source": token.get("source"),
+        "external": True,
+        "quote_label": symbol or display_name,
+        "warnings": token.get("warnings") or [],
+        "liquidity_usd": token.get("liquidity_usd"),
+        "price_usd": token.get("price_usd"),
+        "pair_address": token.get("pair_address"),
+        "pair_url": token.get("pair_url"),
+    }
+
+
+def _external_token_response_meta(side: str, meta: dict) -> dict | None:
+    if not meta or not meta.get("external"):
+        return None
+    return {
+        "side": side,
+        "symbol": meta.get("symbol"),
+        "display_name": meta.get("display_name") or meta.get("name") or meta.get("symbol"),
+        "mint": meta.get("mint"),
+        "decimals": meta.get("decimals"),
+        "source": meta.get("resolver_source") or meta.get("source"),
+        "verified": bool(meta.get("verified")),
+        "warnings": meta.get("warnings") or [],
+        "liquidity_usd": meta.get("liquidity_usd"),
+        "price_usd": meta.get("price_usd"),
+        "pair_address": meta.get("pair_address"),
+        "pair_url": meta.get("pair_url"),
+    }
+
+
 def _coingecko_id_for_quote_token(token_symbol: str) -> str | None:
     meta = _resolve_swap_token_meta(token_symbol)
     if meta and meta.get("coingecko_id"):
@@ -1213,17 +1308,6 @@ def _build_orca_whirlpool_quote_payload(
         "sort_by": "tvl",
         "page_size": 10,
     }
-
-    default_enabled_mints = {
-        (meta.get("mint") or "").strip()
-        for meta in TOKEN_META.values()
-        if meta.get("default_enabled") and (meta.get("mint") or "").strip()
-    }
-    if input_mint not in default_enabled_mints or output_mint not in default_enabled_mints:
-        payload["unsupported_pair"] = True
-        payload["unsupported_pair_detail"] = (
-            "Orca Whirlpool quote helper currently supports default-enabled registry token pairs only."
-        )
 
     return payload
 
@@ -2994,8 +3078,8 @@ def swap_quote(
     network: str = "solana",
     user_public_key: str | None = None,
 ):
-    from_token = from_token.upper().strip()
-    to_token = to_token.upper().strip()
+    from_token_query = (from_token or "").strip()
+    to_token_query = (to_token or "").strip()
 
     if network != "solana":
         raise HTTPException(status_code=400, detail="only solana is supported for now")
@@ -3003,13 +3087,44 @@ def swap_quote(
     if amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be greater than 0")
 
-    if from_token == to_token:
+    if from_token_query == to_token_query:
         raise HTTPException(status_code=400, detail="from_token and to_token must be different")
 
-    input_meta = _resolve_swap_token_meta(from_token)
-    output_meta = _resolve_swap_token_meta(to_token)
-    if not input_meta or not output_meta:
-        raise HTTPException(status_code=400, detail="unsupported token for now")
+    input_meta = _resolve_swap_token_for_quote(from_token_query)
+    output_meta = _resolve_swap_token_for_quote(to_token_query)
+    if not input_meta or input_meta.get("resolution_error"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "TOKEN_RESOLUTION_FAILED",
+                "side": "from",
+                "query": from_token_query,
+                "error": (input_meta or {}).get("resolution_error"),
+            },
+        )
+    if not output_meta or output_meta.get("resolution_error"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "TOKEN_RESOLUTION_FAILED",
+                "side": "to",
+                "query": to_token_query,
+                "error": (output_meta or {}).get("resolution_error"),
+            },
+        )
+    if input_meta["mint"] == output_meta["mint"]:
+        raise HTTPException(status_code=400, detail="from_token and to_token must be different")
+
+    from_token = input_meta.get("quote_label") or input_meta.get("symbol") or from_token_query
+    to_token = output_meta.get("quote_label") or output_meta.get("symbol") or to_token_query
+    external_tokens = [
+        item
+        for item in (
+            _external_token_response_meta("from", input_meta),
+            _external_token_response_meta("to", output_meta),
+        )
+        if item
+    ]
 
     raw_amount = to_raw_amount(amount, input_meta["decimals"])
 
@@ -3536,11 +3651,14 @@ def swap_quote(
             "cost_model_scope": "partial_transparency_not_ranking_input",
             "recommendation_scope": "highest_receive_amount_across_live_quote_universes",
             "execution_availability_scope": "separate_from_recommendation",
+            "uses_external_tokens": bool(external_tokens),
         },
+        "external_tokens": external_tokens,
         "debug": {
             "route_debug": recommended_raw.get("mostReliableAmmsQuoteReport"),
             "ranked_jupiter_variants": ranked_jupiter_variant_debug,
             "variant_errors": diagnostics,
+            "external_tokens": external_tokens,
             "notes": [
                 "Recommended is selected by highest receive amount across live quote universes, not by estimated total swap cost.",
                 "Execution availability is separate from recommendation. Quote-only routes are not clickable yet.",
