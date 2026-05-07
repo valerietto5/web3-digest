@@ -813,6 +813,44 @@ class TestSanity(unittest.TestCase):
         self.assertIn("live route options checked: ", html)
         self.assertIn("renderSwapCoverageDepth(quote);", html)
 
+    def test_swap_ui_supports_external_token_resolve_preview(self):
+        html = build_ui_html()
+
+        self.assertIn('id="swapFromToken" list="swapTokenChoices"', html)
+        self.assertIn('id="swapToToken" list="swapTokenChoices"', html)
+        self.assertIn('id="swapTokenChoices"', html)
+        self.assertIn('id="swapFromTokenPreview"', html)
+        self.assertIn('id="swapToTokenPreview"', html)
+        self.assertIn("function resolveSwapTokenInput(side)", html)
+        self.assertIn('fetchMaybeJson("/tokens/resolve?" + qs({', html)
+        self.assertIn("allow_external: true", html)
+        self.assertIn("External token: ${symbol} / ${name}", html)
+        self.assertIn("Warning: External/unverified token metadata", html)
+        self.assertIn("Could not resolve token metadata.", html)
+        self.assertIn("Token metadata found, but decimals are unresolved. Quote preview is not safe yet.", html)
+
+    def test_swap_ui_renders_external_token_quote_notice(self):
+        html = build_ui_html()
+
+        self.assertIn('id="swapExternalTokenNotice"', html)
+        self.assertIn("function renderSwapExternalTokenNotice(quote)", html)
+        self.assertIn("Array.isArray(quote?.external_tokens)", html)
+        self.assertIn("External token metadata used: ", html)
+        self.assertIn(" · unverified", html)
+        self.assertIn("renderSwapExternalTokenNotice(quote);", html)
+
+    def test_swap_ui_preserves_curated_token_choice_behavior(self):
+        html = build_ui_html()
+
+        self.assertIn("async function loadSwapTokens()", html)
+        self.assertIn('fetchMaybeJson("/swap/tokens")', html)
+        self.assertIn("function renderSwapTokenChoices()", html)
+        self.assertIn('opt.value = symbol;', html)
+        self.assertIn('if (!$("swapFromToken").value) $("swapFromToken").value = "SOL";', html)
+        self.assertIn('if (!$("swapToToken").value) $("swapToToken").value = "USDC";', html)
+        self.assertIn("const fromToken = $(\"swapFromToken\").value;", html)
+        self.assertIn("const toToken = $(\"swapToToken\").value;", html)
+
     def test_swap_ui_two_hop_route_display_is_user_facing(self):
         html = build_ui_html()
 

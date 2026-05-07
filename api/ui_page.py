@@ -158,18 +158,14 @@ def build_ui_html() -> str:
     <div class="row" style="margin-top: 10px;">
       <div>
         <label>From token</label>
-        <select id="swapFromToken">
-          <option value="SOL" selected>SOL</option>
-          <option value="USDC">USDC</option>
-        </select>
+        <input id="swapFromToken" list="swapTokenChoices" value="SOL" placeholder="SOL or token mint" autocomplete="off" />
+        <div class="muted" id="swapFromTokenPreview" style="margin-top:4px; font-size:12px;"></div>
       </div>
 
       <div>
         <label>To token</label>
-        <select id="swapToToken">
-          <option value="USDC" selected>USDC</option>
-          <option value="SOL">SOL</option>
-        </select>
+        <input id="swapToToken" list="swapTokenChoices" value="USDC" placeholder="USDC or token mint" autocomplete="off" />
+        <div class="muted" id="swapToTokenPreview" style="margin-top:4px; font-size:12px;"></div>
       </div>
 
       <div>
@@ -177,6 +173,10 @@ def build_ui_html() -> str:
         <input id="swapAmount" placeholder="1.0" />
       </div>
     </div>
+    <datalist id="swapTokenChoices">
+      <option value="SOL">SOL - Solana</option>
+      <option value="USDC">USDC - USD Coin</option>
+    </datalist>
 
     <div class="row" style="margin-top: 10px;">
       <button id="btnPreviewSwap" type="button" class="secondary">Preview Quote</button>
@@ -196,6 +196,7 @@ def build_ui_html() -> str:
         <div class="muted" id="swapStateText" style="font-size:12px;">Ready to request a swap quote.</div>
       </div>
       <div class="muted" id="swapCoverageDepth" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
+      <div class="muted" id="swapExternalTokenNotice" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
 
       <div class="muted" id="swapRecommendation" style="margin-top:8px;">recommendation: —</div>
       <div class="muted" id="swapCompareSummary" style="margin-top:8px;">comparison summary: —</div>
@@ -288,6 +289,11 @@ def build_ui_html() -> str:
     { symbol: "SOL", display_name: "Solana", decimals: 9 },
     { symbol: "USDC", display_name: "USD Coin", decimals: 6 }
   ];
+  const swapTokenResolveTimers = {};
+  const swapTokenResolveState = {
+    from: null,
+    to: null
+  };
 
   function nowTimeLabel() {
     return new Date().toLocaleTimeString();
@@ -378,6 +384,8 @@ function clearSwapUi() {
   $("swapDebugWrap").style.display = "none";
   $("swapQuotePreview").textContent = "";
   $("swapStatus").style.display = "none";
+  setTokenResolvePreview("from", null, "");
+  setTokenResolvePreview("to", null, "");
   setSwapPhase("Draft", "Ready to request a swap quote.");
   resetSwapQuoteDisplay();
   resetSwapInlineBaseline();
@@ -585,6 +593,11 @@ function resetSwapQuoteDisplay() {
     coverage.textContent = "";
     coverage.style.display = "none";
   }
+  const externalNotice = $("swapExternalTokenNotice");
+  if (externalNotice) {
+    externalNotice.textContent = "";
+    externalNotice.style.display = "none";
+  }
   $("swapRecommendedBox").innerHTML = "<div class='muted'>No quote yet.</div>";
   $("swapAlternativesCard").style.display = "none";
   $("swapAlternativesBox").innerHTML = "<div class='muted'>No alternatives yet.</div>";
@@ -601,10 +614,27 @@ function getSwapHttpErrorInfo(status, data, rawText) {
     data?.message ||
     rawText ||
     "Unknown quote error";
+  const detailText = typeof detail === "object"
+    ? JSON.stringify(detail)
+    : String(detail);
 
-  const d = String(detail).toLowerCase();
+  const d = detailText.toLowerCase();
 
   if (status === 400) {
+    if (d.includes("token_resolution_failed")) {
+      return {
+        title: "Token metadata resolution failed",
+        phase: "Could not resolve token metadata for quote preview.",
+        kind: "warn"
+      };
+    }
+    if (d.includes("token_metadata_incomplete") || d.includes("decimals")) {
+      return {
+        title: "Token decimals unresolved",
+        phase: "Token metadata found, but decimals are unresolved. Quote preview is not safe yet.",
+        kind: "warn"
+      };
+    }
     if (d.includes("unsupported token")) {
       return {
         title: "Unsupported pair",
@@ -886,6 +916,38 @@ function renderSwapCoverageDepth(quote) {
     : `${labels.length} live route options checked: `;
 
   box.textContent = prefix + labels.join(", ");
+  box.style.display = "block";
+}
+
+function renderSwapExternalTokenNotice(quote) {
+  const box = $("swapExternalTokenNotice");
+  if (!box) return;
+
+  const tokens = Array.isArray(quote?.external_tokens) ? quote.external_tokens : [];
+  if (!tokens.length) {
+    box.textContent = "";
+    box.style.display = "none";
+    return;
+  }
+
+  const labels = [];
+  const seen = new Set();
+  for (const token of tokens) {
+    const label = token?.symbol || token?.display_name || token?.mint;
+    if (!label) continue;
+    const key = String(label).trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    labels.push(String(label).trim());
+  }
+
+  if (!labels.length) {
+    box.textContent = "";
+    box.style.display = "none";
+    return;
+  }
+
+  box.textContent = "External token metadata used: " + labels.join(", ") + " · unverified";
   box.style.display = "block";
 }
 
@@ -1251,6 +1313,7 @@ async function previewSwap() {
   const displayRec = recommended || bestQuote;
   const executableRec = recommendedExecutable || displayRec;
   renderSwapCoverageDepth(quote);
+  renderSwapExternalTokenNotice(quote);
 
   function sameOption(a, b) {
     if (!a || !b) return false;
@@ -2000,13 +2063,16 @@ function qs(params) {
     return { ok: res.ok, status: res.status, text, data };
   }
 
-  function renderSwapTokenOptions(selectId, defaultSymbol) {
-    const sel = $(selectId);
-    if (!sel) return;
+  function tokenInputValue(side) {
+    const id = side === "from" ? "swapFromToken" : "swapToToken";
+    return ($(id)?.value || "").trim();
+  }
 
-    const previous = sel.value || defaultSymbol;
-    sel.innerHTML = "";
+  function renderSwapTokenChoices() {
+    const list = $("swapTokenChoices");
+    if (!list) return;
 
+    list.innerHTML = "";
     for (const token of swapTokenList) {
       const symbol = String(token.symbol || "").toUpperCase();
       if (!symbol) continue;
@@ -2014,21 +2080,122 @@ function qs(params) {
       const opt = document.createElement("option");
       opt.value = symbol;
       const name = token.display_name || symbol;
-      opt.textContent = name === symbol ? symbol : symbol + " - " + name;
-      sel.appendChild(opt);
-    }
-
-    const values = Array.from(sel.options).map((opt) => opt.value);
-    if (values.includes(previous)) {
-      sel.value = previous;
-    } else if (values.includes(defaultSymbol)) {
-      sel.value = defaultSymbol;
+      opt.label = name === symbol ? symbol : symbol + " - " + name;
+      list.appendChild(opt);
     }
   }
 
   function renderSwapTokenSelectors() {
-    renderSwapTokenOptions("swapFromToken", "SOL");
-    renderSwapTokenOptions("swapToToken", "USDC");
+    renderSwapTokenChoices();
+    if (!$("swapFromToken").value) $("swapFromToken").value = "SOL";
+    if (!$("swapToToken").value) $("swapToToken").value = "USDC";
+  }
+
+  function tokenSourceLabel(token) {
+    const source = String(token?.source || token?.resolver_source || "").toLowerCase();
+    const decimalsSource = String(token?.decimals_source || "").toLowerCase();
+
+    if (source === "registry") return "Registry";
+    if (source.includes("dexscreener") && decimalsSource.includes("solana")) {
+      return "DexScreener + Solana RPC";
+    }
+    if (source.includes("dexscreener")) return "DexScreener";
+    if (decimalsSource.includes("solana")) return "Solana RPC";
+    return token?.source || "external lookup";
+  }
+
+  function setTokenResolvePreview(side, token, message, kind = "muted") {
+    const id = side === "from" ? "swapFromTokenPreview" : "swapToTokenPreview";
+    const box = $(id);
+    if (!box) return;
+
+    box.className = kind === "err" ? "muted err" : "muted";
+
+    if (!token) {
+      box.textContent = message || "";
+      swapTokenResolveState[side] = null;
+      return;
+    }
+
+    const symbol = token.symbol || "Unknown";
+    const name = token.display_name || token.name || symbol;
+    const mint = token.mint ? shortenMiddle(String(token.mint), 6, 6) : "unknown";
+    const decimals = Number.isInteger(token.decimals) ? String(token.decimals) : "unresolved";
+    const source = tokenSourceLabel(token);
+    const external = token.source !== "registry" || token.verified === false;
+
+    if (!Number.isInteger(token.decimals)) {
+      box.textContent = "Token metadata found, but decimals are unresolved. Quote preview is not safe yet.";
+    } else if (external) {
+      box.textContent =
+        `External token: ${symbol} / ${name} · Mint: ${mint} · Decimals: ${decimals} · Source: ${source} · Warning: External/unverified token metadata`;
+    } else {
+      box.textContent = `Known token: ${symbol} / ${name} · Decimals: ${decimals} · Source: ${source}`;
+    }
+
+    swapTokenResolveState[side] = token;
+  }
+
+  function renderTokenResolveFailure(side, data) {
+    const code = data?.code || data?.error?.code || data?.detail?.code || "";
+    const detail = data?.detail || data?.message || data?.error?.message || "";
+
+    if (String(code).includes("DECIMALS") || String(detail).toLowerCase().includes("decimals")) {
+      setTokenResolvePreview(
+        side,
+        null,
+        "Token metadata found, but decimals are unresolved. Quote preview is not safe yet.",
+        "err"
+      );
+      return;
+    }
+
+    setTokenResolvePreview(side, null, "Could not resolve token metadata.", "err");
+  }
+
+  async function resolveSwapTokenInput(side) {
+    const value = tokenInputValue(side);
+    if (!value) {
+      setTokenResolvePreview(side, null, "");
+      return;
+    }
+
+    const id = side === "from" ? "swapFromTokenPreview" : "swapToTokenPreview";
+    const box = $(id);
+    if (box) box.textContent = "Resolving token metadata...";
+
+    let res;
+    try {
+      res = await fetchMaybeJson("/tokens/resolve?" + qs({
+        query: value,
+        allow_external: true
+      }));
+    } catch (err) {
+      setTokenResolvePreview(side, null, "Could not resolve token metadata.", "err");
+      return;
+    }
+
+    if (!res.ok || !res.data?.ok || !res.data?.token) {
+      renderTokenResolveFailure(side, res.data || {});
+      return;
+    }
+
+    setTokenResolvePreview(side, res.data.token);
+  }
+
+  function scheduleSwapTokenResolve(side) {
+    clearTimeout(swapTokenResolveTimers[side]);
+    const value = tokenInputValue(side);
+    if (!value) {
+      setTokenResolvePreview(side, null, "");
+      updateLiveSwapBaseline();
+      return;
+    }
+
+    swapTokenResolveTimers[side] = setTimeout(() => {
+      resolveSwapTokenInput(side);
+      updateLiveSwapBaseline();
+    }, 450);
   }
 
   async function loadSwapTokens() {
@@ -2452,14 +2619,24 @@ function fmtUsdCost(x) {
   $("btnPreviewSwap").addEventListener("click", previewSwap);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
   $("swapAmount").addEventListener("input", updateLiveSwapBaseline);
-  $("swapFromToken").addEventListener("change", updateLiveSwapBaseline);
-  $("swapToToken").addEventListener("change", updateLiveSwapBaseline);
+  $("swapFromToken").addEventListener("input", () => scheduleSwapTokenResolve("from"));
+  $("swapToToken").addEventListener("input", () => scheduleSwapTokenResolve("to"));
+  $("swapFromToken").addEventListener("change", () => {
+    resolveSwapTokenInput("from");
+    updateLiveSwapBaseline();
+  });
+  $("swapToToken").addEventListener("change", () => {
+    resolveSwapTokenInput("to");
+    updateLiveSwapBaseline();
+  });
 
   // init
   (async () => {
     resetSendStateUi();
     renderActivityLog();
     await loadSwapTokens();
+    resolveSwapTokenInput("from");
+    resolveSwapTokenInput("to");
     await loadAccounts();
     await loadReportAndHistory();
     await connectPhantom(true);
