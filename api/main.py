@@ -1540,6 +1540,7 @@ def _build_pumpswap_quote_payload(
     mint_pair = {input_mint, output_mint}
     supported_pair = mint_pair == {PUMPSWAP_SOL_MINT, PUMPSWAP_DOCS_TOKEN_MINT}
     pool_candidates = [dict(PUMPSWAP_DOCS_POOL_CANDIDATE)] if supported_pair else []
+    is_sol_pair = input_mint == PUMPSWAP_SOL_MINT or output_mint == PUMPSWAP_SOL_MINT
 
     payload = {
         "rpc_url": rpc_url or os.getenv("SOLANA_RPC_URL") or "https://api.mainnet-beta.solana.com",
@@ -1551,10 +1552,13 @@ def _build_pumpswap_quote_payload(
         "pool_candidates": pool_candidates,
     }
 
-    if not supported_pair:
+    if not supported_pair and is_sol_pair:
+        payload["discover_canonical_pool"] = True
+        payload["discovery_mode"] = "canonical_pumpswap_pool"
+    elif not supported_pair:
         payload["unsupported_pair"] = True
         payload["unsupported_pair_detail"] = (
-            "PumpSwap quote helper currently supports SOL <-> FIGURE docs-token pool only."
+            "PumpSwap external discovery currently supports SOL <-> token canonical pools only."
         )
 
     if not user_public_key:
@@ -1666,17 +1670,6 @@ def _build_phantom_quote_payload(
         "slippage_bps": int(slippage_bps),
         "taker_address": user_public_key,
     }
-
-    default_enabled_mints = {
-        (meta.get("mint") or "").strip()
-        for meta in TOKEN_META.values()
-        if meta.get("default_enabled") and (meta.get("mint") or "").strip()
-    }
-    if input_mint not in default_enabled_mints or output_mint not in default_enabled_mints:
-        payload["unsupported_pair"] = True
-        payload["unsupported_pair_detail"] = (
-            "Phantom quote research helper currently supports default-enabled registry token pairs only."
-        )
 
     if not user_public_key:
         payload["skip_reason"] = "wallet_public_key_required_for_phantom_quote"

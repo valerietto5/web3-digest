@@ -52,7 +52,9 @@ from tools.token_promotion_audit import (
     classify_promotion,
     is_rate_limited_error,
     print_text_report as print_token_promotion_text_report,
+    provider_diagnostics as token_promotion_provider_diagnostics,
     standard_pairs_for_mint,
+    visible_live_surfaces as token_promotion_visible_live_surfaces,
 )
 
 from db import (
@@ -521,7 +523,7 @@ class TestSanity(unittest.TestCase):
             "price_usd": 0.2,
         }
 
-        def quote_response(from_token, to_token, amount, network="solana"):
+        def quote_response(from_token, to_token, amount, network="solana", user_public_key=None):
             return {
                 "from_token": "SOL" if from_token == "SOL" else ("USDC" if from_token == "USDC" else "JUP"),
                 "to_token": "SOL" if to_token == "SOL" else ("USDC" if to_token == "USDC" else "JUP"),
@@ -569,6 +571,53 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(quote.call_count, 4)
         sleep.assert_not_called()
         self.assertEqual(before_mints, {meta.get("mint") for meta in TOKEN_META.values()})
+
+    def test_token_promotion_audit_counts_phantom_and_pumpswap_visible_success(self):
+        response = {
+            "recommended_option": {"quote_status": "live", "execution_surface_label": "Jupiter"},
+            "direct_route_check": {"quote_status": "live", "execution_surface_label": "PumpSwap"},
+            "recommended_executable_option": None,
+            "other_options": [
+                {"quote_status": "live", "execution_surface_label": "Phantom"},
+                {"quote_status": "live", "execution_surface_label": "Jupiter"},
+            ],
+            "debug": {"variant_errors": []},
+        }
+
+        surfaces = token_promotion_visible_live_surfaces(response)
+        diagnostics = token_promotion_provider_diagnostics(response, surfaces)
+        by_universe = {item["universe"]: item for item in diagnostics}
+
+        self.assertEqual(surfaces, ["Jupiter", "PumpSwap", "Phantom"])
+        self.assertEqual(by_universe["Phantom"]["status"], "success")
+        self.assertEqual(by_universe["PumpSwap"]["status"], "success")
+
+    def test_token_promotion_audit_classifies_no_pumpswap_pool(self):
+        response = {
+            "recommended_option": {"quote_status": "live", "execution_surface_label": "Jupiter"},
+            "direct_route_check": None,
+            "recommended_executable_option": None,
+            "other_options": [],
+            "debug": {
+                "variant_errors": [
+                    {
+                        "variant_id": "pumpswap_quote",
+                        "status_code": 502,
+                        "code": "NO_PUMPSWAP_POOL",
+                        "detail": "No canonical PumpSwap pool was found for this token mint.",
+                    }
+                ]
+            },
+        }
+
+        diagnostics = token_promotion_provider_diagnostics(
+            response,
+            token_promotion_visible_live_surfaces(response),
+        )
+        pumpswap = next(item for item in diagnostics if item["universe"] == "PumpSwap")
+
+        self.assertEqual(pumpswap["status"], "no_pumpswap_pool")
+        self.assertEqual(pumpswap["fail_code"], "NO_PUMPSWAP_POOL")
 
     def test_token_promotion_json_and_text_output_do_not_crash(self):
         report = {
@@ -1740,7 +1789,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["pool_candidates"][0]["quote_mint"], METEORA_DLMM_SOL_MINT)
         self.assertNotIn("unsupported_pair", payload)
 
-    def test_build_pumpswap_quote_payload_keeps_sol_wif_fail_soft(self):
+    def test_build_pumpswap_quote_payload_enables_sol_pair_canonical_discovery(self):
         payload = _build_pumpswap_quote_payload(
             input_mint=METEORA_DLMM_SOL_MINT,
             output_mint="EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
@@ -1751,10 +1800,11 @@ class TestSanity(unittest.TestCase):
         )
 
         self.assertEqual(payload["pool_candidates"], [])
-        self.assertTrue(payload["unsupported_pair"])
-        self.assertIn("FIGURE docs-token pool only", payload["unsupported_pair_detail"])
+        self.assertTrue(payload["discover_canonical_pool"])
+        self.assertEqual(payload["discovery_mode"], "canonical_pumpswap_pool")
+        self.assertNotIn("unsupported_pair", payload)
 
-    def test_build_pumpswap_quote_payload_keeps_new_memes_fail_soft(self):
+    def test_build_pumpswap_quote_payload_enables_new_meme_sol_pair_discovery(self):
         for mint in [
             "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
             "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump",
@@ -1770,11 +1820,26 @@ class TestSanity(unittest.TestCase):
             )
 
             self.assertEqual(payload["pool_candidates"], [])
-            self.assertTrue(payload["unsupported_pair"])
+            self.assertTrue(payload["discover_canonical_pool"])
+            self.assertNotIn("unsupported_pair", payload)
+
+    def test_build_pumpswap_quote_payload_keeps_usdc_external_pair_unsupported(self):
+        payload = _build_pumpswap_quote_payload(
+            input_mint=METEORA_DLMM_USDC_MINT,
+            output_mint="9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+            amount_raw=1000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertEqual(payload["pool_candidates"], [])
+        self.assertTrue(payload["unsupported_pair"])
+        self.assertIn("SOL <-> token canonical pools only", payload["unsupported_pair_detail"])
 
     def test_try_fetch_pumpswap_quote_handles_unsupported_pair_without_fake_card(self):
         payload = _build_pumpswap_quote_payload(
-            input_mint=METEORA_DLMM_SOL_MINT,
+            input_mint=METEORA_DLMM_USDC_MINT,
             output_mint=METEORA_DLMM_BONK_MINT,
             amount_raw=1000000000,
             user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
@@ -1938,6 +2003,46 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["buy_token_mint"], METEORA_DLMM_SOL_MINT)
         self.assertNotIn("unsupported_pair", payload)
         self.assertNotIn("skip_reason", payload)
+
+    def test_build_phantom_quote_payload_supports_external_mints(self):
+        external_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+        payload = _build_phantom_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=external_mint,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertTrue(payload["sell_token_is_native"])
+        self.assertEqual(payload["buy_token_mint"], external_mint)
+        self.assertNotIn("unsupported_pair", payload)
+
+        reverse_payload = _build_phantom_quote_payload(
+            input_mint=external_mint,
+            output_mint=METEORA_DLMM_SOL_MINT,
+            amount_raw=1000000,
+            slippage_bps=50,
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertFalse(reverse_payload["sell_token_is_native"])
+        self.assertEqual(reverse_payload["sell_token_mint"], external_mint)
+        self.assertTrue(reverse_payload["buy_token_is_native"])
+        self.assertNotIn("unsupported_pair", reverse_payload)
+
+        usdc_payload = _build_phantom_quote_payload(
+            input_mint=METEORA_DLMM_USDC_MINT,
+            output_mint=external_mint,
+            amount_raw=1000000,
+            slippage_bps=50,
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertFalse(usdc_payload["sell_token_is_native"])
+        self.assertFalse(usdc_payload["buy_token_is_native"])
+        self.assertEqual(usdc_payload["buy_token_mint"], external_mint)
+        self.assertNotIn("unsupported_pair", usdc_payload)
 
     def test_fetch_phantom_quote_uses_subprocess_json_contract(self):
         helper_output = {

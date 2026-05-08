@@ -5,6 +5,7 @@ import {
   OnlinePumpAmmSdk,
   buyQuoteInput,
   sellBaseInput,
+  canonicalPumpPoolPda,
 } from "@pump-fun/pump-swap-sdk";
 import BN from "bn.js";
 
@@ -135,6 +136,17 @@ function directionForCandidate(request, candidate) {
   return null;
 }
 
+function discoverableCanonicalMint(request) {
+  const solMint = "So11111111111111111111111111111111111111112";
+  if (request.input_mint === solMint && request.output_mint !== solMint) {
+    return request.output_mint;
+  }
+  if (request.output_mint === solMint && request.input_mint !== solMint) {
+    return request.input_mint;
+  }
+  return null;
+}
+
 function validateRequest(request) {
   if (request === null || typeof request !== "object" || Array.isArray(request)) {
     return structuredError("INVALID_REQUEST", "Quote request must be a JSON object.");
@@ -166,6 +178,19 @@ function validateRequest(request) {
   }
 
   if (request.pool_candidates.length === 0) {
+    if (request.discover_canonical_pool === true && discoverableCanonicalMint(request)) {
+      return {
+        ok: true,
+        value: {
+          request,
+          amountRaw: amount.value,
+          slippageBps: slippage.value,
+          match: null,
+          discoverCanonicalMint: discoverableCanonicalMint(request),
+        },
+      };
+    }
+
     return structuredError("NO_POOL_CANDIDATES", "pool_candidates must contain at least one explicit PumpSwap pool candidate.");
   }
 
@@ -229,10 +254,47 @@ function assertOnchainPoolMatchesCandidate(swapState, candidate) {
 }
 
 async function quotePumpSwap(validated) {
-  const { request, amountRaw, slippageBps, match } = validated;
-  const { candidate, index, direction } = match;
+  const { request, amountRaw, slippageBps } = validated;
   const connection = new Connection(request.rpc_url);
   const sdk = new OnlinePumpAmmSdk(connection);
+  let match = validated.match;
+
+  if (!match && validated.discoverCanonicalMint) {
+    const baseMint = new PublicKey(validated.discoverCanonicalMint);
+    const poolKey = canonicalPumpPoolPda(baseMint);
+    try {
+      const pool = await sdk.fetchPool(poolKey);
+      match = {
+        candidate: {
+          address: poolKey.toString(),
+          name: "canonical-pumpswap-pool",
+          base_mint: pool.baseMint.toString(),
+          quote_mint: pool.quoteMint.toString(),
+          discovery_mode: "canonical_pumpswap_pool",
+        },
+        index: 0,
+        direction: directionForCandidate(request, {
+          base_mint: pool.baseMint.toString(),
+          quote_mint: pool.quoteMint.toString(),
+        }),
+      };
+    } catch (err) {
+      return structuredError("NO_PUMPSWAP_POOL", "No canonical PumpSwap pool was found for this token mint.", {
+        mint: validated.discoverCanonicalMint,
+        discovery_mode: "canonical_pumpswap_pool",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (!match || !match.direction) {
+    return structuredError("NO_PUMPSWAP_POOL", "No PumpSwap pool matches the requested pair.", {
+      input_mint: request.input_mint,
+      output_mint: request.output_mint,
+    });
+  }
+
+  const { candidate, index, direction } = match;
   const poolKey = new PublicKey(candidate.address);
   const user = new PublicKey(request.user_public_key);
   const swapState = await sdk.swapSolanaState(poolKey, user);

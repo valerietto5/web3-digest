@@ -27,6 +27,7 @@ from providers.token_resolver import resolve_token  # noqa: E402
 
 
 UNIVERSES = ["Jupiter", "Raydium", "Meteora", "Orca", "Phoenix", "Phantom", "PumpSwap"]
+DEFAULT_USER_PUBLIC_KEY = "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL"
 STANDARD_PAIR_TEMPLATES = [
     ("SOL", "TOKEN"),
     ("TOKEN", "SOL"),
@@ -122,6 +123,8 @@ def _failure_kind(universe: str, error: dict | None) -> str:
 
     if status_code == 429 or "too many requests" in text or "rate limit" in text:
         return "rate_limited"
+    if code == "NO_PUMPSWAP_POOL":
+        return "no_pumpswap_pool"
     if code in {"NO_DISCOVERED_POOL", "NO_USABLE_DISCOVERED_POOL"}:
         return "expected_no_usable_pool"
     if "unsupported" in text or status_code == 400 and universe in {"Phoenix", "Phantom", "PumpSwap"}:
@@ -167,12 +170,26 @@ def standard_pairs_for_mint(mint: str) -> list[tuple[str, str, str]]:
     return pairs
 
 
-def audit_pair(from_token: str, to_token: str, label: str, *, amount: float, request_delay: float) -> dict:
+def audit_pair(
+    from_token: str,
+    to_token: str,
+    label: str,
+    *,
+    amount: float,
+    request_delay: float,
+    user_public_key: str | None,
+) -> dict:
     attempts = 0
     while True:
         attempts += 1
         try:
-            response = swap_quote(from_token=from_token, to_token=to_token, amount=amount, network="solana")
+            response = swap_quote(
+                from_token=from_token,
+                to_token=to_token,
+                amount=amount,
+                network="solana",
+                user_public_key=user_public_key,
+            )
             surfaces = visible_live_surfaces(response)
             diagnostics = provider_diagnostics(response, surfaces)
             return {
@@ -271,7 +288,13 @@ def classify_promotion(token: dict, pairs: list[dict]) -> tuple[str, str, list[s
     return "promote_candidate", "Token has enough route coverage for curated-registry consideration.", []
 
 
-def audit_mint(mint: str, *, amount: float, request_delay: float) -> dict:
+def audit_mint(
+    mint: str,
+    *,
+    amount: float,
+    request_delay: float,
+    user_public_key: str | None = DEFAULT_USER_PUBLIC_KEY,
+) -> dict:
     resolved = resolve_token(mint, allow_external=True)
     if resolved.get("ok") is not True:
         return {
@@ -304,6 +327,7 @@ def audit_mint(mint: str, *, amount: float, request_delay: float) -> dict:
                 label,
                 amount=amount,
                 request_delay=request_delay,
+                user_public_key=user_public_key,
             )
         )
         if request_delay > 0 and index < 3:
@@ -320,10 +344,23 @@ def audit_mint(mint: str, *, amount: float, request_delay: float) -> dict:
     }
 
 
-def audit_mints(mints: list[str], *, amount: float, request_delay: float) -> dict:
+def audit_mints(
+    mints: list[str],
+    *,
+    amount: float,
+    request_delay: float,
+    user_public_key: str | None = DEFAULT_USER_PUBLIC_KEY,
+) -> dict:
     reports = []
     for index, mint in enumerate(mints):
-        reports.append(audit_mint(mint, amount=amount, request_delay=request_delay))
+        reports.append(
+            audit_mint(
+                mint,
+                amount=amount,
+                request_delay=request_delay,
+                user_public_key=user_public_key,
+            )
+        )
         if request_delay > 0 and index < len(mints) - 1:
             time.sleep(request_delay)
     return {
@@ -380,6 +417,11 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--mints", nargs="+", help="One or more Solana token mints to audit.")
     parser.add_argument("--request-delay", type=float, default=3.0, help="Seconds between quote requests. Default: 3.")
     parser.add_argument("--amount", type=float, default=1.0, help="Amount to use for each standard pair. Default: 1.")
+    parser.add_argument(
+        "--user-public-key",
+        default=DEFAULT_USER_PUBLIC_KEY,
+        help="Wallet public key used for wallet-routing quote previews. Default: deterministic audit wallet.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     return parser.parse_args()
 
@@ -387,7 +429,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     mints = [args.mint] if args.mint else args.mints
-    result = audit_mints(mints, amount=args.amount, request_delay=args.request_delay)
+    result = audit_mints(
+        mints,
+        amount=args.amount,
+        request_delay=args.request_delay,
+        user_public_key=args.user_public_key,
+    )
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
