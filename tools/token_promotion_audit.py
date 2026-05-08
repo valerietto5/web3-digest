@@ -59,6 +59,24 @@ def classify_pair_coverage(success_count: int) -> str:
     return "weak"
 
 
+def dedupe_reasons(reasons: list[str]) -> list[str]:
+    normalized = []
+    seen = set()
+    for reason in reasons:
+        key = str(reason or "").strip()
+        if not key:
+            continue
+        if key.startswith("warning:"):
+            warning_key = key.removeprefix("warning:")
+            if warning_key in seen:
+                continue
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(key)
+    return normalized
+
+
 def _safe_float(value: Any) -> float | None:
     try:
         if value in (None, ""):
@@ -281,9 +299,10 @@ def classify_promotion(token: dict, pairs: list[dict]) -> tuple[str, str, list[s
         reasons.append("low_liquidity")
     if warnings:
         reasons.extend([f"warning:{warning}" for warning in warnings])
+    reasons = dedupe_reasons(reasons)
 
     if reasons:
-        return "manual_review", "Route coverage is good, but metadata or liquidity needs human review.", reasons
+        return "manual_review", "Strong route coverage; review metadata before registry promotion.", reasons
 
     return "promote_candidate", "Token has enough route coverage for curated-registry consideration.", []
 
@@ -402,6 +421,25 @@ def print_text_report(result: dict) -> None:
                     f"{pair.get('classification', '').ljust(6)} | "
                     f"{surfaces}"
                 )
+
+            diagnostics = []
+            for pair in pairs:
+                for universe in pair.get("universes") or []:
+                    if universe.get("status") == "success":
+                        continue
+                    diagnostics.append((pair.get("pair"), universe))
+
+            if diagnostics:
+                print("\nUniverse diagnostics")
+                for pair_name, universe in diagnostics:
+                    bits = [
+                        f"{pair_name} {universe.get('universe')}: {universe.get('status')}",
+                    ]
+                    if universe.get("fail_code"):
+                        bits.append(str(universe.get("fail_code")))
+                    if universe.get("fail_reason"):
+                        bits.append(str(universe.get("fail_reason")))
+                    print("  - " + " - ".join(bits))
 
         print(f"\nPromotion score: {report.get('promotion_status')}")
         print(f"Recommendation: {report.get('recommendation')}")

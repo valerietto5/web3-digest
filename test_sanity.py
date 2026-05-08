@@ -50,6 +50,7 @@ from tools.token_promotion_audit import (
     audit_mint as audit_promotion_mint,
     classify_pair_coverage as classify_promotion_pair_coverage,
     classify_promotion,
+    dedupe_reasons as dedupe_token_promotion_reasons,
     is_rate_limited_error,
     print_text_report as print_token_promotion_text_report,
     provider_diagnostics as token_promotion_provider_diagnostics,
@@ -503,6 +504,37 @@ class TestSanity(unittest.TestCase):
         self.assertIn("decimals", recommendation)
         self.assertIn("missing_decimals", reasons)
 
+    def test_token_promotion_dedupes_warning_reasons(self):
+        reasons = dedupe_token_promotion_reasons([
+            "external_metadata_unverified",
+            "warning:external_metadata_unverified",
+            "low_liquidity",
+            "low_liquidity",
+        ])
+
+        self.assertEqual(reasons, ["external_metadata_unverified", "low_liquidity"])
+
+    def test_token_promotion_manual_review_wording_is_clear(self):
+        token = {
+            "symbol": "TEST",
+            "display_name": "Test Token",
+            "mint": "mint",
+            "decimals": 6,
+            "verified": False,
+            "warnings": ["external_metadata_unverified"],
+            "liquidity_usd": 1000000,
+        }
+        pairs = [
+            {"pair": "SOL->TOKEN", "classification": "strong", "success_count": 4},
+            {"pair": "TOKEN->SOL", "classification": "good", "success_count": 3},
+        ]
+
+        status, recommendation, reasons = classify_promotion(token, pairs)
+
+        self.assertEqual(status, "manual_review")
+        self.assertEqual(recommendation, "Strong route coverage; review metadata before registry promotion.")
+        self.assertEqual(reasons, ["external_metadata_unverified"])
+
     def test_token_promotion_detects_rate_limits(self):
         exc = Exception('Jupiter HTTP error: {"code":429,"message":"Too many requests"}')
 
@@ -642,6 +674,15 @@ class TestSanity(unittest.TestCase):
                             "success_count": 4,
                             "classification": "strong",
                             "live_surfaces": ["Jupiter", "Orca"],
+                            "universes": [
+                                {"universe": "Jupiter", "status": "success"},
+                                {
+                                    "universe": "PumpSwap",
+                                    "status": "no_pumpswap_pool",
+                                    "fail_code": "NO_PUMPSWAP_POOL",
+                                    "fail_reason": "No canonical PumpSwap pool was found.",
+                                },
+                            ],
                         }
                     ],
                     "promotion_status": "promote_candidate",
@@ -657,6 +698,9 @@ class TestSanity(unittest.TestCase):
             print_token_promotion_text_report(report)
 
         self.assertGreater(printer.call_count, 0)
+        printed = "\n".join(str(call.args[0]) for call in printer.call_args_list if call.args)
+        self.assertIn("Universe diagnostics", printed)
+        self.assertIn("PumpSwap: no_pumpswap_pool", printed)
 
     def test_swap_quote_accepts_external_mint_as_to_token_with_mocked_quotes(self):
         ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
