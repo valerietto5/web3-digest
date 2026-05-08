@@ -46,6 +46,14 @@ from api.main import (
 from api.ui_page import build_ui_html
 from providers.token_resolver import resolve_token
 from providers.solana_token_metadata import fetch_solana_mint_decimals
+from tools.token_promotion_audit import (
+    audit_mint as audit_promotion_mint,
+    classify_pair_coverage as classify_promotion_pair_coverage,
+    classify_promotion,
+    is_rate_limited_error,
+    print_text_report as print_token_promotion_text_report,
+    standard_pairs_for_mint,
+)
 
 from db import (
     init_db,
@@ -434,6 +442,172 @@ class TestSanity(unittest.TestCase):
 
         self.assertTrue(meta["external"])
         self.assertEqual(meta["resolution_error"]["code"], "TOKEN_METADATA_NOT_FOUND")
+
+    def test_token_promotion_audit_builds_standard_pairs_for_mint(self):
+        mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+
+        pairs = standard_pairs_for_mint(mint)
+
+        self.assertEqual(
+            pairs,
+            [
+                ("SOL", mint, "SOL->TOKEN"),
+                (mint, "SOL", "TOKEN->SOL"),
+                ("USDC", mint, "USDC->TOKEN"),
+                (mint, "USDC", "TOKEN->USDC"),
+            ],
+        )
+
+    def test_token_promotion_pair_classification(self):
+        self.assertEqual(classify_promotion_pair_coverage(4), "strong")
+        self.assertEqual(classify_promotion_pair_coverage(3), "good")
+        self.assertEqual(classify_promotion_pair_coverage(2), "thin")
+        self.assertEqual(classify_promotion_pair_coverage(1), "weak")
+
+    def test_token_promotion_recommends_candidate_for_strong_verified_coverage(self):
+        token = {
+            "symbol": "TEST",
+            "display_name": "Test Token",
+            "mint": "mint",
+            "decimals": 6,
+            "verified": True,
+            "warnings": [],
+            "liquidity_usd": 1000000,
+        }
+        pairs = [
+            {"pair": "SOL->TOKEN", "classification": "strong", "success_count": 4},
+            {"pair": "TOKEN->SOL", "classification": "good", "success_count": 3},
+            {"pair": "USDC->TOKEN", "classification": "thin", "success_count": 2},
+            {"pair": "TOKEN->USDC", "classification": "weak", "success_count": 1},
+        ]
+
+        status, recommendation, reasons = classify_promotion(token, pairs)
+
+        self.assertEqual(status, "promote_candidate")
+        self.assertIn("curated-registry", recommendation)
+        self.assertEqual(reasons, [])
+
+    def test_token_promotion_rejects_missing_decimals(self):
+        token = {
+            "symbol": "TEST",
+            "display_name": "Test Token",
+            "mint": "mint",
+            "decimals": None,
+        }
+
+        status, recommendation, reasons = classify_promotion(token, [])
+
+        self.assertEqual(status, "do_not_promote_yet")
+        self.assertIn("decimals", recommendation)
+        self.assertIn("missing_decimals", reasons)
+
+    def test_token_promotion_detects_rate_limits(self):
+        exc = Exception('Jupiter HTTP error: {"code":429,"message":"Too many requests"}')
+
+        self.assertTrue(is_rate_limited_error(exc))
+
+    def test_token_promotion_audit_resolves_mocked_external_mint_without_mutating_registry(self):
+        mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+        before_mints = {meta.get("mint") for meta in TOKEN_META.values()}
+        token = {
+            "source": "dexscreener",
+            "symbol": "JUP",
+            "display_name": "Jupiter",
+            "mint": mint,
+            "decimals": 6,
+            "verified": True,
+            "warnings": [],
+            "liquidity_usd": 1000000,
+            "price_usd": 0.2,
+        }
+
+        def quote_response(from_token, to_token, amount, network="solana"):
+            return {
+                "from_token": "SOL" if from_token == "SOL" else ("USDC" if from_token == "USDC" else "JUP"),
+                "to_token": "SOL" if to_token == "SOL" else ("USDC" if to_token == "USDC" else "JUP"),
+                "recommended_option": {
+                    "quote_status": "live",
+                    "execution_surface_label": "Jupiter",
+                    "estimated_output": 1.0,
+                    "estimated_output_usd": 1.0,
+                },
+                "direct_route_check": {
+                    "quote_status": "live",
+                    "execution_surface_label": "Orca",
+                },
+                "recommended_executable_option": None,
+                "other_options": [
+                    {"quote_status": "live", "execution_surface_label": "Raydium"},
+                    {"quote_status": "live", "execution_surface_label": "Meteora"},
+                ],
+                "debug": {
+                    "variant_errors": [
+                        {"variant_id": "phantom_quote", "status_code": 400, "detail": "unsupported pair"},
+                        {"variant_id": "pumpswap_quote", "status_code": 400, "detail": "curated pool only"},
+                    ]
+                },
+            }
+
+        with (
+            patch("tools.token_promotion_audit.resolve_token", return_value={"ok": True, "token": token}) as resolver,
+            patch("tools.token_promotion_audit.swap_quote", side_effect=quote_response) as quote,
+            patch("tools.token_promotion_audit.time.sleep") as sleep,
+        ):
+            report = audit_promotion_mint(mint, amount=1.0, request_delay=0)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["token"]["symbol"], "JUP")
+        self.assertEqual([pair["pair"] for pair in report["pairs"]], [
+            "SOL->TOKEN",
+            "TOKEN->SOL",
+            "USDC->TOKEN",
+            "TOKEN->USDC",
+        ])
+        self.assertEqual(report["pairs"][0]["classification"], "strong")
+        self.assertEqual(report["promotion_status"], "promote_candidate")
+        resolver.assert_called_once_with(mint, allow_external=True)
+        self.assertEqual(quote.call_count, 4)
+        sleep.assert_not_called()
+        self.assertEqual(before_mints, {meta.get("mint") for meta in TOKEN_META.values()})
+
+    def test_token_promotion_json_and_text_output_do_not_crash(self):
+        report = {
+            "ok": True,
+            "universes": ["Jupiter"],
+            "reports": [
+                {
+                    "ok": True,
+                    "token": {
+                        "symbol": "JUP",
+                        "display_name": "Jupiter",
+                        "mint": "mint",
+                        "decimals": 6,
+                        "source": "dexscreener",
+                        "liquidity_usd": 1000000,
+                        "price_usd": 0.2,
+                        "warnings": [],
+                    },
+                    "pairs": [
+                        {
+                            "pair": "SOL->TOKEN",
+                            "success_count": 4,
+                            "classification": "strong",
+                            "live_surfaces": ["Jupiter", "Orca"],
+                        }
+                    ],
+                    "promotion_status": "promote_candidate",
+                    "recommendation": "ok",
+                    "promotion_reasons": [],
+                }
+            ],
+        }
+
+        encoded = json.dumps(report)
+        self.assertIn("JUP", encoded)
+        with patch("builtins.print") as printer:
+            print_token_promotion_text_report(report)
+
+        self.assertGreater(printer.call_count, 0)
 
     def test_swap_quote_accepts_external_mint_as_to_token_with_mocked_quotes(self):
         ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
