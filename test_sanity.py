@@ -1255,40 +1255,35 @@ class TestSanity(unittest.TestCase):
         self.assertIn(" · unverified", html)
         self.assertIn("renderSwapExternalTokenNotice(quote);", html)
 
-    def test_swap_ui_includes_token_intelligence_panel(self):
+    def test_swap_ui_omits_token_intelligence_panel(self):
         html = build_ui_html()
 
-        self.assertIn('id="btnTokenIntelligence"', html)
-        self.assertIn("Run token intelligence", html)
-        self.assertIn('id="tokenIntelligenceCard"', html)
-        self.assertIn('id="tokenIntelligenceBox"', html)
-        self.assertIn("function runTokenIntelligence()", html)
-        self.assertIn('fetchMaybeJson("/tokens/promotion-audit?" + qs({', html)
-        self.assertIn("request_delay: 1.5", html)
-        self.assertIn("Running token coverage audit...", html)
+        self.assertNotIn('id="btnTokenIntelligence"', html)
+        self.assertNotIn("Run token intelligence", html)
+        self.assertNotIn('id="tokenIntelligenceCard"', html)
+        self.assertNotIn('id="tokenIntelligenceBox"', html)
+        self.assertNotIn("function runTokenIntelligence()", html)
+        self.assertNotIn('fetchMaybeJson("/tokens/promotion-audit?" + qs({', html)
 
-    def test_swap_ui_renders_token_intelligence_summary(self):
-        html = build_ui_html()
+    def test_token_promotion_audit_endpoint_remains_backend_tooling(self):
+        report = {
+            "ok": True,
+            "token": {"symbol": "JUP", "mint": "mint", "decimals": 6},
+            "pairs": [
+                {
+                    "classification": "strong",
+                    "universes": [{"universe": "Phantom", "status": "success"}],
+                }
+            ],
+            "promotion_status": "manual_review",
+            "recommendation": "Strong route coverage; review metadata before registry promotion.",
+        }
 
-        self.assertIn("function renderTokenIntelligence(report)", html)
-        self.assertIn("Coverage: ${escapeHtml(summary.coverage_label", html)
-        self.assertIn("Promotion status:", html)
-        self.assertIn("Recommendation:", html)
-        self.assertIn("Live universes:", html)
-        self.assertIn("Phantom: ${escapeHtml(phantomStatusFromAudit(report))}", html)
-        self.assertIn("PumpSwap: ${escapeHtml(pumpswapStatusFromAudit(report))}", html)
-        self.assertIn("SOL -> token", html)
-        self.assertIn("token -> SOL", html)
-        self.assertIn("USDC -> token", html)
-        self.assertIn("token -> USDC", html)
-        self.assertIn("Warnings:", html)
+        with patch("tools.token_promotion_audit.audit_mint", return_value=report):
+            response = token_promotion_audit(mint="mint", amount=1.0, request_delay=1.5)
 
-    def test_swap_ui_token_intelligence_is_manual_only(self):
-        html = build_ui_html()
-
-        self.assertIn('$("btnTokenIntelligence").addEventListener("click", runTokenIntelligence);', html)
-        self.assertNotIn('addEventListener("input", runTokenIntelligence)', html)
-        self.assertNotIn('scheduleSwapTokenResolve("from");\\n    runTokenIntelligence', html)
+        self.assertTrue(response["ok"])
+        self.assertIn("promotion_summary", response)
 
     def test_swap_ui_preserves_curated_token_choice_behavior(self):
         html = build_ui_html()
