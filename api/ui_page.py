@@ -182,7 +182,13 @@ def build_ui_html() -> str:
 
     <div class="row" style="margin-top: 10px;">
       <button id="btnPreviewSwap" type="button" class="secondary">Preview Quote</button>
+      <button id="btnTokenIntelligence" type="button" class="secondary" style="display:none;">Run token intelligence</button>
       <button id="btnClearSwap" class="secondary">Clear</button>
+    </div>
+
+    <div class="card" id="tokenIntelligenceCard" style="display:none; margin-top:10px;">
+      <div><strong>Token intelligence</strong></div>
+      <div class="muted" id="tokenIntelligenceBox" style="margin-top:6px;">No token audit yet.</div>
     </div>
 
     <div class="row" id="swapInlineBaselineRow" style="margin-top: 6px;">
@@ -388,6 +394,7 @@ function clearSwapUi() {
   $("swapStatus").style.display = "none";
   setTokenResolvePreview("from", null, "");
   setTokenResolvePreview("to", null, "");
+  resetTokenIntelligence();
   setSwapPhase("Draft", "Ready to request a swap quote.");
   resetSwapQuoteDisplay();
   resetSwapInlineBaseline();
@@ -2127,6 +2134,7 @@ function qs(params) {
     if (!token) {
       box.textContent = message || "";
       swapTokenResolveState[side] = null;
+      refreshTokenIntelligenceButton();
       return;
     }
 
@@ -2147,6 +2155,127 @@ function qs(params) {
     }
 
     swapTokenResolveState[side] = token;
+    refreshTokenIntelligenceButton();
+  }
+
+  function selectedExternalTokenForIntelligence() {
+    const toToken = swapTokenResolveState.to;
+    const fromToken = swapTokenResolveState.from;
+    const toExternal = toToken && toToken.source !== "registry" && toToken.mint;
+    const fromExternal = fromToken && fromToken.source !== "registry" && fromToken.mint;
+
+    if (toExternal) return toToken;
+    if (fromExternal) return fromToken;
+    return null;
+  }
+
+  function refreshTokenIntelligenceButton() {
+    const btn = $("btnTokenIntelligence");
+    if (!btn) return;
+
+    btn.style.display = selectedExternalTokenForIntelligence() ? "inline-block" : "none";
+  }
+
+  function resetTokenIntelligence() {
+    const card = $("tokenIntelligenceCard");
+    const box = $("tokenIntelligenceBox");
+    if (card) card.style.display = "none";
+    if (box) box.textContent = "No token audit yet.";
+  }
+
+  function pumpswapStatusFromAudit(report) {
+    const pairs = Array.isArray(report?.pairs) ? report.pairs : [];
+    const statuses = [];
+    for (const pair of pairs) {
+      for (const universe of pair?.universes || []) {
+        if (universe?.universe === "PumpSwap") statuses.push(universe.status);
+      }
+    }
+
+    if (statuses.includes("success")) return "supported on some SOL pairs";
+    if (statuses.length && statuses.every((status) => status === "no_pumpswap_pool")) {
+      return "no canonical pool found";
+    }
+    if (statuses.includes("no_pumpswap_pool")) return "no canonical pool found";
+    if (statuses.every((status) => status === "expected_unsupported")) return "not applicable for this pair set";
+    return "not available";
+  }
+
+  function phantomStatusFromAudit(report) {
+    const supported = report?.promotion_summary?.phantom_supported === true;
+    return supported ? "supported" : "not available";
+  }
+
+  function renderTokenIntelligence(report) {
+    const card = $("tokenIntelligenceCard");
+    const box = $("tokenIntelligenceBox");
+    if (!card || !box) return;
+
+    const summary = report?.promotion_summary || {};
+    const token = report?.token || {};
+    const warnings = [
+      ...(Array.isArray(token?.warnings) ? token.warnings : []),
+      ...(Array.isArray(report?.promotion_reasons) ? report.promotion_reasons : []),
+    ];
+    const uniqueWarnings = Array.from(new Set(warnings.filter(Boolean)));
+    const pairs = Array.isArray(report?.pairs) ? report.pairs : [];
+    const pairLines = pairs.map((pair) => {
+      const label = String(pair?.pair || "")
+        .replace("SOL->TOKEN", "SOL -> token")
+        .replace("TOKEN->SOL", "token -> SOL")
+        .replace("USDC->TOKEN", "USDC -> token")
+        .replace("TOKEN->USDC", "token -> USDC");
+      return `<div class="muted" style="margin-top:2px;">${escapeHtml(label)}: ${escapeHtml(String(pair?.success_count || 0))} live surfaces</div>`;
+    }).join("");
+
+    box.innerHTML = `
+      <div class="muted">Coverage: ${escapeHtml(summary.coverage_label || "Coverage unavailable")}</div>
+      <div class="muted" style="margin-top:2px;">Promotion status: ${escapeHtml(report?.promotion_status || "unknown")}</div>
+      <div class="muted" style="margin-top:2px;">Recommendation: ${escapeHtml(report?.recommendation || "No recommendation available.")}</div>
+      <div class="muted" style="margin-top:2px;">Live universes: ${escapeHtml((summary.successful_universes || []).join(", ") || "none")}</div>
+      <div class="muted" style="margin-top:2px;">Phantom: ${escapeHtml(phantomStatusFromAudit(report))}</div>
+      <div class="muted" style="margin-top:2px;">PumpSwap: ${escapeHtml(pumpswapStatusFromAudit(report))}</div>
+      ${pairLines ? `<div style="margin-top:6px;">${pairLines}</div>` : ""}
+      ${
+        uniqueWarnings.length
+          ? `<div class="muted" style="margin-top:6px;">Warnings: ${escapeHtml(uniqueWarnings.join(", "))}</div>`
+          : ""
+      }
+    `;
+    card.style.display = "block";
+  }
+
+  async function runTokenIntelligence() {
+    const token = selectedExternalTokenForIntelligence();
+    const card = $("tokenIntelligenceCard");
+    const box = $("tokenIntelligenceBox");
+
+    if (!token?.mint) {
+      if (card) card.style.display = "block";
+      if (box) box.textContent = "Resolve an external token before running token intelligence.";
+      return;
+    }
+
+    if (card) card.style.display = "block";
+    if (box) box.textContent = "Running token coverage audit...";
+
+    let res;
+    try {
+      res = await fetchMaybeJson("/tokens/promotion-audit?" + qs({
+        mint: token.mint,
+        request_delay: 1.5
+      }));
+    } catch (err) {
+      if (box) box.textContent = "Token intelligence audit failed.";
+      return;
+    }
+
+    if (!res.ok || !res.data?.ok) {
+      if (box) box.textContent = "Token intelligence audit failed.";
+      return;
+    }
+
+    renderTokenIntelligence(res.data);
   }
 
   function renderTokenResolveFailure(side, data) {
@@ -2630,6 +2759,7 @@ function fmtUsdCost(x) {
   $("btnSendSol").addEventListener("click", sendSol);
   $("btnAirdropDevnet").addEventListener("click", requestDevnetAirdrop);
   $("btnPreviewSwap").addEventListener("click", previewSwap);
+  $("btnTokenIntelligence").addEventListener("click", runTokenIntelligence);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
   $("swapAmount").addEventListener("input", updateLiveSwapBaseline);
   $("swapFromToken").addEventListener("input", () => scheduleSwapTokenResolve("from"));

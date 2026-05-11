@@ -741,6 +741,85 @@ def token_resolve(query: str = Query(""), allow_external: bool = Query(True)):
     return resolve_token(query, allow_external=allow_external)
 
 
+def _build_promotion_audit_summary(report: dict) -> dict:
+    pairs = report.get("pairs") if isinstance(report, dict) else []
+    if not isinstance(pairs, list):
+        pairs = []
+
+    counts = {
+        "strong": 0,
+        "good": 0,
+        "thin": 0,
+        "weak": 0,
+    }
+    successful_universes = []
+    seen_universes = set()
+
+    for pair in pairs:
+        classification = pair.get("classification")
+        if classification in counts:
+            counts[classification] += 1
+
+        for universe in pair.get("universes") or []:
+            if universe.get("status") != "success":
+                continue
+            label = universe.get("universe")
+            if not label:
+                continue
+            key = str(label).strip().lower()
+            if not key or key in seen_universes:
+                continue
+            seen_universes.add(key)
+            successful_universes.append(str(label).strip())
+
+    best_pair_classification = "weak"
+    for label in ("strong", "good", "thin", "weak"):
+        if counts[label] > 0:
+            best_pair_classification = label
+            break
+
+    coverage_label = {
+        "strong": "Strong coverage",
+        "good": "Good coverage",
+        "thin": "Thin coverage",
+        "weak": "Weak coverage",
+    }.get(best_pair_classification, "Weak coverage")
+
+    return {
+        "total_pairs": len(pairs),
+        "strong_pairs": counts["strong"],
+        "good_pairs": counts["good"],
+        "thin_pairs": counts["thin"],
+        "weak_pairs": counts["weak"],
+        "successful_universes": successful_universes,
+        "phantom_supported": "phantom" in seen_universes,
+        "pumpswap_supported": "pumpswap" in seen_universes,
+        "best_pair_classification": best_pair_classification,
+        "coverage_label": coverage_label,
+    }
+
+
+@app.get("/tokens/promotion-audit")
+def token_promotion_audit(
+    mint: str = Query(""),
+    amount: float = Query(1.0),
+    request_delay: float = Query(1.5),
+):
+    mint = (mint or "").strip()
+    if not mint:
+        raise HTTPException(status_code=400, detail="mint is required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount must be greater than 0")
+    if request_delay < 0 or request_delay > 5:
+        raise HTTPException(status_code=400, detail="request_delay must be between 0 and 5 seconds")
+
+    from tools.token_promotion_audit import audit_mint
+
+    report = audit_mint(mint, amount=amount, request_delay=request_delay)
+    report["promotion_summary"] = _build_promotion_audit_summary(report)
+    return report
+
+
 JUP_API_KEY = os.environ.get("JUP_API_KEY", "").strip()
 
 def to_raw_amount(amount: float, decimals: int) -> int:

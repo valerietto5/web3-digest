@@ -10,6 +10,7 @@ from api.main import (
     METEORA_DLMM_USDC_MINT,
     METEORA_DLMM_BONK_MINT,
     TOKEN_META,
+    _build_promotion_audit_summary,
     _build_meteora_dlmm_quote_payload,
     _build_orca_whirlpool_quote_payload,
     _build_phantom_quote_payload,
@@ -42,6 +43,7 @@ from api.main import (
     swap_quote,
     swap_tokens,
     token_resolve,
+    token_promotion_audit,
 )
 from api.ui_page import build_ui_html
 from providers.token_resolver import resolve_token
@@ -702,6 +704,85 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Universe diagnostics", printed)
         self.assertIn("PumpSwap: no_pumpswap_pool", printed)
 
+    def test_token_promotion_audit_summary_counts_pair_classes_and_universes(self):
+        report = {
+            "pairs": [
+                {
+                    "classification": "strong",
+                    "universes": [
+                        {"universe": "Jupiter", "status": "success"},
+                        {"universe": "Phantom", "status": "success"},
+                    ],
+                },
+                {
+                    "classification": "good",
+                    "universes": [
+                        {"universe": "Jupiter", "status": "success"},
+                        {"universe": "PumpSwap", "status": "success"},
+                    ],
+                },
+                {"classification": "thin", "universes": []},
+                {"classification": "weak", "universes": []},
+            ]
+        }
+
+        summary = _build_promotion_audit_summary(report)
+
+        self.assertEqual(summary["total_pairs"], 4)
+        self.assertEqual(summary["strong_pairs"], 1)
+        self.assertEqual(summary["good_pairs"], 1)
+        self.assertEqual(summary["thin_pairs"], 1)
+        self.assertEqual(summary["weak_pairs"], 1)
+        self.assertEqual(summary["successful_universes"], ["Jupiter", "Phantom", "PumpSwap"])
+        self.assertTrue(summary["phantom_supported"])
+        self.assertTrue(summary["pumpswap_supported"])
+        self.assertEqual(summary["best_pair_classification"], "strong")
+        self.assertEqual(summary["coverage_label"], "Strong coverage")
+
+    def test_token_promotion_audit_endpoint_validates_inputs(self):
+        with self.assertRaises(Exception) as empty_ctx:
+            token_promotion_audit(mint="", amount=1.0, request_delay=1.5)
+        self.assertEqual(empty_ctx.exception.status_code, 400)
+
+        with self.assertRaises(Exception) as amount_ctx:
+            token_promotion_audit(mint="mint", amount=0, request_delay=1.5)
+        self.assertEqual(amount_ctx.exception.status_code, 400)
+
+        with self.assertRaises(Exception) as negative_delay_ctx:
+            token_promotion_audit(mint="mint", amount=1.0, request_delay=-0.1)
+        self.assertEqual(negative_delay_ctx.exception.status_code, 400)
+
+        with self.assertRaises(Exception) as high_delay_ctx:
+            token_promotion_audit(mint="mint", amount=1.0, request_delay=5.1)
+        self.assertEqual(high_delay_ctx.exception.status_code, 400)
+
+    def test_token_promotion_audit_endpoint_calls_audit_and_preserves_registry(self):
+        before_mints = {meta.get("mint") for meta in TOKEN_META.values()}
+        report = {
+            "ok": True,
+            "token": {"symbol": "JUP", "mint": "mint", "decimals": 6},
+            "pairs": [
+                {
+                    "classification": "strong",
+                    "universes": [
+                        {"universe": "Phantom", "status": "success"},
+                        {"universe": "PumpSwap", "status": "success"},
+                    ],
+                }
+            ],
+            "promotion_status": "manual_review",
+            "recommendation": "Strong route coverage; review metadata before registry promotion.",
+        }
+
+        with patch("tools.token_promotion_audit.audit_mint", return_value=report) as audit:
+            response = token_promotion_audit(mint="mint", amount=2.0, request_delay=1.5)
+
+        audit.assert_called_once_with("mint", amount=2.0, request_delay=1.5)
+        self.assertIn("promotion_summary", response)
+        self.assertTrue(response["promotion_summary"]["phantom_supported"])
+        self.assertTrue(response["promotion_summary"]["pumpswap_supported"])
+        self.assertEqual(before_mints, {meta.get("mint") for meta in TOKEN_META.values()})
+
     def test_swap_quote_accepts_external_mint_as_to_token_with_mocked_quotes(self):
         ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
         self.assertNotIn(ext_mint, {meta.get("mint") for meta in TOKEN_META.values()})
@@ -1173,6 +1254,41 @@ class TestSanity(unittest.TestCase):
         self.assertIn("External token metadata used: ", html)
         self.assertIn(" · unverified", html)
         self.assertIn("renderSwapExternalTokenNotice(quote);", html)
+
+    def test_swap_ui_includes_token_intelligence_panel(self):
+        html = build_ui_html()
+
+        self.assertIn('id="btnTokenIntelligence"', html)
+        self.assertIn("Run token intelligence", html)
+        self.assertIn('id="tokenIntelligenceCard"', html)
+        self.assertIn('id="tokenIntelligenceBox"', html)
+        self.assertIn("function runTokenIntelligence()", html)
+        self.assertIn('fetchMaybeJson("/tokens/promotion-audit?" + qs({', html)
+        self.assertIn("request_delay: 1.5", html)
+        self.assertIn("Running token coverage audit...", html)
+
+    def test_swap_ui_renders_token_intelligence_summary(self):
+        html = build_ui_html()
+
+        self.assertIn("function renderTokenIntelligence(report)", html)
+        self.assertIn("Coverage: ${escapeHtml(summary.coverage_label", html)
+        self.assertIn("Promotion status:", html)
+        self.assertIn("Recommendation:", html)
+        self.assertIn("Live universes:", html)
+        self.assertIn("Phantom: ${escapeHtml(phantomStatusFromAudit(report))}", html)
+        self.assertIn("PumpSwap: ${escapeHtml(pumpswapStatusFromAudit(report))}", html)
+        self.assertIn("SOL -> token", html)
+        self.assertIn("token -> SOL", html)
+        self.assertIn("USDC -> token", html)
+        self.assertIn("token -> USDC", html)
+        self.assertIn("Warnings:", html)
+
+    def test_swap_ui_token_intelligence_is_manual_only(self):
+        html = build_ui_html()
+
+        self.assertIn('$("btnTokenIntelligence").addEventListener("click", runTokenIntelligence);', html)
+        self.assertNotIn('addEventListener("input", runTokenIntelligence)', html)
+        self.assertNotIn('scheduleSwapTokenResolve("from");\\n    runTokenIntelligence', html)
 
     def test_swap_ui_preserves_curated_token_choice_behavior(self):
         html = build_ui_html()
