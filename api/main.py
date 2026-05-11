@@ -24,6 +24,7 @@ from fastapi import Body
 import requests
 from datetime import datetime, timezone
 from providers.helius_activity import fetch_wallet_activity
+from providers.token_holder_concentration import fetch_token_holder_concentration
 from providers.token_resolver import resolve_token
 from token_registry import default_swap_token_meta_by_symbol, get_token_meta_by_symbol
 
@@ -751,6 +752,15 @@ def swap_tokens():
 @app.get("/tokens/resolve")
 def token_resolve(query: str = Query(""), allow_external: bool = Query(True)):
     return resolve_token(query, allow_external=allow_external)
+
+
+@app.get("/tokens/holder-concentration")
+def token_holder_concentration(mint: str = Query("")):
+    mint = (mint or "").strip()
+    if not mint:
+        raise HTTPException(status_code=400, detail="mint is required")
+
+    return fetch_token_holder_concentration(mint)
 
 
 def _build_promotion_audit_summary(report: dict) -> dict:

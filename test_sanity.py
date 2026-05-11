@@ -45,12 +45,17 @@ from api.main import (
     swap_tokens,
     token_resolve,
     token_promotion_audit,
+    token_holder_concentration,
     wallet_activity,
 )
 from api.ui_page import build_ui_html
 from providers.token_resolver import resolve_token
 from providers.solana_token_metadata import fetch_solana_mint_decimals
 from providers.helius_activity import fetch_wallet_activity
+from providers.token_holder_concentration import (
+    build_bubblemaps_url,
+    fetch_token_holder_concentration,
+)
 from tools.token_promotion_audit import (
     audit_mint as audit_promotion_mint,
     classify_pair_coverage as classify_promotion_pair_coverage,
@@ -904,6 +909,175 @@ class TestSanity(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "HELIUS_NOT_CONFIGURED")
+
+    def test_bubblemaps_url_uses_solana_mint(self):
+        mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
+
+        url = build_bubblemaps_url(mint)
+
+        self.assertEqual(
+            url,
+            "https://v2.bubblemaps.io/map?address=JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN&chain=solana",
+        )
+
+    def test_token_holder_concentration_rejects_empty_mint(self):
+        result = fetch_token_holder_concentration("")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "TOKEN_MINT_REQUIRED")
+
+    def test_token_holder_concentration_computes_visible_account_summary(self):
+        class MockResponse:
+            ok = True
+            status_code = 200
+            text = ""
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        supply_payload = {
+            "jsonrpc": "2.0",
+            "result": {
+                "value": {
+                    "amount": "1000000",
+                    "decimals": 6,
+                    "uiAmountString": "1",
+                }
+            },
+            "id": 1,
+        }
+        largest_payload = {
+            "jsonrpc": "2.0",
+            "result": {
+                "value": [
+                    {"address": f"account{i}", "amount": amount, "decimals": 6}
+                    for i, amount in enumerate(
+                        [
+                            "60000",
+                            "50000",
+                            "40000",
+                            "30000",
+                            "20000",
+                            "10000",
+                            "9000",
+                            "8000",
+                            "7000",
+                            "6000",
+                            "5000",
+                            "4000",
+                        ],
+                        start=1,
+                    )
+                ]
+            },
+            "id": 1,
+        }
+
+        with patch(
+            "providers.token_holder_concentration.requests.post",
+            side_effect=[MockResponse(supply_payload), MockResponse(largest_payload)],
+        ) as post:
+            result = fetch_token_holder_concentration("mint", rpc_url="https://rpc.example")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["source"], "solana_rpc")
+        self.assertEqual(result["summary"]["top_account_pct"], 6.0)
+        self.assertEqual(result["summary"]["top_5_accounts_pct"], 20.0)
+        self.assertEqual(result["summary"]["top_10_accounts_pct"], 24.0)
+        self.assertEqual(result["summary"]["sampled_account_count"], 12)
+        self.assertEqual(result["summary"]["concentration_level"], "high")
+        self.assertEqual(result["signals"][0]["label"], "Largest visible token account")
+        self.assertEqual(result["signals"][0]["severity"], "caution")
+        self.assertIn("One visible token account controls 6% of supply.", result["signals"][0]["explanation"])
+        self.assertIn("token_accounts_are_not_wallet_clusters", result["warnings"])
+        self.assertIn("concentration_is_not_safety_score", result["warnings"])
+        self.assertEqual(result["links"]["bubblemaps"], build_bubblemaps_url("mint"))
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args_list[0].kwargs["json"]["method"], "getTokenSupply")
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["method"], "getTokenLargestAccounts")
+
+    def test_token_holder_concentration_http_error_invalid_json_and_request_failure(self):
+        class HttpErrorResponse:
+            ok = False
+            status_code = 503
+            text = "unavailable"
+
+        with patch("providers.token_holder_concentration.requests.post", return_value=HttpErrorResponse()):
+            http_error = fetch_token_holder_concentration("mint", rpc_url="https://rpc.example")
+        self.assertFalse(http_error["ok"])
+        self.assertEqual(http_error["error"]["code"], "TOKEN_HOLDER_CONCENTRATION_HTTP_ERROR")
+
+        class InvalidJsonResponse:
+            ok = True
+            status_code = 200
+            text = ""
+
+            def json(self):
+                raise ValueError("bad json")
+
+        with patch("providers.token_holder_concentration.requests.post", return_value=InvalidJsonResponse()):
+            invalid_json = fetch_token_holder_concentration("mint", rpc_url="https://rpc.example")
+        self.assertFalse(invalid_json["ok"])
+        self.assertEqual(invalid_json["error"]["code"], "TOKEN_HOLDER_CONCENTRATION_INVALID_JSON")
+
+        with patch(
+            "providers.token_holder_concentration.requests.post",
+            side_effect=requests.Timeout("timed out"),
+        ):
+            failed = fetch_token_holder_concentration("mint", rpc_url="https://rpc.example")
+        self.assertFalse(failed["ok"])
+        self.assertEqual(failed["error"]["code"], "TOKEN_SUPPLY_LOOKUP_FAILED")
+
+    def test_token_holder_concentration_missing_supply_or_accounts_fail_softly(self):
+        class MockResponse:
+            ok = True
+            status_code = 200
+            text = ""
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        zero_supply = {"jsonrpc": "2.0", "result": {"value": {"amount": "0"}}, "id": 1}
+        with patch(
+            "providers.token_holder_concentration.requests.post",
+            return_value=MockResponse(zero_supply),
+        ):
+            supply_missing = fetch_token_holder_concentration("mint", rpc_url="https://rpc.example")
+        self.assertFalse(supply_missing["ok"])
+        self.assertEqual(supply_missing["error"]["code"], "TOKEN_SUPPLY_NOT_FOUND")
+
+        supply = {"jsonrpc": "2.0", "result": {"value": {"amount": "100"}}, "id": 1}
+        no_accounts = {"jsonrpc": "2.0", "result": {"value": []}, "id": 1}
+        with patch(
+            "providers.token_holder_concentration.requests.post",
+            side_effect=[MockResponse(supply), MockResponse(no_accounts)],
+        ):
+            accounts_missing = fetch_token_holder_concentration("mint", rpc_url="https://rpc.example")
+        self.assertFalse(accounts_missing["ok"])
+        self.assertEqual(accounts_missing["error"]["code"], "TOKEN_LARGEST_ACCOUNTS_NOT_FOUND")
+
+    def test_token_holder_concentration_endpoint_calls_provider_and_preserves_registry(self):
+        before_mints = {meta.get("mint") for meta in TOKEN_META.values()}
+        expected = {"ok": True, "source": "solana_rpc", "summary": {}}
+
+        with patch("api.main.fetch_token_holder_concentration", return_value=expected) as fetch:
+            result = token_holder_concentration(mint=" mint ")
+
+        self.assertEqual(result, expected)
+        fetch.assert_called_once_with("mint")
+        self.assertEqual(before_mints, {meta.get("mint") for meta in TOKEN_META.values()})
+
+    def test_token_holder_concentration_endpoint_rejects_empty_mint(self):
+        with self.assertRaises(Exception) as ctx:
+            token_holder_concentration(mint="")
+
+        self.assertEqual(ctx.exception.status_code, 400)
 
     def test_swap_quote_accepts_external_mint_as_to_token_with_mocked_quotes(self):
         ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
