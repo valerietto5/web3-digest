@@ -1,6 +1,7 @@
 import unittest
 import tempfile
 import json
+import os
 import subprocess
 import requests
 from pathlib import Path
@@ -44,10 +45,12 @@ from api.main import (
     swap_tokens,
     token_resolve,
     token_promotion_audit,
+    wallet_activity,
 )
 from api.ui_page import build_ui_html
 from providers.token_resolver import resolve_token
 from providers.solana_token_metadata import fetch_solana_mint_decimals
+from providers.helius_activity import fetch_wallet_activity
 from tools.token_promotion_audit import (
     audit_mint as audit_promotion_mint,
     classify_pair_coverage as classify_promotion_pair_coverage,
@@ -782,6 +785,125 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(response["promotion_summary"]["phantom_supported"])
         self.assertTrue(response["promotion_summary"]["pumpswap_supported"])
         self.assertEqual(before_mints, {meta.get("mint") for meta in TOKEN_META.values()})
+
+    def test_helius_activity_returns_not_configured_without_env(self):
+        with patch.dict(os.environ, {}, clear=True):
+            result = fetch_wallet_activity("wallet-address")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "HELIUS_NOT_CONFIGURED")
+
+    def test_helius_activity_validates_address_and_limit(self):
+        empty = fetch_wallet_activity("", api_key="key")
+        self.assertFalse(empty["ok"])
+        self.assertEqual(empty["error"]["code"], "WALLET_ADDRESS_REQUIRED")
+
+        invalid = fetch_wallet_activity("wallet-address", limit=0, api_key="key")
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["error"]["code"], "INVALID_ACTIVITY_LIMIT")
+
+    def test_helius_activity_normalizes_success_response(self):
+        class MockResponse:
+            ok = True
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return [
+                    {
+                        "signature": "sig1",
+                        "timestamp": 1710000000,
+                        "type": "TRANSFER",
+                        "description": "Received SOL",
+                        "fee": 5000,
+                        "nativeTransfers": [{"amount": 1000}],
+                        "tokenTransfers": [{"mint": "mint"}],
+                        "instructions": [{"programId": "program1"}],
+                    }
+                ]
+
+        with patch("providers.helius_activity.requests.get", return_value=MockResponse()) as fetch:
+            result = fetch_wallet_activity("wallet-address", limit=3, api_key="key")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["source"], "helius")
+        self.assertEqual(result["address"], "wallet-address")
+        self.assertEqual(len(result["items"]), 1)
+        item = result["items"][0]
+        self.assertEqual(item["signature"], "sig1")
+        self.assertEqual(item["timestamp"], 1710000000)
+        self.assertEqual(item["type"], "TRANSFER")
+        self.assertEqual(item["description"], "Received SOL")
+        self.assertEqual(item["fee"], 5000)
+        self.assertEqual(item["native_transfers"], [{"amount": 1000}])
+        self.assertEqual(item["token_transfers"], [{"mint": "mint"}])
+        self.assertEqual(item["programs"], ["program1"])
+        self.assertEqual(item["raw"]["signature"], "sig1")
+        fetch.assert_called_once()
+        self.assertIn("/v0/addresses/wallet-address/transactions", fetch.call_args.args[0])
+        self.assertEqual(fetch.call_args.kwargs["params"]["limit"], 3)
+        self.assertEqual(fetch.call_args.kwargs["params"]["api-key"], "key")
+
+    def test_helius_activity_http_error_invalid_json_and_request_failure(self):
+        class HttpErrorResponse:
+            ok = False
+            status_code = 429
+            text = "rate limited"
+
+        with patch("providers.helius_activity.requests.get", return_value=HttpErrorResponse()):
+            http_error = fetch_wallet_activity("wallet-address", api_key="key")
+        self.assertFalse(http_error["ok"])
+        self.assertEqual(http_error["error"]["code"], "HELIUS_ACTIVITY_HTTP_ERROR")
+        self.assertEqual(http_error["error"]["status_code"], 429)
+
+        class InvalidJsonResponse:
+            ok = True
+            status_code = 200
+            text = ""
+
+            def json(self):
+                raise ValueError("bad json")
+
+        with patch("providers.helius_activity.requests.get", return_value=InvalidJsonResponse()):
+            invalid_json = fetch_wallet_activity("wallet-address", api_key="key")
+        self.assertFalse(invalid_json["ok"])
+        self.assertEqual(invalid_json["error"]["code"], "HELIUS_ACTIVITY_INVALID_JSON")
+
+        with patch(
+            "providers.helius_activity.requests.get",
+            side_effect=requests.Timeout("timed out"),
+        ):
+            failed = fetch_wallet_activity("wallet-address", api_key="key")
+        self.assertFalse(failed["ok"])
+        self.assertEqual(failed["error"]["code"], "HELIUS_ACTIVITY_LOOKUP_FAILED")
+
+    def test_wallet_activity_endpoint_validates_inputs(self):
+        with self.assertRaises(Exception) as empty_ctx:
+            wallet_activity(address="", limit=20)
+        self.assertEqual(empty_ctx.exception.status_code, 400)
+
+        with self.assertRaises(Exception) as limit_ctx:
+            wallet_activity(address="wallet-address", limit=101)
+        self.assertEqual(limit_ctx.exception.status_code, 400)
+
+    def test_wallet_activity_endpoint_calls_provider(self):
+        expected = {"ok": True, "source": "helius", "items": []}
+        with patch("api.main.fetch_wallet_activity", return_value=expected) as fetch:
+            result = wallet_activity(address=" wallet-address ", limit=5)
+
+        self.assertEqual(result, expected)
+        fetch.assert_called_once_with("wallet-address", limit=5)
+
+    def test_wallet_activity_endpoint_returns_not_configured_cleanly(self):
+        expected = {
+            "ok": False,
+            "error": {"code": "HELIUS_NOT_CONFIGURED", "message": "missing"},
+        }
+        with patch("api.main.fetch_wallet_activity", return_value=expected):
+            result = wallet_activity(address="wallet-address", limit=20)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "HELIUS_NOT_CONFIGURED")
 
     def test_swap_quote_accepts_external_mint_as_to_token_with_mocked_quotes(self):
         ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"

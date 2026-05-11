@@ -23,6 +23,7 @@ from fastapi import Body
 
 import requests
 from datetime import datetime, timezone
+from providers.helius_activity import fetch_wallet_activity
 from providers.token_resolver import resolve_token
 from token_registry import default_swap_token_meta_by_symbol, get_token_meta_by_symbol
 
@@ -708,6 +709,17 @@ def accounts():
             }
         )
     return {"accounts": out}
+
+
+@app.get("/wallet/activity")
+def wallet_activity(address: str = Query(""), limit: int = Query(20)):
+    address = (address or "").strip()
+    if not address:
+        raise HTTPException(status_code=400, detail="address is required")
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+
+    return fetch_wallet_activity(address, limit=limit)
 
 
 def _public_swap_token_meta(symbol: str, meta: dict) -> dict:
