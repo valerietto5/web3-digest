@@ -248,6 +248,7 @@ def fetch_token_holder_concentration(
         )
 
     top_account_pct = _rounded_percent(_percent(_sum_top(accounts, 1), supply_amount))
+    top_3_accounts_pct = _rounded_percent(_percent(_sum_top(accounts, 3), supply_amount))
     top_5_accounts_pct = _rounded_percent(_percent(_sum_top(accounts, 5), supply_amount))
     top_10_accounts_pct = _rounded_percent(_percent(_sum_top(accounts, 10), supply_amount))
     concentration_level = _concentration_level(top_account_pct, top_10_accounts_pct)
@@ -260,6 +261,7 @@ def fetch_token_holder_concentration(
         "mint": mint,
         "summary": {
             "top_account_pct": top_account_pct,
+            "top_3_accounts_pct": top_3_accounts_pct,
             "top_5_accounts_pct": top_5_accounts_pct,
             "top_10_accounts_pct": top_10_accounts_pct,
             "sampled_account_count": len(accounts),

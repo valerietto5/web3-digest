@@ -985,6 +985,7 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["source"], "solana_rpc")
         self.assertEqual(result["summary"]["top_account_pct"], 6.0)
+        self.assertEqual(result["summary"]["top_3_accounts_pct"], 15.0)
         self.assertEqual(result["summary"]["top_5_accounts_pct"], 20.0)
         self.assertEqual(result["summary"]["top_10_accounts_pct"], 24.0)
         self.assertEqual(result["summary"]["sampled_account_count"], 12)
