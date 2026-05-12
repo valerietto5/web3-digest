@@ -1552,6 +1552,32 @@ class TestSanity(unittest.TestCase):
         self.assertIn(" · unverified", html)
         self.assertIn("renderSwapExternalTokenNotice(quote);", html)
 
+    def test_swap_ui_renders_holder_concentration_manual_card(self):
+        html = build_ui_html()
+
+        self.assertIn('id="btnHolderConcentration"', html)
+        self.assertIn("Check holder concentration", html)
+        self.assertIn('id="holderConcentrationCard"', html)
+        self.assertIn('id="holderConcentrationBox"', html)
+        self.assertIn("function selectedExternalTokenForHolderConcentration()", html)
+        self.assertIn("function refreshHolderConcentrationButton()", html)
+        self.assertIn("function renderHolderConcentration(data)", html)
+        self.assertIn("function runHolderConcentration()", html)
+        self.assertIn('fetchMaybeJson("/tokens/holder-concentration?" + qs({', html)
+        self.assertIn("Holder concentration", html)
+        self.assertIn("Top visible token account", html)
+        self.assertIn("Top 5 visible token accounts", html)
+        self.assertIn("Open Bubblemaps", html)
+        self.assertIn("Distribution only — not a safety score.", html)
+        self.assertIn("Solana RPC is rate-limited right now. Try again later.", html)
+        self.assertIn("Holder concentration unavailable right now.", html)
+
+    def test_swap_ui_holder_concentration_is_manual_only(self):
+        html = build_ui_html()
+
+        self.assertIn('$("btnHolderConcentration").addEventListener("click", runHolderConcentration);', html)
+        self.assertEqual(html.count("/tokens/holder-concentration?"), 1)
+
     def test_swap_ui_omits_token_intelligence_panel(self):
         html = build_ui_html()
 

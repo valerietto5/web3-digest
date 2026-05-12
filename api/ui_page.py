@@ -182,7 +182,12 @@ def build_ui_html() -> str:
 
     <div class="row" style="margin-top: 10px;">
       <button id="btnPreviewSwap" type="button" class="secondary">Preview Quote</button>
+      <button id="btnHolderConcentration" type="button" class="secondary" style="display:none;">Check holder concentration</button>
       <button id="btnClearSwap" class="secondary">Clear</button>
+    </div>
+
+    <div class="card" id="holderConcentrationCard" style="display:none; margin-top:10px;">
+      <div id="holderConcentrationBox" class="muted">No holder concentration check yet.</div>
     </div>
 
     <div class="row" id="swapInlineBaselineRow" style="margin-top: 6px;">
@@ -388,6 +393,7 @@ function clearSwapUi() {
   $("swapStatus").style.display = "none";
   setTokenResolvePreview("from", null, "");
   setTokenResolvePreview("to", null, "");
+  resetHolderConcentration({ hideButton: true });
   setSwapPhase("Draft", "Ready to request a swap quote.");
   resetSwapQuoteDisplay();
   resetSwapInlineBaseline();
@@ -960,6 +966,120 @@ function renderSwapExternalTokenNotice(quote) {
 
   box.textContent = "External token metadata used: " + labels.join(", ") + " · unverified";
   box.style.display = "block";
+}
+
+function holderConcentrationTokenForSide(side) {
+  const token = swapTokenResolveState[side];
+  if (!token || !token.mint) return null;
+  return token.source !== "registry" ? token : null;
+}
+
+function selectedExternalTokenForHolderConcentration() {
+  return holderConcentrationTokenForSide("to") || holderConcentrationTokenForSide("from");
+}
+
+function resetHolderConcentration(opts = {}) {
+  const card = $("holderConcentrationCard");
+  const box = $("holderConcentrationBox");
+  if (box) {
+    box.className = "muted";
+    box.textContent = "No holder concentration check yet.";
+  }
+  if (card) card.style.display = "none";
+  if (opts.hideButton) {
+    const button = $("btnHolderConcentration");
+    if (button) button.style.display = "none";
+  }
+}
+
+function refreshHolderConcentrationButton() {
+  const button = $("btnHolderConcentration");
+  if (!button) return;
+  const token = selectedExternalTokenForHolderConcentration();
+  button.style.display = token ? "inline-block" : "none";
+  if (!token) resetHolderConcentration();
+}
+
+function formatHolderPct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "n/a";
+  if (Math.abs(n) < 0.0001) return "< 0.0001%";
+  if (Math.abs(n) < 0.01) return n.toFixed(4) + "%";
+  if (Math.abs(n) < 1) return n.toFixed(3) + "%";
+  return n.toFixed(2) + "%";
+}
+
+function renderHolderConcentration(data) {
+  const card = $("holderConcentrationCard");
+  const box = $("holderConcentrationBox");
+  if (!card || !box) return;
+
+  if (!data?.ok) {
+    const code = data?.error?.code || "";
+    const statusCode = data?.error?.status_code;
+    const message = code === "TOKEN_HOLDER_CONCENTRATION_HTTP_ERROR" && Number(statusCode) === 429
+      ? "Solana RPC is rate-limited right now. Try again later."
+      : "Holder concentration unavailable right now.";
+    box.className = "muted err";
+    box.textContent = message;
+    card.style.display = "block";
+    return;
+  }
+
+  const summary = data.summary || {};
+  const topAccount = formatHolderPct(summary.top_account_pct);
+  const top5 = formatHolderPct(summary.top_5_accounts_pct);
+  const bubblemaps = data.links?.bubblemaps;
+  const linkHtml = bubblemaps
+    ? `<a href="${escapeHtml(bubblemaps)}" target="_blank" rel="noopener">Open Bubblemaps</a>`
+    : "Open Bubblemaps unavailable";
+
+  box.className = "muted";
+  box.innerHTML = `
+    <div style="font-weight:600; color:#e5eefb;">Holder concentration</div>
+    <div style="margin-top:6px;">Top visible token account: ${escapeHtml(topAccount)}</div>
+    <div>Top 5 visible token accounts: ${escapeHtml(top5)}</div>
+    <div style="margin-top:6px;">${linkHtml}</div>
+    <div class="muted" style="margin-top:6px; font-size:12px;">Distribution only — not a safety score.</div>
+  `;
+  card.style.display = "block";
+}
+
+async function runHolderConcentration() {
+  const token = selectedExternalTokenForHolderConcentration();
+  const card = $("holderConcentrationCard");
+  const box = $("holderConcentrationBox");
+  if (!token || !token.mint || !card || !box) return;
+
+  card.style.display = "block";
+  box.className = "muted";
+  box.textContent = "Checking holder concentration...";
+
+  let res;
+  try {
+    res = await fetchMaybeJson("/tokens/holder-concentration?" + qs({
+      mint: token.mint
+    }));
+  } catch (err) {
+    renderHolderConcentration({
+      ok: false,
+      error: { code: "HOLDER_CONCENTRATION_REQUEST_FAILED" }
+    });
+    return;
+  }
+
+  if (!res.ok) {
+    renderHolderConcentration({
+      ok: false,
+      error: {
+        code: res.data?.error?.code || "HOLDER_CONCENTRATION_HTTP_ERROR",
+        status_code: res.status
+      }
+    });
+    return;
+  }
+
+  renderHolderConcentration(res.data || {});
 }
 
 function renderSwapOptionCard(opt, opts = {}) {
@@ -2127,6 +2247,7 @@ function qs(params) {
     if (!token) {
       box.textContent = message || "";
       swapTokenResolveState[side] = null;
+      refreshHolderConcentrationButton();
       return;
     }
 
@@ -2147,6 +2268,7 @@ function qs(params) {
     }
 
     swapTokenResolveState[side] = token;
+    refreshHolderConcentrationButton();
   }
 
   function renderTokenResolveFailure(side, data) {
@@ -2630,6 +2752,7 @@ function fmtUsdCost(x) {
   $("btnSendSol").addEventListener("click", sendSol);
   $("btnAirdropDevnet").addEventListener("click", requestDevnetAirdrop);
   $("btnPreviewSwap").addEventListener("click", previewSwap);
+  $("btnHolderConcentration").addEventListener("click", runHolderConcentration);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
   $("swapAmount").addEventListener("input", updateLiveSwapBaseline);
   $("swapFromToken").addEventListener("input", () => scheduleSwapTokenResolve("from"));
