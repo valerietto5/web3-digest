@@ -301,6 +301,7 @@ def build_ui_html() -> str:
     from: null,
     to: null
   };
+  let holderConcentrationMint = null;
 
   function nowTimeLabel() {
     return new Date().toLocaleTimeString();
@@ -981,6 +982,7 @@ function selectedExternalTokenForHolderConcentration() {
 function resetHolderConcentration(opts = {}) {
   const card = $("holderConcentrationCard");
   const box = $("holderConcentrationBox");
+  holderConcentrationMint = null;
   if (box) {
     box.className = "muted";
     box.textContent = "No holder concentration check yet.";
@@ -1017,7 +1019,9 @@ function renderHolderConcentration(data) {
   if (!data?.ok) {
     const code = data?.error?.code || "";
     const statusCode = data?.error?.status_code;
-    const message = code === "TOKEN_HOLDER_CONCENTRATION_HTTP_ERROR" && Number(statusCode) === 429
+    const message = code === "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED" || (
+      code === "TOKEN_HOLDER_CONCENTRATION_HTTP_ERROR" && Number(statusCode) === 429
+    )
       ? "Solana RPC is rate-limited right now. Try again later."
       : "Holder concentration unavailable right now.";
     box.className = "muted err";
@@ -1039,6 +1043,7 @@ function renderHolderConcentration(data) {
     <div style="font-weight:600; color:#e5eefb;">Holder concentration</div>
     <div style="margin-top:6px;">Top visible token account: ${escapeHtml(topAccount)}</div>
     <div>Top 5 visible token accounts: ${escapeHtml(top5)}</div>
+    <div class="muted" style="margin-top:6px; font-size:12px;">Based on visible token accounts from Solana RPC. Separate from route ranking.</div>
     <div style="margin-top:6px;">${linkHtml}</div>
     <div class="muted" style="margin-top:6px; font-size:12px;">Distribution only — not a safety score.</div>
   `;
@@ -1051,6 +1056,7 @@ async function runHolderConcentration() {
   const box = $("holderConcentrationBox");
   if (!token || !token.mint || !card || !box) return;
 
+  holderConcentrationMint = token.mint;
   card.style.display = "block";
   box.className = "muted";
   box.textContent = "Checking holder concentration...";
@@ -2247,6 +2253,7 @@ function qs(params) {
     if (!token) {
       box.textContent = message || "";
       swapTokenResolveState[side] = null;
+      if (holderConcentrationMint) resetHolderConcentration();
       refreshHolderConcentrationButton();
       return;
     }
@@ -2267,7 +2274,12 @@ function qs(params) {
       box.textContent = `Known token: ${symbol} / ${name} · Decimals: ${decimals} · Source: ${source}`;
     }
 
+    const previousExternalMint = selectedExternalTokenForHolderConcentration()?.mint || null;
     swapTokenResolveState[side] = token;
+    const nextExternalMint = selectedExternalTokenForHolderConcentration()?.mint || null;
+    if (holderConcentrationMint && previousExternalMint !== nextExternalMint) {
+      resetHolderConcentration();
+    }
     refreshHolderConcentrationButton();
   }
 

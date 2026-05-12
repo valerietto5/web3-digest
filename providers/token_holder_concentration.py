@@ -40,6 +40,22 @@ def _error(code: str, message: str, **extra: Any) -> dict[str, Any]:
     }
 
 
+def _is_rate_limited(value: Any) -> bool:
+    text = str(value or "").lower()
+    return "too many requests" in text or "rate limit" in text or "rate-limited" in text
+
+
+def _rate_limited_error(method: str, mint: str, **extra: Any) -> dict[str, Any]:
+    return _error(
+        "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED",
+        "Solana RPC is rate-limited right now.",
+        provider="solana_rpc",
+        mint=mint,
+        method=method,
+        **extra,
+    )
+
+
 def _decimal_from_value(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
@@ -80,6 +96,14 @@ def _rpc_post(
             detail=str(exc),
         )
 
+    if response.status_code == 429:
+        return _rate_limited_error(
+            method,
+            mint,
+            status_code=response.status_code,
+            detail=(response.text or "")[:500],
+        )
+
     if not response.ok:
         return _error(
             "TOKEN_HOLDER_CONCENTRATION_HTTP_ERROR",
@@ -113,6 +137,13 @@ def _rpc_post(
         )
 
     if data.get("error"):
+        if _is_rate_limited(data.get("error")):
+            return _rate_limited_error(
+                method,
+                mint,
+                status_code=429,
+                rpc_error=data.get("error"),
+            )
         return _error(
             lookup_error_code,
             "Solana RPC token holder concentration lookup returned an RPC error.",

@@ -1032,6 +1032,36 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(failed["ok"])
         self.assertEqual(failed["error"]["code"], "TOKEN_SUPPLY_LOOKUP_FAILED")
 
+    def test_token_holder_concentration_rate_limit_errors_are_explicit(self):
+        class RateLimitHttpResponse:
+            ok = False
+            status_code = 429
+            text = "Too many requests"
+
+        with patch("providers.token_holder_concentration.requests.post", return_value=RateLimitHttpResponse()):
+            http_limited = fetch_token_holder_concentration("mint", rpc_url="https://rpc.example")
+        self.assertFalse(http_limited["ok"])
+        self.assertEqual(http_limited["error"]["code"], "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED")
+        self.assertEqual(http_limited["error"]["status_code"], 429)
+
+        class MockResponse:
+            ok = True
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {
+                    "jsonrpc": "2.0",
+                    "error": {"code": 429, "message": "Too many requests for a specific RPC call"},
+                    "id": 1,
+                }
+
+        with patch("providers.token_holder_concentration.requests.post", return_value=MockResponse()):
+            rpc_limited = fetch_token_holder_concentration("mint", rpc_url="https://rpc.example")
+        self.assertFalse(rpc_limited["ok"])
+        self.assertEqual(rpc_limited["error"]["code"], "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED")
+        self.assertEqual(rpc_limited["error"]["status_code"], 429)
+
     def test_token_holder_concentration_missing_supply_or_accounts_fail_softly(self):
         class MockResponse:
             ok = True
@@ -1568,15 +1598,31 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Top visible token account", html)
         self.assertIn("Top 5 visible token accounts", html)
         self.assertIn("Open Bubblemaps", html)
+        self.assertIn("Based on visible token accounts from Solana RPC. Separate from route ranking.", html)
         self.assertIn("Distribution only — not a safety score.", html)
+        self.assertIn('code === "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED"', html)
         self.assertIn("Solana RPC is rate-limited right now. Try again later.", html)
         self.assertIn("Holder concentration unavailable right now.", html)
+        self.assertIn("holderConcentrationMint", html)
+        self.assertIn("resetHolderConcentration();", html)
 
     def test_swap_ui_holder_concentration_is_manual_only(self):
         html = build_ui_html()
 
         self.assertIn('$("btnHolderConcentration").addEventListener("click", runHolderConcentration);', html)
         self.assertEqual(html.count("/tokens/holder-concentration?"), 1)
+
+    def test_swap_ui_holder_concentration_avoids_score_and_scam_language(self):
+        html = build_ui_html()
+        start = html.index("function renderHolderConcentration(data)")
+        end = html.index("function renderSwapOptionCard", start)
+        holder_html = html[start:end].lower()
+
+        self.assertNotIn("scam", holder_html)
+        self.assertNotIn("rug", holder_html)
+        self.assertNotIn("trusted", holder_html)
+        self.assertNotIn("wallet cluster", holder_html)
+        self.assertNotIn("risk score", holder_html)
 
     def test_swap_ui_omits_token_intelligence_panel(self):
         html = build_ui_html()
