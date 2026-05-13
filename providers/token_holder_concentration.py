@@ -17,12 +17,29 @@ WARNINGS = [
 ]
 
 
-def _default_rpc_url() -> str:
-    return (
-        os.getenv("SOLANA_RPC_URL")
-        or os.getenv("SOLANA_MAINNET_RPC_URL")
-        or DEFAULT_SOLANA_RPC_URL
+def _configured_rpc_url() -> tuple[str, dict[str, Any]]:
+    env_priority = (
+        "TOKEN_HOLDER_CONCENTRATION_RPC_URL",
+        "SOLANA_RPC_URL",
+        "SOLANA_MAINNET_RPC_URL",
+        "HELIUS_RPC_URL",
     )
+    for name in env_priority:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value, {"source": name, "url_configured": True}
+
+    return DEFAULT_SOLANA_RPC_URL, {
+        "source": "public_solana_rpc",
+        "url_configured": False,
+    }
+
+
+def _resolve_rpc_url(rpc_url: str | None) -> tuple[str, dict[str, Any]]:
+    explicit = (rpc_url or "").strip()
+    if explicit:
+        return explicit, {"source": "explicit", "url_configured": True}
+    return _configured_rpc_url()
 
 
 def build_bubblemaps_url(mint: str) -> str:
@@ -56,11 +73,17 @@ def _rate_limited_error(method: str, mint: str, **extra: Any) -> dict[str, Any]:
     )
 
 
-def _with_known_mint_context(result: dict[str, Any], mint: str) -> dict[str, Any]:
+def _with_known_mint_context(
+    result: dict[str, Any],
+    mint: str,
+    rpc_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if result.get("ok") is False and mint:
         result.setdefault("links", {})
         result["links"].setdefault("bubblemaps", build_bubblemaps_url(mint))
         result.setdefault("warnings", list(WARNINGS))
+        if rpc_meta:
+            result.setdefault("rpc", dict(rpc_meta))
     return result
 
 
@@ -225,7 +248,7 @@ def fetch_token_holder_concentration(
             "Token mint is required.",
         )
 
-    url = rpc_url or _default_rpc_url()
+    url, rpc_meta = _resolve_rpc_url(rpc_url)
     supply_result = _rpc_post(
         url,
         "getTokenSupply",
@@ -235,7 +258,7 @@ def fetch_token_holder_concentration(
         lookup_error_code="TOKEN_SUPPLY_LOOKUP_FAILED",
     )
     if not supply_result.get("ok"):
-        return _with_known_mint_context(supply_result, mint)
+        return _with_known_mint_context(supply_result, mint, rpc_meta)
 
     supply_value = (
         ((supply_result.get("data") or {}).get("result") or {}).get("value")
@@ -254,6 +277,7 @@ def fetch_token_holder_concentration(
                 mint=mint,
             ),
             mint,
+            rpc_meta,
         )
 
     accounts_result = _rpc_post(
@@ -265,7 +289,7 @@ def fetch_token_holder_concentration(
         lookup_error_code="TOKEN_LARGEST_ACCOUNTS_LOOKUP_FAILED",
     )
     if not accounts_result.get("ok"):
-        return _with_known_mint_context(accounts_result, mint)
+        return _with_known_mint_context(accounts_result, mint, rpc_meta)
 
     account_values = (
         ((accounts_result.get("data") or {}).get("result") or {}).get("value")
@@ -281,6 +305,7 @@ def fetch_token_holder_concentration(
                 mint=mint,
             ),
             mint,
+            rpc_meta,
         )
 
     accounts = [account for account in account_values if isinstance(account, dict)]
@@ -293,6 +318,7 @@ def fetch_token_holder_concentration(
                 mint=mint,
             ),
             mint,
+            rpc_meta,
         )
 
     top_account_pct = _rounded_percent(_percent(_sum_top(accounts, 1), supply_amount))
@@ -328,6 +354,7 @@ def fetch_token_holder_concentration(
         "links": {
             "bubblemaps": build_bubblemaps_url(mint),
         },
+        "rpc": dict(rpc_meta),
         "warnings": list(WARNINGS),
         "raw": {
             "supply": supply_value,

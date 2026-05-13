@@ -996,9 +996,103 @@ class TestSanity(unittest.TestCase):
         self.assertIn("token_accounts_are_not_wallet_clusters", result["warnings"])
         self.assertIn("concentration_is_not_safety_score", result["warnings"])
         self.assertEqual(result["links"]["bubblemaps"], build_bubblemaps_url("mint"))
+        self.assertEqual(result["rpc"]["source"], "explicit")
+        self.assertTrue(result["rpc"]["url_configured"])
+        self.assertNotIn("rpc.example", json.dumps(result["rpc"]))
         self.assertEqual(post.call_count, 2)
         self.assertEqual(post.call_args_list[0].kwargs["json"]["method"], "getTokenSupply")
         self.assertEqual(post.call_args_list[1].kwargs["json"]["method"], "getTokenLargestAccounts")
+        self.assertEqual(post.call_args_list[0].args[0], "https://rpc.example")
+
+    def test_token_holder_concentration_uses_holder_specific_rpc_env(self):
+        class MockResponse:
+            ok = False
+            status_code = 429
+            text = "Too many requests"
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "TOKEN_HOLDER_CONCENTRATION_RPC_URL": "https://holder.example?api-key=secret",
+                    "SOLANA_RPC_URL": "https://solana.example",
+                    "SOLANA_MAINNET_RPC_URL": "https://mainnet.example",
+                    "HELIUS_RPC_URL": "https://helius.example",
+                },
+                clear=True,
+            ),
+            patch("providers.token_holder_concentration.requests.post", return_value=MockResponse()) as post,
+        ):
+            result = fetch_token_holder_concentration("mint")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(post.call_args.args[0], "https://holder.example?api-key=secret")
+        self.assertEqual(result["rpc"]["source"], "TOKEN_HOLDER_CONCENTRATION_RPC_URL")
+        self.assertTrue(result["rpc"]["url_configured"])
+        self.assertNotIn("secret", json.dumps(result["rpc"]))
+        self.assertNotIn("holder.example", json.dumps(result["rpc"]))
+
+    def test_token_holder_concentration_prefers_explicit_rpc_over_env(self):
+        class MockResponse:
+            ok = False
+            status_code = 429
+            text = "Too many requests"
+
+        with (
+            patch.dict(os.environ, {"TOKEN_HOLDER_CONCENTRATION_RPC_URL": "https://holder.example"}, clear=True),
+            patch("providers.token_holder_concentration.requests.post", return_value=MockResponse()) as post,
+        ):
+            result = fetch_token_holder_concentration("mint", rpc_url="https://explicit.example?api-key=secret")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(post.call_args.args[0], "https://explicit.example?api-key=secret")
+        self.assertEqual(result["rpc"]["source"], "explicit")
+        self.assertTrue(result["rpc"]["url_configured"])
+        self.assertNotIn("explicit.example", json.dumps(result["rpc"]))
+        self.assertNotIn("secret", json.dumps(result["rpc"]))
+
+    def test_token_holder_concentration_rpc_env_fallback_order(self):
+        class MockResponse:
+            ok = False
+            status_code = 429
+            text = "Too many requests"
+
+        cases = [
+            ({"SOLANA_RPC_URL": "https://solana.example", "HELIUS_RPC_URL": "https://helius.example"}, "SOLANA_RPC_URL", "https://solana.example"),
+            ({"SOLANA_MAINNET_RPC_URL": "https://mainnet.example", "HELIUS_RPC_URL": "https://helius.example"}, "SOLANA_MAINNET_RPC_URL", "https://mainnet.example"),
+            ({"HELIUS_RPC_URL": "https://helius.example?api-key=secret"}, "HELIUS_RPC_URL", "https://helius.example?api-key=secret"),
+        ]
+
+        for env, source, expected_url in cases:
+            with (
+                self.subTest(source=source),
+                patch.dict(os.environ, env, clear=True),
+                patch("providers.token_holder_concentration.requests.post", return_value=MockResponse()) as post,
+            ):
+                result = fetch_token_holder_concentration("mint")
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(post.call_args.args[0], expected_url)
+            self.assertEqual(result["rpc"]["source"], source)
+            self.assertTrue(result["rpc"]["url_configured"])
+            self.assertNotIn("secret", json.dumps(result["rpc"]))
+
+    def test_token_holder_concentration_public_rpc_fallback_marks_unconfigured(self):
+        class MockResponse:
+            ok = False
+            status_code = 429
+            text = "Too many requests"
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("providers.token_holder_concentration.requests.post", return_value=MockResponse()) as post,
+        ):
+            result = fetch_token_holder_concentration("mint")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(post.call_args.args[0], "https://api.mainnet-beta.solana.com")
+        self.assertEqual(result["rpc"]["source"], "public_solana_rpc")
+        self.assertFalse(result["rpc"]["url_configured"])
 
     def test_token_holder_concentration_http_error_invalid_json_and_request_failure(self):
         class HttpErrorResponse:
