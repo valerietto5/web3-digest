@@ -1043,6 +1043,8 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(http_limited["ok"])
         self.assertEqual(http_limited["error"]["code"], "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED")
         self.assertEqual(http_limited["error"]["status_code"], 429)
+        self.assertEqual(http_limited["links"]["bubblemaps"], build_bubblemaps_url("mint"))
+        self.assertIn("concentration_is_not_safety_score", http_limited["warnings"])
 
         class MockResponse:
             ok = True
@@ -1061,6 +1063,24 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(rpc_limited["ok"])
         self.assertEqual(rpc_limited["error"]["code"], "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED")
         self.assertEqual(rpc_limited["error"]["status_code"], 429)
+        self.assertEqual(rpc_limited["links"]["bubblemaps"], build_bubblemaps_url("mint"))
+
+    def test_token_holder_concentration_failures_include_bubblemaps_link(self):
+        class MockResponse:
+            ok = True
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"jsonrpc": "2.0", "result": {"value": {"amount": "0"}}, "id": 1}
+
+        with patch("providers.token_holder_concentration.requests.post", return_value=MockResponse()):
+            result = fetch_token_holder_concentration("mint", rpc_url="https://rpc.example")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "TOKEN_SUPPLY_NOT_FOUND")
+        self.assertEqual(result["links"]["bubblemaps"], build_bubblemaps_url("mint"))
+        self.assertIn("token_accounts_are_not_wallet_clusters", result["warnings"])
 
     def test_token_holder_concentration_missing_supply_or_accounts_fail_softly(self):
         class MockResponse:
@@ -1560,15 +1580,24 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn('id="swapFromToken" list="swapTokenChoices"', html)
         self.assertIn('id="swapToToken" list="swapTokenChoices"', html)
-        self.assertIn("Choose a saved token or paste a Solana mint.", html)
+        self.assertIn("Saved token or Solana mint.", html)
+        self.assertNotIn("Choose a saved token or paste a Solana mint.", html)
+        self.assertIn('class="swap-input-grid"', html)
+        self.assertIn(".swap-input-grid { display: grid;", html)
         self.assertIn('id="swapTokenChoices"', html)
         self.assertIn('id="swapFromTokenPreview"', html)
         self.assertIn('id="swapToTokenPreview"', html)
         self.assertIn("function resolveSwapTokenInput(side)", html)
         self.assertIn('fetchMaybeJson("/tokens/resolve?" + qs({', html)
         self.assertIn("allow_external: true", html)
-        self.assertIn("External token: ${symbol} / ${name}", html)
-        self.assertIn("Warning: External/unverified token metadata", html)
+        self.assertIn("${symbol} · Saved token", html)
+        self.assertNotIn("Registry · ${decimals} decimals", html)
+        self.assertNotIn("Known token:", html)
+        self.assertIn("${symbol} · External token · ${mint} · unverified", html)
+        self.assertNotIn("External · ${decimals} decimals", html)
+        self.assertNotIn("External token: ${symbol} / ${name}", html)
+        self.assertIn("External", html)
+        self.assertIn("unverified", html)
         self.assertIn("Could not resolve token metadata.", html)
         self.assertIn("Token metadata found, but decimals are unresolved. Quote preview is not safe yet.", html)
 
@@ -1585,15 +1614,16 @@ class TestSanity(unittest.TestCase):
     def test_swap_ui_renders_holder_concentration_manual_card(self):
         html = build_ui_html()
 
-        self.assertIn('id="btnHolderConcentration"', html)
-        self.assertIn("Check holder concentration", html)
+        self.assertNotIn('id="btnHolderConcentration"', html)
+        self.assertNotIn("Check holder concentration", html)
         self.assertIn('id="holderConcentrationCard"', html)
         self.assertIn('id="holderConcentrationBox"', html)
         self.assertIn("function selectedExternalTokenForHolderConcentration()", html)
-        self.assertIn("function refreshHolderConcentrationButton()", html)
+        self.assertNotIn("function refreshHolderConcentrationButton()", html)
         self.assertIn("function renderHolderConcentration(data)", html)
         self.assertIn("function runHolderConcentration()", html)
         self.assertIn('fetchMaybeJson("/tokens/holder-concentration?" + qs({', html)
+        self.assertIn("https://v2.bubblemaps.io/map?address=", html)
         self.assertIn("Holder concentration", html)
         self.assertIn("Top visible token account", html)
         self.assertIn("Top 5 visible token accounts", html)
@@ -1603,13 +1633,16 @@ class TestSanity(unittest.TestCase):
         self.assertIn('code === "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED"', html)
         self.assertIn("Solana RPC is rate-limited right now. Try again later.", html)
         self.assertIn("Holder concentration unavailable right now.", html)
+        self.assertIn("const fallbackMint = selectedExternalTokenForHolderConcentration()?.mint", html)
         self.assertIn("holderConcentrationMint", html)
         self.assertIn("resetHolderConcentration();", html)
 
     def test_swap_ui_holder_concentration_is_manual_only(self):
         html = build_ui_html()
 
-        self.assertIn('$("btnHolderConcentration").addEventListener("click", runHolderConcentration);', html)
+        self.assertIn("async function previewSwap()", html)
+        self.assertIn("runHolderConcentration();", html)
+        self.assertNotIn('$("btnHolderConcentration").addEventListener("click", runHolderConcentration);', html)
         self.assertEqual(html.count("/tokens/holder-concentration?"), 1)
 
     def test_swap_ui_holder_concentration_avoids_score_and_scam_language(self):

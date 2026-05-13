@@ -13,6 +13,10 @@ def build_ui_html() -> str:
     .muted { color: #666; }
     label { display: block; font-size: 12px; color: #333; margin-bottom: 4px; }
     input, select { padding: 8px; border-radius: 8px; border: 1px solid #ccc; min-width: 220px; }
+    .swap-input-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(130px, .55fr); gap: 12px; align-items: start; margin-top: 10px; }
+    .swap-input-grid input { width: 100%; min-width: 0; box-sizing: border-box; }
+    .token-preview { margin-top: 4px; font-size: 12px; line-height: 1.35; min-height: 18px; }
+    @media (max-width: 760px) { .swap-input-grid { grid-template-columns: 1fr; } }
     button { padding: 10px 12px; border-radius: 10px; border: 1px solid #333; background: #111; color: #fff; cursor: pointer; }
     button.secondary { background: #fff; color: #111; border-color: #aaa; }
     button:disabled { opacity: .6; cursor: not-allowed; }
@@ -155,19 +159,19 @@ def build_ui_html() -> str:
     <h3 style="margin: 0 0 6px 0;">Swap <span class="pill warn">SOLANA-FIRST</span></h3>
     <div class="muted">Quote surface only for now. No execution yet.</div>
 
-    <div class="row" style="margin-top: 10px;">
+    <div class="swap-input-grid">
       <div>
         <label>From token</label>
         <input id="swapFromToken" list="swapTokenChoices" value="SOL" placeholder="SOL or token mint" autocomplete="off" />
-        <div class="muted" style="margin-top:4px; font-size:12px;">Choose a saved token or paste a Solana mint.</div>
-        <div class="muted" id="swapFromTokenPreview" style="margin-top:4px; font-size:12px;"></div>
+        <div class="muted token-preview">Saved token or Solana mint.</div>
+        <div class="muted token-preview" id="swapFromTokenPreview"></div>
       </div>
 
       <div>
         <label>To token</label>
         <input id="swapToToken" list="swapTokenChoices" value="USDC" placeholder="USDC or token mint" autocomplete="off" />
-        <div class="muted" style="margin-top:4px; font-size:12px;">Choose a saved token or paste a Solana mint.</div>
-        <div class="muted" id="swapToTokenPreview" style="margin-top:4px; font-size:12px;"></div>
+        <div class="muted token-preview">Saved token or Solana mint.</div>
+        <div class="muted token-preview" id="swapToTokenPreview"></div>
       </div>
 
       <div>
@@ -182,7 +186,6 @@ def build_ui_html() -> str:
 
     <div class="row" style="margin-top: 10px;">
       <button id="btnPreviewSwap" type="button" class="secondary">Preview Quote</button>
-      <button id="btnHolderConcentration" type="button" class="secondary" style="display:none;">Check holder concentration</button>
       <button id="btnClearSwap" class="secondary">Clear</button>
     </div>
 
@@ -988,18 +991,6 @@ function resetHolderConcentration(opts = {}) {
     box.textContent = "No holder concentration check yet.";
   }
   if (card) card.style.display = "none";
-  if (opts.hideButton) {
-    const button = $("btnHolderConcentration");
-    if (button) button.style.display = "none";
-  }
-}
-
-function refreshHolderConcentrationButton() {
-  const button = $("btnHolderConcentration");
-  if (!button) return;
-  const token = selectedExternalTokenForHolderConcentration();
-  button.style.display = token ? "inline-block" : "none";
-  if (!token) resetHolderConcentration();
 }
 
 function formatHolderPct(value) {
@@ -1016,6 +1007,15 @@ function renderHolderConcentration(data) {
   const box = $("holderConcentrationBox");
   if (!card || !box) return;
 
+  const fallbackMint = selectedExternalTokenForHolderConcentration()?.mint || "";
+  const fallbackBubblemaps = fallbackMint
+    ? "https://v2.bubblemaps.io/map?address=" + encodeURIComponent(fallbackMint) + "&chain=solana"
+    : "";
+  const bubblemaps = data?.links?.bubblemaps || fallbackBubblemaps;
+  const linkHtml = bubblemaps
+    ? `<a href="${escapeHtml(bubblemaps)}" target="_blank" rel="noopener">Open Bubblemaps</a>`
+    : "Open Bubblemaps unavailable";
+
   if (!data?.ok) {
     const code = data?.error?.code || "";
     const statusCode = data?.error?.status_code;
@@ -1025,7 +1025,12 @@ function renderHolderConcentration(data) {
       ? "Solana RPC is rate-limited right now. Try again later."
       : "Holder concentration unavailable right now.";
     box.className = "muted err";
-    box.textContent = message;
+    box.innerHTML = `
+      <div style="font-weight:600;">Holder concentration unavailable right now.</div>
+      <div style="margin-top:6px;">${escapeHtml(message)}</div>
+      <div style="margin-top:6px;">${linkHtml}</div>
+      <div class="muted" style="margin-top:6px; font-size:12px;">Distribution only — not a safety score.</div>
+    `;
     card.style.display = "block";
     return;
   }
@@ -1033,10 +1038,6 @@ function renderHolderConcentration(data) {
   const summary = data.summary || {};
   const topAccount = formatHolderPct(summary.top_account_pct);
   const top5 = formatHolderPct(summary.top_5_accounts_pct);
-  const bubblemaps = data.links?.bubblemaps;
-  const linkHtml = bubblemaps
-    ? `<a href="${escapeHtml(bubblemaps)}" target="_blank" rel="noopener">Open Bubblemaps</a>`
-    : "Open Bubblemaps unavailable";
 
   box.className = "muted";
   box.innerHTML = `
@@ -1054,7 +1055,10 @@ async function runHolderConcentration() {
   const token = selectedExternalTokenForHolderConcentration();
   const card = $("holderConcentrationCard");
   const box = $("holderConcentrationBox");
-  if (!token || !token.mint || !card || !box) return;
+  if (!token || !token.mint || !card || !box) {
+    resetHolderConcentration();
+    return;
+  }
 
   holderConcentrationMint = token.mint;
   card.style.display = "block";
@@ -1375,6 +1379,8 @@ async function previewSwap() {
     showSwapStatus("warn", "Swap preview failed", { error: "Choose two different tokens." });
     return;
   }
+
+  runHolderConcentration();
 
   setSwapPhase("Draft", "Requesting backend quote preview...");
 
@@ -2254,24 +2260,19 @@ function qs(params) {
       box.textContent = message || "";
       swapTokenResolveState[side] = null;
       if (holderConcentrationMint) resetHolderConcentration();
-      refreshHolderConcentrationButton();
       return;
     }
 
     const symbol = token.symbol || "Unknown";
-    const name = token.display_name || token.name || symbol;
     const mint = token.mint ? shortenMiddle(String(token.mint), 6, 6) : "unknown";
-    const decimals = Number.isInteger(token.decimals) ? String(token.decimals) : "unresolved";
-    const source = tokenSourceLabel(token);
     const external = token.source !== "registry" || token.verified === false;
 
     if (!Number.isInteger(token.decimals)) {
       box.textContent = "Token metadata found, but decimals are unresolved. Quote preview is not safe yet.";
     } else if (external) {
-      box.textContent =
-        `External token: ${symbol} / ${name} · Mint: ${mint} · Decimals: ${decimals} · Source: ${source} · Warning: External/unverified token metadata`;
+      box.textContent = `${symbol} · External token · ${mint} · unverified`;
     } else {
-      box.textContent = `Known token: ${symbol} / ${name} · Decimals: ${decimals} · Source: ${source}`;
+      box.textContent = `${symbol} · Saved token`;
     }
 
     const previousExternalMint = selectedExternalTokenForHolderConcentration()?.mint || null;
@@ -2280,7 +2281,6 @@ function qs(params) {
     if (holderConcentrationMint && previousExternalMint !== nextExternalMint) {
       resetHolderConcentration();
     }
-    refreshHolderConcentrationButton();
   }
 
   function renderTokenResolveFailure(side, data) {
@@ -2764,7 +2764,6 @@ function fmtUsdCost(x) {
   $("btnSendSol").addEventListener("click", sendSol);
   $("btnAirdropDevnet").addEventListener("click", requestDevnetAirdrop);
   $("btnPreviewSwap").addEventListener("click", previewSwap);
-  $("btnHolderConcentration").addEventListener("click", runHolderConcentration);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
   $("swapAmount").addEventListener("input", updateLiveSwapBaseline);
   $("swapFromToken").addEventListener("input", () => scheduleSwapTokenResolve("from"));

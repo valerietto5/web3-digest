@@ -56,6 +56,14 @@ def _rate_limited_error(method: str, mint: str, **extra: Any) -> dict[str, Any]:
     )
 
 
+def _with_known_mint_context(result: dict[str, Any], mint: str) -> dict[str, Any]:
+    if result.get("ok") is False and mint:
+        result.setdefault("links", {})
+        result["links"].setdefault("bubblemaps", build_bubblemaps_url(mint))
+        result.setdefault("warnings", list(WARNINGS))
+    return result
+
+
 def _decimal_from_value(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
@@ -227,7 +235,7 @@ def fetch_token_holder_concentration(
         lookup_error_code="TOKEN_SUPPLY_LOOKUP_FAILED",
     )
     if not supply_result.get("ok"):
-        return supply_result
+        return _with_known_mint_context(supply_result, mint)
 
     supply_value = (
         ((supply_result.get("data") or {}).get("result") or {}).get("value")
@@ -238,11 +246,14 @@ def fetch_token_holder_concentration(
         (supply_value or {}).get("amount") if isinstance(supply_value, dict) else None
     )
     if supply_amount is None or supply_amount <= 0:
-        return _error(
-            "TOKEN_SUPPLY_NOT_FOUND",
-            "Solana RPC did not return a usable token supply.",
-            provider="solana_rpc",
-            mint=mint,
+        return _with_known_mint_context(
+            _error(
+                "TOKEN_SUPPLY_NOT_FOUND",
+                "Solana RPC did not return a usable token supply.",
+                provider="solana_rpc",
+                mint=mint,
+            ),
+            mint,
         )
 
     accounts_result = _rpc_post(
@@ -254,7 +265,7 @@ def fetch_token_holder_concentration(
         lookup_error_code="TOKEN_LARGEST_ACCOUNTS_LOOKUP_FAILED",
     )
     if not accounts_result.get("ok"):
-        return accounts_result
+        return _with_known_mint_context(accounts_result, mint)
 
     account_values = (
         ((accounts_result.get("data") or {}).get("result") or {}).get("value")
@@ -262,20 +273,26 @@ def fetch_token_holder_concentration(
         else None
     )
     if not isinstance(account_values, list) or not account_values:
-        return _error(
-            "TOKEN_LARGEST_ACCOUNTS_NOT_FOUND",
-            "Solana RPC did not return largest token accounts.",
-            provider="solana_rpc",
-            mint=mint,
+        return _with_known_mint_context(
+            _error(
+                "TOKEN_LARGEST_ACCOUNTS_NOT_FOUND",
+                "Solana RPC did not return largest token accounts.",
+                provider="solana_rpc",
+                mint=mint,
+            ),
+            mint,
         )
 
     accounts = [account for account in account_values if isinstance(account, dict)]
     if not accounts:
-        return _error(
-            "TOKEN_LARGEST_ACCOUNTS_NOT_FOUND",
-            "Solana RPC did not return usable largest token accounts.",
-            provider="solana_rpc",
-            mint=mint,
+        return _with_known_mint_context(
+            _error(
+                "TOKEN_LARGEST_ACCOUNTS_NOT_FOUND",
+                "Solana RPC did not return usable largest token accounts.",
+                provider="solana_rpc",
+                mint=mint,
+            ),
+            mint,
         )
 
     top_account_pct = _rounded_percent(_percent(_sum_top(accounts, 1), supply_amount))
