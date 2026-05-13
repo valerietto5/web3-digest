@@ -24,7 +24,10 @@ from fastapi import Body
 import requests
 from datetime import datetime, timezone
 from providers.helius_activity import fetch_wallet_activity
-from providers.token_holder_concentration import fetch_token_holder_concentration
+from providers.token_holder_concentration import (
+    fetch_token_holder_concentration,
+    get_holder_concentration_rpc_config_status,
+)
 from providers.token_resolver import resolve_token
 from token_registry import default_swap_token_meta_by_symbol, get_token_meta_by_symbol
 
@@ -761,6 +764,15 @@ def token_holder_concentration(mint: str = Query("")):
         raise HTTPException(status_code=400, detail="mint is required")
 
     return fetch_token_holder_concentration(mint)
+
+
+@app.get("/tokens/holder-concentration/config")
+def token_holder_concentration_config():
+    return {
+        "ok": True,
+        "rpc": get_holder_concentration_rpc_config_status(),
+        "note": "Set TOKEN_HOLDER_CONCENTRATION_RPC_URL to use a dedicated RPC for holder concentration.",
+    }
 
 
 def _build_promotion_audit_summary(report: dict) -> dict:

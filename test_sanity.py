@@ -45,6 +45,7 @@ from api.main import (
     swap_tokens,
     token_resolve,
     token_promotion_audit,
+    token_holder_concentration_config,
     token_holder_concentration,
     wallet_activity,
 )
@@ -55,6 +56,7 @@ from providers.helius_activity import fetch_wallet_activity
 from providers.token_holder_concentration import (
     build_bubblemaps_url,
     fetch_token_holder_concentration,
+    get_holder_concentration_rpc_config_status,
 )
 from tools.token_promotion_audit import (
     audit_mint as audit_promotion_mint,
@@ -1093,6 +1095,51 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(post.call_args.args[0], "https://api.mainnet-beta.solana.com")
         self.assertEqual(result["rpc"]["source"], "public_solana_rpc")
         self.assertFalse(result["rpc"]["url_configured"])
+
+    def test_holder_concentration_rpc_config_status_is_redacted(self):
+        with patch.dict(os.environ, {}, clear=True):
+            public_status = get_holder_concentration_rpc_config_status()
+
+        self.assertEqual(public_status["source"], "public_solana_rpc")
+        self.assertFalse(public_status["url_configured"])
+        self.assertTrue(public_status["using_public_fallback"])
+
+        with patch.dict(
+            os.environ,
+            {"TOKEN_HOLDER_CONCENTRATION_RPC_URL": "https://holder.example?api-key=secret"},
+            clear=True,
+        ):
+            configured_status = get_holder_concentration_rpc_config_status()
+
+        self.assertEqual(configured_status["source"], "TOKEN_HOLDER_CONCENTRATION_RPC_URL")
+        self.assertTrue(configured_status["url_configured"])
+        self.assertFalse(configured_status["using_public_fallback"])
+        self.assertNotIn("holder.example", json.dumps(configured_status))
+        self.assertNotIn("secret", json.dumps(configured_status))
+
+    def test_holder_concentration_config_endpoint_returns_redacted_status(self):
+        with patch.dict(
+            os.environ,
+            {"TOKEN_HOLDER_CONCENTRATION_RPC_URL": "https://holder.example?api-key=secret"},
+            clear=True,
+        ):
+            response = token_holder_concentration_config()
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["rpc"]["source"], "TOKEN_HOLDER_CONCENTRATION_RPC_URL")
+        self.assertTrue(response["rpc"]["url_configured"])
+        self.assertFalse(response["rpc"]["using_public_fallback"])
+        self.assertIn("TOKEN_HOLDER_CONCENTRATION_RPC_URL", response["note"])
+        self.assertNotIn("holder.example", json.dumps(response))
+        self.assertNotIn("secret", json.dumps(response))
+
+    def test_env_example_documents_holder_rpc_without_real_key(self):
+        text = (Path(__file__).resolve().parent / ".env.example").read_text()
+
+        self.assertIn("TOKEN_HOLDER_CONCENTRATION_RPC_URL", text)
+        self.assertIn("https://your-solana-rpc.example", text)
+        self.assertNotIn("api-key=", text.lower())
+        self.assertNotIn("secret", text.lower())
 
     def test_token_holder_concentration_http_error_invalid_json_and_request_failure(self):
         class HttpErrorResponse:

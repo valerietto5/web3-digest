@@ -42,6 +42,16 @@ def _resolve_rpc_url(rpc_url: str | None) -> tuple[str, dict[str, Any]]:
     return _configured_rpc_url()
 
 
+def get_holder_concentration_rpc_config_status() -> dict[str, Any]:
+    _url, rpc_meta = _configured_rpc_url()
+    source = rpc_meta.get("source") or "public_solana_rpc"
+    return {
+        "source": source,
+        "url_configured": bool(rpc_meta.get("url_configured")),
+        "using_public_fallback": source == "public_solana_rpc",
+    }
+
+
 def build_bubblemaps_url(mint: str) -> str:
     return f"https://v2.bubblemaps.io/map?address={quote((mint or '').strip())}&chain=solana"
 
