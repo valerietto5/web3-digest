@@ -980,6 +980,256 @@ def _fetch_jupiter_swap_instructions(
         raise HTTPException(status_code=502, detail=f"Jupiter swap-instructions request failed: {e}")
 
 
+def _swap_execution_error(code: str, message: str, **extra) -> dict:
+    error = {
+        "code": code,
+        "message": message,
+    }
+    error.update({k: v for k, v in extra.items() if v is not None})
+    return {
+        "ok": False,
+        "error": error,
+    }
+
+
+def _fetch_jupiter_swap_transaction(
+    *,
+    quote_response: dict,
+    user_public_key: str,
+    as_legacy_transaction: bool = False,
+) -> dict:
+    url = "https://api.jup.ag/swap/v1/swap"
+
+    payload = {
+        "quoteResponse": quote_response,
+        "userPublicKey": user_public_key,
+        "wrapAndUnwrapSol": True,
+        "dynamicComputeUnitLimit": True,
+        "asLegacyTransaction": as_legacy_transaction,
+    }
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+    jup_api_key = os.getenv("JUP_API_KEY")
+    if jup_api_key:
+        headers["x-api-key"] = jup_api_key
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            e.close()
+        except Exception:
+            pass
+        if e.code in (401, 403) or "api key" in body.lower() or "unauthorized" in body.lower():
+            return _swap_execution_error(
+                "SWAP_EXECUTION_JUPITER_AUTH_REQUIRED",
+                "Jupiter swap execution requires valid Jupiter API authorization.",
+                status_code=e.code,
+                detail=body,
+            )
+        if e.code == 429:
+            return _swap_execution_error(
+                "SWAP_EXECUTION_RATE_LIMITED",
+                "Jupiter swap execution is rate-limited right now.",
+                status_code=e.code,
+                detail=body,
+            )
+        return _swap_execution_error(
+            "SWAP_EXECUTION_PREPARE_FAILED",
+            "Jupiter swap transaction preparation failed.",
+            status_code=e.code,
+            detail=body,
+        )
+    except json.JSONDecodeError as e:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_PREPARE_FAILED",
+            "Jupiter swap transaction response was not valid JSON.",
+            detail=str(e),
+        )
+    except Exception as e:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_PREPARE_FAILED",
+            "Jupiter swap transaction request failed.",
+            detail=str(e),
+        )
+
+    if not isinstance(data, dict):
+        return _swap_execution_error(
+            "SWAP_EXECUTION_PREPARE_FAILED",
+            "Jupiter swap transaction response was not an object.",
+        )
+
+    swap_transaction = data.get("swapTransaction")
+    if not swap_transaction:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_PREPARE_FAILED",
+            "Jupiter swap transaction response did not include swapTransaction.",
+            raw=data,
+        )
+
+    return {
+        "ok": True,
+        "swap_transaction": swap_transaction,
+        "last_valid_block_height": data.get("lastValidBlockHeight"),
+        "raw": data,
+    }
+
+
+JUPITER_EXECUTION_PROVIDER_ALIASES = {
+    "jupiter": "jupiter-metis",
+    "jupiter-metis": "jupiter-metis",
+}
+
+JUPITER_EXECUTION_VARIANTS = {
+    "recommended_default",
+    "broader_search",
+    "exclude_recommended_dexes",
+    "direct_route_check",
+}
+
+
+def _normalize_execution_provider(provider: str) -> str | None:
+    key = (provider or "").strip().lower()
+    return JUPITER_EXECUTION_PROVIDER_ALIASES.get(key)
+
+
+def _build_jupiter_execution_quote_params(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount_raw: int,
+    slippage_bps: int,
+    variant_id: str,
+) -> dict:
+    params = {
+        "inputMint": input_meta["mint"],
+        "outputMint": output_meta["mint"],
+        "amount": str(amount_raw),
+        "slippageBps": str(slippage_bps),
+        "restrictIntermediateTokens": "true",
+        "instructionVersion": "V2",
+    }
+
+    if variant_id == "broader_search":
+        params["restrictIntermediateTokens"] = "false"
+    elif variant_id == "direct_route_check":
+        params["onlyDirectRoutes"] = "true"
+
+    return params
+
+
+def _jupiter_quote_error_response(e: HTTPException) -> dict:
+    detail = e.detail
+    detail_text = json.dumps(detail) if isinstance(detail, (dict, list)) else str(detail)
+    lower = detail_text.lower()
+
+    if e.status_code == 429 or "too many requests" in lower or "rate limit" in lower:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_RATE_LIMITED",
+            "Jupiter quote request is rate-limited right now.",
+            status_code=e.status_code,
+            detail=detail,
+        )
+
+    if e.status_code in (401, 403) or "api key" in lower or "unauthorized" in lower:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_JUPITER_AUTH_REQUIRED",
+            "Jupiter quote request requires valid Jupiter API authorization.",
+            status_code=e.status_code,
+            detail=detail,
+        )
+
+    return _swap_execution_error(
+        "SWAP_EXECUTION_QUOTE_FAILED",
+        "Could not refresh a Jupiter quote for swap execution.",
+        status_code=e.status_code,
+        detail=detail,
+    )
+
+
+def _fetch_fresh_jupiter_execution_quote(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount_raw: int,
+    slippage_bps: int,
+    variant_id: str,
+) -> dict:
+    params = _build_jupiter_execution_quote_params(
+        input_meta=input_meta,
+        output_meta=output_meta,
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+        variant_id=variant_id,
+    )
+
+    if variant_id != "exclude_recommended_dexes":
+        try:
+            return {
+                "ok": True,
+                "quote": _fetch_jupiter_quote(params),
+                "params": params,
+            }
+        except HTTPException as e:
+            return _jupiter_quote_error_response(e)
+
+    try:
+        base_quote = _fetch_jupiter_quote(params)
+        labels = _route_labels(base_quote.get("routePlan") or [])
+        if not labels:
+            return _swap_execution_error(
+                "SWAP_EXECUTION_UNSUPPORTED_ROUTE",
+                "Alternate venue mix execution requires a default Jupiter route to exclude.",
+            )
+        exclude_params = {
+            **params,
+            "excludeDexes": ",".join(labels),
+        }
+        return {
+            "ok": True,
+            "quote": _fetch_jupiter_quote(exclude_params),
+            "params": exclude_params,
+        }
+    except HTTPException as e:
+        return _jupiter_quote_error_response(e)
+
+
+def _jupiter_execution_quote_summary(
+    *,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    amount: float,
+    output_decimals: int,
+    slippage_bps: int,
+    variant_id: str,
+) -> dict:
+    return {
+        "from_token": from_token,
+        "to_token": to_token,
+        "amount": amount,
+        "estimated_output": _ui_amount(quote.get("outAmount"), output_decimals),
+        "estimated_output_raw": quote.get("outAmount"),
+        "min_received": _ui_amount(quote.get("otherAmountThreshold"), output_decimals),
+        "min_received_raw": quote.get("otherAmountThreshold"),
+        "slippage_bps": slippage_bps,
+        "variant_id": variant_id,
+    }
+
+
 
 SOLANA_MAINNET_RPC_URL = os.environ.get(
     "SOLANA_MAINNET_RPC_URL",
@@ -3207,6 +3457,140 @@ def swap_instructions(payload: dict = Body(...)):
     return {
         "ok": True,
         "instructions": data,
+    }
+
+
+@app.post("/swap/execute/prepare")
+def swap_execute_prepare(payload: dict = Body(...)):
+    provider = _normalize_execution_provider(payload.get("provider") or "")
+    variant_id = (payload.get("variant_id") or "").strip()
+    from_token_query = (payload.get("from_token") or "").strip()
+    to_token_query = (payload.get("to_token") or "").strip()
+    user_public_key = (payload.get("user_public_key") or "").strip()
+    network = (payload.get("network") or "solana").strip().lower()
+
+    if not user_public_key:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_WALLET_REQUIRED",
+            "Connect a wallet before preparing a swap transaction.",
+        )
+
+    if network != "solana":
+        return _swap_execution_error(
+            "SWAP_EXECUTION_UNSUPPORTED_NETWORK",
+            "Only Solana swap execution is supported for now.",
+        )
+
+    if provider != "jupiter-metis":
+        return _swap_execution_error(
+            "SWAP_EXECUTION_UNSUPPORTED_PROVIDER",
+            "Only Jupiter swap execution is supported in V1.",
+        )
+
+    if variant_id not in JUPITER_EXECUTION_VARIANTS:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_UNSUPPORTED_ROUTE",
+            "This route cannot be prepared for execution.",
+        )
+
+    try:
+        amount = float(payload.get("amount"))
+    except Exception:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_QUOTE_FAILED",
+            "Swap amount must be a valid number.",
+        )
+
+    if amount <= 0:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_QUOTE_FAILED",
+            "Swap amount must be greater than zero.",
+        )
+
+    try:
+        slippage_bps = int(payload.get("slippage_bps", 50))
+    except Exception:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_QUOTE_FAILED",
+            "Slippage must be a valid basis-point integer.",
+        )
+
+    if slippage_bps < 0:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_QUOTE_FAILED",
+            "Slippage cannot be negative.",
+        )
+
+    input_meta = _resolve_swap_token_for_quote(from_token_query)
+    output_meta = _resolve_swap_token_for_quote(to_token_query)
+    if not input_meta or input_meta.get("resolution_error"):
+        return _swap_execution_error(
+            "SWAP_EXECUTION_QUOTE_FAILED",
+            "Could not resolve input token metadata for swap execution.",
+            side="from",
+            detail=(input_meta or {}).get("resolution_error"),
+        )
+    if not output_meta or output_meta.get("resolution_error"):
+        return _swap_execution_error(
+            "SWAP_EXECUTION_QUOTE_FAILED",
+            "Could not resolve output token metadata for swap execution.",
+            side="to",
+            detail=(output_meta or {}).get("resolution_error"),
+        )
+    if input_meta["mint"] == output_meta["mint"]:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_QUOTE_FAILED",
+            "Input and output tokens must be different.",
+        )
+
+    try:
+        amount_raw = to_raw_amount(amount, input_meta["decimals"])
+    except HTTPException as e:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_QUOTE_FAILED",
+            "Swap amount is too small after token decimal conversion.",
+            detail=e.detail,
+        )
+
+    fresh_quote = _fetch_fresh_jupiter_execution_quote(
+        input_meta=input_meta,
+        output_meta=output_meta,
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+        variant_id=variant_id,
+    )
+    if fresh_quote.get("ok") is not True:
+        return fresh_quote
+
+    swap_tx = _fetch_jupiter_swap_transaction(
+        quote_response=fresh_quote["quote"],
+        user_public_key=user_public_key,
+        as_legacy_transaction=False,
+    )
+    if swap_tx.get("ok") is not True:
+        return swap_tx
+
+    from_token = input_meta.get("quote_label") or input_meta.get("symbol") or from_token_query
+    to_token = output_meta.get("quote_label") or output_meta.get("symbol") or to_token_query
+
+    return {
+        "ok": True,
+        "provider": "jupiter-metis",
+        "execution_surface_label": "Jupiter",
+        "execution_status": "prepared",
+        "transaction_base64": swap_tx.get("swap_transaction"),
+        "transaction_format": "versioned",
+        "last_valid_block_height": swap_tx.get("last_valid_block_height"),
+        "quote_summary": _jupiter_execution_quote_summary(
+            quote=fresh_quote["quote"],
+            from_token=from_token,
+            to_token=to_token,
+            amount=amount,
+            output_decimals=output_meta["decimals"],
+            slippage_bps=slippage_bps,
+            variant_id=variant_id,
+        ),
+        "warnings": ["quote_refreshed_before_execution"],
     }
 
 

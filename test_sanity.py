@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 import requests
+import io
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 from api.main import (
@@ -41,6 +43,8 @@ from api.main import (
     _try_fetch_phantom_quote,
     _try_fetch_phoenix_quote,
     _try_fetch_pumpswap_quote,
+    _fetch_jupiter_swap_transaction,
+    swap_execute_prepare,
     swap_quote,
     swap_tokens,
     token_resolve,
@@ -5351,6 +5355,322 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(len(phantom_errors), 1)
         self.assertEqual(phantom_errors[0]["status_code"], 400)
         self.assertIn("user_public_key", phantom_errors[0]["detail"])
+
+    def _mock_jupiter_execution_quote(self, out_amount="85000000"):
+        return {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": out_amount,
+            "otherAmountThreshold": "84575000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Orca",
+                        "inputMint": METEORA_DLMM_SOL_MINT,
+                        "outputMint": METEORA_DLMM_USDC_MINT,
+                        "inAmount": "1000000000",
+                        "outAmount": out_amount,
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+
+    def _base_swap_execute_prepare_payload(self, **overrides):
+        payload = {
+            "provider": "jupiter-metis",
+            "variant_id": "recommended_default",
+            "from_token": "SOL",
+            "to_token": "USDC",
+            "amount": 1.0,
+            "slippage_bps": 50,
+            "user_public_key": "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            "network": "solana",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_swap_execute_prepare_rejects_missing_user_public_key(self):
+        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(user_public_key=""))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_WALLET_REQUIRED")
+
+    def test_swap_execute_prepare_rejects_unsupported_provider(self):
+        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="raydium-trade-api"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_UNSUPPORTED_PROVIDER")
+
+    def test_swap_execute_prepare_rejects_non_jupiter_provider_in_v1(self):
+        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="PumpSwap"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_UNSUPPORTED_PROVIDER")
+
+    def test_swap_execute_prepare_accepts_jupiter_provider_alias(self):
+        quote = self._mock_jupiter_execution_quote()
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=quote),
+            patch(
+                "api.main._fetch_jupiter_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "swap_transaction": "base64tx",
+                    "last_valid_block_height": 123,
+                    "raw": {"swapTransaction": "base64tx"},
+                },
+            ),
+        ):
+            result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="Jupiter"))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["provider"], "jupiter-metis")
+
+    def test_swap_execute_prepare_rejects_unsupported_network(self):
+        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(network="ethereum"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_UNSUPPORTED_NETWORK")
+
+    def test_swap_execute_prepare_rejects_unsupported_variant_id(self):
+        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(variant_id="pumpswap_quote"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_UNSUPPORTED_ROUTE")
+
+    def test_swap_execute_prepare_rebuilds_fresh_jupiter_quote_before_swap(self):
+        quote = self._mock_jupiter_execution_quote()
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=quote) as fetch_quote,
+            patch(
+                "api.main._fetch_jupiter_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "swap_transaction": "base64tx",
+                    "last_valid_block_height": 456,
+                    "raw": {"swapTransaction": "base64tx"},
+                },
+            ) as fetch_swap,
+        ):
+            result = swap_execute_prepare(self._base_swap_execute_prepare_payload(raw_quote={"tampered": True}))
+
+        self.assertTrue(result["ok"])
+        fetch_quote.assert_called_once()
+        params = fetch_quote.call_args.args[0]
+        self.assertEqual(params["inputMint"], METEORA_DLMM_SOL_MINT)
+        self.assertEqual(params["outputMint"], METEORA_DLMM_USDC_MINT)
+        self.assertEqual(params["amount"], "1000000000")
+        self.assertEqual(params["slippageBps"], "50")
+        fetch_swap.assert_called_once()
+        self.assertEqual(fetch_swap.call_args.kwargs["quote_response"], quote)
+
+    def test_swap_execute_prepare_direct_route_sets_only_direct_routes(self):
+        quote = self._mock_jupiter_execution_quote()
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=quote) as fetch_quote,
+            patch(
+                "api.main._fetch_jupiter_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "swap_transaction": "base64tx",
+                    "last_valid_block_height": 456,
+                    "raw": {"swapTransaction": "base64tx"},
+                },
+            ),
+        ):
+            result = swap_execute_prepare(
+                self._base_swap_execute_prepare_payload(variant_id="direct_route_check")
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(fetch_quote.call_args.args[0]["onlyDirectRoutes"], "true")
+
+    def test_swap_execute_prepare_broader_search_relaxes_intermediate_restriction(self):
+        quote = self._mock_jupiter_execution_quote()
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=quote) as fetch_quote,
+            patch(
+                "api.main._fetch_jupiter_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "swap_transaction": "base64tx",
+                    "last_valid_block_height": 456,
+                    "raw": {"swapTransaction": "base64tx"},
+                },
+            ),
+        ):
+            result = swap_execute_prepare(
+                self._base_swap_execute_prepare_payload(variant_id="broader_search")
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(fetch_quote.call_args.args[0]["restrictIntermediateTokens"], "false")
+
+    def test_swap_execute_prepare_exclude_recommended_dexes_rebuilds_two_quotes(self):
+        default_quote = self._mock_jupiter_execution_quote(out_amount="85000000")
+        alternate_quote = self._mock_jupiter_execution_quote(out_amount="84000000")
+        with (
+            patch("api.main._fetch_jupiter_quote", side_effect=[default_quote, alternate_quote]) as fetch_quote,
+            patch(
+                "api.main._fetch_jupiter_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "swap_transaction": "base64tx",
+                    "last_valid_block_height": 456,
+                    "raw": {"swapTransaction": "base64tx"},
+                },
+            ) as fetch_swap,
+        ):
+            result = swap_execute_prepare(
+                self._base_swap_execute_prepare_payload(variant_id="exclude_recommended_dexes")
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(fetch_quote.call_count, 2)
+        self.assertEqual(fetch_quote.call_args_list[1].args[0]["excludeDexes"], "Orca")
+        self.assertEqual(fetch_swap.call_args.kwargs["quote_response"], alternate_quote)
+
+    def test_swap_execute_prepare_returns_prepared_transaction_summary(self):
+        quote = self._mock_jupiter_execution_quote()
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=quote),
+            patch(
+                "api.main._fetch_jupiter_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "swap_transaction": "base64tx",
+                    "last_valid_block_height": 789,
+                    "raw": {"swapTransaction": "base64tx"},
+                },
+            ),
+        ):
+            result = swap_execute_prepare(self._base_swap_execute_prepare_payload())
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transaction_base64"], "base64tx")
+        self.assertEqual(result["transaction_format"], "versioned")
+        self.assertEqual(result["last_valid_block_height"], 789)
+        self.assertEqual(result["quote_summary"]["from_token"], "SOL")
+        self.assertEqual(result["quote_summary"]["to_token"], "USDC")
+        self.assertEqual(result["quote_summary"]["estimated_output_raw"], "85000000")
+        self.assertAlmostEqual(result["quote_summary"]["estimated_output"], 85.0)
+        self.assertEqual(result["quote_summary"]["min_received_raw"], "84575000")
+        self.assertAlmostEqual(result["quote_summary"]["min_received"], 84.575)
+        self.assertEqual(result["quote_summary"]["variant_id"], "recommended_default")
+        self.assertIn("quote_refreshed_before_execution", result["warnings"])
+
+    def test_swap_execute_prepare_does_not_mutate_token_meta(self):
+        before = json.dumps(TOKEN_META, sort_keys=True)
+        quote = self._mock_jupiter_execution_quote()
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=quote),
+            patch(
+                "api.main._fetch_jupiter_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "swap_transaction": "base64tx",
+                    "last_valid_block_height": 789,
+                    "raw": {"swapTransaction": "base64tx"},
+                },
+            ),
+        ):
+            result = swap_execute_prepare(self._base_swap_execute_prepare_payload())
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
+    def test_fetch_jupiter_swap_transaction_calls_swap_endpoint(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "swapTransaction": "base64tx",
+                    "lastValidBlockHeight": 123,
+                }).encode("utf-8")
+
+        def fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["timeout"] = timeout
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = _fetch_jupiter_swap_transaction(
+                quote_response={"routePlan": []},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["url"], "https://api.jup.ag/swap/v1/swap")
+        self.assertEqual(captured["body"]["quoteResponse"], {"routePlan": []})
+        self.assertEqual(
+            captured["body"]["userPublicKey"],
+            "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+        self.assertTrue(captured["body"]["wrapAndUnwrapSol"])
+        self.assertTrue(captured["body"]["dynamicComputeUnitLimit"])
+        self.assertFalse(captured["body"]["asLegacyTransaction"])
+        self.assertEqual(result["swap_transaction"], "base64tx")
+        self.assertEqual(result["last_valid_block_height"], 123)
+
+    def test_fetch_jupiter_swap_transaction_maps_auth_errors(self):
+        err = urllib.error.HTTPError(
+            "https://api.jup.ag/swap/v1/swap",
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(b'{"error":"unauthorized"}'),
+        )
+        with patch("urllib.request.urlopen", side_effect=err):
+            result = _fetch_jupiter_swap_transaction(
+                quote_response={"routePlan": []},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_JUPITER_AUTH_REQUIRED")
+
+    def test_fetch_jupiter_swap_transaction_maps_rate_limit_errors(self):
+        err = urllib.error.HTTPError(
+            "https://api.jup.ag/swap/v1/swap",
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(b'{"error":"too many requests"}'),
+        )
+        with patch("urllib.request.urlopen", side_effect=err):
+            result = _fetch_jupiter_swap_transaction(
+                quote_response={"routePlan": []},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_RATE_LIMITED")
+
+    def test_fetch_jupiter_swap_transaction_rejects_missing_swap_transaction(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({"lastValidBlockHeight": 123}).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=FakeResponse()):
+            result = _fetch_jupiter_swap_transaction(
+                quote_response={"routePlan": []},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PREPARE_FAILED")
 
 if __name__ == "__main__":
     unittest.main()
