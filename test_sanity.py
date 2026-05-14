@@ -1861,6 +1861,79 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Shape: two-hop · Steps: ${escapeHtml(String(routeSteps))}", html)
         self.assertIn("Route shape: ${escapeHtml(routeShape)} · Steps: ${escapeHtml(String(routeSteps))}", html)
 
+    def test_swap_ui_includes_prepare_route_state_and_endpoint_call(self):
+        html = build_ui_html()
+
+        self.assertIn('id="swapExecutionStatus"', html)
+        self.assertIn('let latestPreparedSwap = null;', html)
+        self.assertIn('let swapExecutionState = "idle";', html)
+        self.assertIn("function setSwapExecutionStatus(state, text, detail = null)", html)
+        self.assertIn("async function prepareSwapRoute(routeRequest)", html)
+        self.assertIn('fetchMaybeJson("/swap/execute/prepare"', html)
+        self.assertIn('provider: "jupiter-metis"', html)
+        self.assertIn("variant_id: variantId", html)
+        self.assertIn("from_token: fromToken", html)
+        self.assertIn("to_token: toToken", html)
+        self.assertIn("amount,", html)
+        self.assertIn("slippage_bps: 50", html)
+        self.assertIn("user_public_key: activeWalletPubkey", html)
+        self.assertIn('network: "solana"', html)
+        self.assertIn("Swap transaction prepared. Signing is not enabled yet.", html)
+        self.assertIn("Jupiter authorization is required for execution prepare.", html)
+        self.assertIn("Jupiter is rate-limited right now. Try again later.", html)
+
+    def test_swap_ui_prepare_route_requires_phantom_and_does_not_sign(self):
+        html = build_ui_html()
+        start = html.index("async function prepareSwapRoute(routeRequest)")
+        end = html.index("function handleSwapExecuteClick", start)
+        prepare_block = html[start:end]
+
+        self.assertIn("Connect Phantom to prepare this swap.", prepare_block)
+        self.assertIn("if (!activeWalletPubkey)", prepare_block)
+        self.assertIn('routeRequest.provider !== "jupiter-metis"', prepare_block)
+        self.assertNotIn("signTransaction", prepare_block)
+        self.assertNotIn("sendRawTransaction", prepare_block)
+        self.assertNotIn("VersionedTransaction", prepare_block)
+        self.assertNotIn("transaction_base64", prepare_block)
+
+    def test_swap_ui_renders_swap_button_only_for_jupiter_executable_cards(self):
+        html = build_ui_html()
+
+        self.assertIn("function isJupiterExecutableRouteOption(opt)", html)
+        self.assertIn('opt?.provider === "jupiter-metis"', html)
+        self.assertIn("opt?.is_clickable === true", html)
+        self.assertIn("opt?.is_comparison_only !== true", html)
+        self.assertIn('opt?.execution_status === "executable_capable"', html)
+        self.assertIn("!!opt?.variant_id", html)
+        self.assertIn('data-swap-execute="true"', html)
+        self.assertIn('data-provider="jupiter-metis"', html)
+        self.assertIn('data-variant-id="${escapeHtml(opt.variant_id)}"', html)
+        self.assertIn('data-card-role="${escapeHtml(cardRole || opt.kind || "route")}"', html)
+        self.assertIn("Comparison-only - no swap action available yet.", html)
+
+        start = html.index("function renderCompactAlternativeCard")
+        end = html.index("function swapPrepareErrorMessage", start)
+        alternative_block = html[start:end]
+        self.assertNotIn('data-swap-execute="true"', alternative_block)
+
+    def test_swap_ui_direct_route_uses_direct_variant_for_prepare(self):
+        html = build_ui_html()
+
+        self.assertIn('showDirectAction: true,', html)
+        self.assertIn('cardRole: "direct"', html)
+        self.assertIn('renderRouteActionButton("Swap this route", opt, opts.cardRole || "direct")', html)
+        self.assertIn("variant_id: button.dataset.variantId", html)
+        self.assertNotIn("Try direct route", html)
+
+    def test_swap_ui_prepare_click_uses_event_delegation_and_preserves_preview_flow(self):
+        html = build_ui_html()
+
+        self.assertIn("function handleSwapExecuteClick(event)", html)
+        self.assertIn('event.target?.closest?.(\'[data-swap-execute="true"]\')', html)
+        self.assertIn('$("swapCard").addEventListener("click", handleSwapExecuteClick);', html)
+        self.assertIn("latestSwapQuoteResponse = quote;", html)
+        self.assertIn("runHolderConcentration();", html)
+
     def test_insert_and_get_latest_prices_with_ts(self):
         t1 = "2026-02-25T00:00:00+00:00"
         t2 = "2026-02-25T01:00:00+00:00"

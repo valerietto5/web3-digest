@@ -207,6 +207,7 @@ def build_ui_html() -> str:
       </div>
       <div class="muted" id="swapCoverageDepth" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
       <div class="muted" id="swapExternalTokenNotice" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
+      <div class="muted" id="swapExecutionStatus" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;">Ready to prepare a swap route.</div>
 
       <div class="muted" id="swapRecommendation" style="margin-top:8px;">recommendation: —</div>
       <div class="muted" id="swapCompareSummary" style="margin-top:8px;">comparison summary: —</div>
@@ -305,6 +306,9 @@ def build_ui_html() -> str:
     to: null
   };
   let holderConcentrationMint = null;
+  let latestSwapQuoteResponse = null;
+  let latestPreparedSwap = null;
+  let swapExecutionState = "idle";
 
   function nowTimeLabel() {
     return new Date().toLocaleTimeString();
@@ -389,17 +393,47 @@ function showSwapStatus(kind, title, payload) {
   logActivity(kind, title, payload);
 }
 
+function setSwapExecutionStatus(state, text, detail = null) {
+  swapExecutionState = state || "idle";
+  const box = $("swapExecutionStatus");
+  if (!box) return;
+
+  if (!text) {
+    box.textContent = "";
+    box.style.display = "none";
+    box.className = "muted";
+    return;
+  }
+
+  const kind =
+    swapExecutionState === "prepared"
+      ? "ok"
+      : swapExecutionState === "failed"
+        ? "err"
+        : "warn";
+
+  box.className = "muted " + kind;
+  box.textContent = detail ? text + " " + detail : text;
+  box.style.display = "block";
+}
+
+function resetSwapExecutionPrepare() {
+  latestPreparedSwap = null;
+  setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
+}
 
 function clearSwapUi() {
   $("swapAmount").value = "";
   $("swapDebugWrap").style.display = "none";
   $("swapQuotePreview").textContent = "";
   $("swapStatus").style.display = "none";
+  latestSwapQuoteResponse = null;
   setTokenResolvePreview("from", null, "");
   setTokenResolvePreview("to", null, "");
   resetHolderConcentration({ hideButton: true });
   setSwapPhase("Draft", "Ready to request a swap quote.");
   resetSwapQuoteDisplay();
+  resetSwapExecutionPrepare();
   resetSwapInlineBaseline();
 }
 
@@ -596,6 +630,7 @@ function renderSwapInlineBaseline(baseline, delta = null) {
 
 
 function resetSwapQuoteDisplay() {
+  latestSwapQuoteResponse = null;
   $("swapRecommendation").textContent = "";
   $("swapCompareSummary").textContent = "";
   $("swapRecommendation").style.display = "none";
@@ -616,6 +651,7 @@ function resetSwapQuoteDisplay() {
   $("swapDirectBox").innerHTML = "<div class='muted'>No direct-route check yet.</div>";
   $("swapDebugWrap").style.display = "none";
   $("swapQuotePreview").textContent = "";
+  resetSwapExecutionPrepare();
 }
 
 
@@ -762,13 +798,28 @@ function getSwapThrownErrorInfo(err) {
 
 
 
-function renderRouteActionButton(label, buttonId) {
+function isJupiterExecutableRouteOption(opt) {
+  return (
+    opt?.provider === "jupiter-metis" &&
+    opt?.is_clickable === true &&
+    opt?.is_comparison_only !== true &&
+    opt?.execution_status === "executable_capable" &&
+    !!opt?.variant_id
+  );
+}
+
+function renderRouteActionButton(label, opt, cardRole) {
+  if (!isJupiterExecutableRouteOption(opt)) return "";
+
   return `
     <button
-      id="${escapeHtml(buttonId)}"
       type="button"
       class="secondary"
       style="min-width:160px;"
+      data-swap-execute="true"
+      data-provider="jupiter-metis"
+      data-variant-id="${escapeHtml(opt.variant_id)}"
+      data-card-role="${escapeHtml(cardRole || opt.kind || "route")}"
     >
       ${escapeHtml(label)}
     </button>
@@ -1103,7 +1154,7 @@ function renderSwapOptionCard(opt, opts = {}) {
   const showRecommendedAction = !!opts.showRecommendedAction;
   const showDirectAction = !!opts.showDirectAction;
   const isComparisonOnly = opt.is_comparison_only === true;
-  const isClickable = opt.is_clickable !== false && !isComparisonOnly;
+  const isExecutableRoute = isJupiterExecutableRouteOption(opt);
   const estOut = fmtNum(Number(opt.estimated_output || 0), 6);
   const receiveUsd = Number(opt?.estimated_output_usd);
   const receiveUsdText = Number.isFinite(receiveUsd) ? " ≈ " + fmtUsdCost(receiveUsd) : "";
@@ -1222,16 +1273,16 @@ function renderSwapOptionCard(opt, opts = {}) {
           : ""
       }
       ${
-        isRecommendedCard && showRecommendedAction && isClickable
+        isRecommendedCard && showRecommendedAction && isExecutableRoute
           ? `
             <div style="position:absolute; top:12px; right:12px;">
-              ${renderRouteActionButton("Swap this route", "btnSwapRecommended")}
+              ${renderRouteActionButton("Swap this route", opt, opts.cardRole || "recommended")}
             </div>
           `
-          : (compactDirect && showDirectAction && isClickable
+          : (compactDirect && showDirectAction && isExecutableRoute
               ? `
                 <div style="position:absolute; top:12px; right:12px;">
-                  ${renderRouteActionButton("Try direct route", "btnSwapDirect")}
+                  ${renderRouteActionButton("Swap this route", opt, opts.cardRole || "direct")}
                 </div>
               `
               : "")
@@ -1353,9 +1404,119 @@ function renderCompactAlternativeCard(opt, idx = 0) {
   `;
 }
 
+function swapPrepareErrorMessage(code) {
+  if (code === "SWAP_EXECUTION_WALLET_REQUIRED") {
+    return "Connect Phantom to prepare this swap.";
+  }
+  if (code === "SWAP_EXECUTION_UNSUPPORTED_PROVIDER" || code === "SWAP_EXECUTION_UNSUPPORTED_ROUTE") {
+    return "This route is not executable yet.";
+  }
+  if (code === "SWAP_EXECUTION_UNSUPPORTED_NETWORK") {
+    return "Only Solana execution is supported right now.";
+  }
+  if (code === "SWAP_EXECUTION_JUPITER_AUTH_REQUIRED") {
+    return "Jupiter authorization is required for execution prepare.";
+  }
+  if (code === "SWAP_EXECUTION_RATE_LIMITED") {
+    return "Jupiter is rate-limited right now. Try again later.";
+  }
+  if (code === "SWAP_EXECUTION_QUOTE_FAILED") {
+    return "Could not refresh quote. Preview again.";
+  }
+  if (code === "SWAP_EXECUTION_PREPARE_FAILED") {
+    return "Swap preparation failed. Preview again.";
+  }
+  return "Swap preparation failed.";
+}
+
+async function prepareSwapRoute(routeRequest) {
+  latestPreparedSwap = null;
+
+  const activeWalletPubkey =
+    phantomProvider?.publicKey?.toString?.() || phantomPubkey || "";
+
+  if (!activeWalletPubkey) {
+    setSwapExecutionStatus("failed", "Connect Phantom to prepare this swap.");
+    return;
+  }
+
+  if (!routeRequest || routeRequest.provider !== "jupiter-metis") {
+    setSwapExecutionStatus("failed", "This route is not executable yet.");
+    return;
+  }
+
+  const variantId = routeRequest.variant_id || "";
+  const fromToken = $("swapFromToken").value;
+  const toToken = $("swapToToken").value;
+  const amount = Number(($("swapAmount").value || "").trim());
+
+  if (!variantId || !Number.isFinite(amount) || amount <= 0) {
+    setSwapExecutionStatus("failed", "Could not refresh quote. Preview again.");
+    return;
+  }
+
+  const payload = {
+    provider: "jupiter-metis",
+    variant_id: variantId,
+    from_token: fromToken,
+    to_token: toToken,
+    amount,
+    slippage_bps: 50,
+    user_public_key: activeWalletPubkey,
+    network: "solana"
+  };
+
+  setSwapExecutionStatus("preparing", "Preparing swap…");
+
+  let res;
+  try {
+    res = await fetchMaybeJson("/swap/execute/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    setSwapExecutionStatus("failed", "Swap preparation failed. Preview again.");
+    return;
+  }
+
+  if (!res.ok || res.data?.ok === false) {
+    const code = res.data?.error?.code || "SWAP_EXECUTION_PREPARE_FAILED";
+    setSwapExecutionStatus("failed", swapPrepareErrorMessage(code));
+    return;
+  }
+
+  latestPreparedSwap = res.data || null;
+  const summary = latestPreparedSwap?.quote_summary || {};
+  const receive = summary.estimated_output != null
+    ? "Refreshed receive estimate: " + fmtNum(Number(summary.estimated_output), 6) + " " + (summary.to_token || "")
+    : "";
+
+  setSwapExecutionStatus(
+    "prepared",
+    "Swap transaction prepared. Signing is not enabled yet.",
+    receive
+  );
+}
+
+function handleSwapExecuteClick(event) {
+  const button = event.target?.closest?.('[data-swap-execute="true"]');
+  if (!button) return;
+
+  event.preventDefault();
+  prepareSwapRoute({
+    provider: button.dataset.provider,
+    variant_id: button.dataset.variantId,
+    card_role: button.dataset.cardRole
+  });
+}
+
 
 async function previewSwap() {
   showSwapStatus("warn", "Preview clicked", { step: "previewSwap entered" });
+  latestSwapQuoteResponse = null;
+  latestPreparedSwap = null;
+  setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
 
   const fromToken = $("swapFromToken").value;
   const toToken = $("swapToToken").value;
@@ -1424,6 +1585,7 @@ async function previewSwap() {
   }
 
   const quote = res.data || {};
+  latestSwapQuoteResponse = quote;
   renderSwapInlineBaseline(
     quote.inline_baseline,
     quote.inline_baseline_vs_recommended
@@ -1530,13 +1692,15 @@ async function previewSwap() {
       executableRec && !sameOption(displayRec, executableRec);
 
     $("swapRecommendedBox").innerHTML = renderSwapOptionCard(displayRec, {
-      showRecommendedAction: displayRec?.is_comparison_only !== true
+      showRecommendedAction: displayRec?.is_comparison_only !== true,
+      cardRole: "recommended"
     }) + (
       showExecutableRecommendation
         ? renderSwapOptionCard(executableRec, {
             title: "Best executable route",
             note: "Best executable-capable route available from this preview.",
-            showRecommendedAction: true
+            showRecommendedAction: true,
+            cardRole: "recommended"
           })
         : ""
     );
@@ -1571,7 +1735,8 @@ async function previewSwap() {
         $("swapDirectBox").innerHTML = renderSwapOptionCard(directRoute, {
           note: directNote,
           compactDirect: true,
-          showDirectAction: true
+          showDirectAction: true,
+          cardRole: "direct"
         });
       }
     } else {
@@ -2765,6 +2930,7 @@ function fmtUsdCost(x) {
   $("btnAirdropDevnet").addEventListener("click", requestDevnetAirdrop);
   $("btnPreviewSwap").addEventListener("click", previewSwap);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
+  $("swapCard").addEventListener("click", handleSwapExecuteClick);
   $("swapAmount").addEventListener("input", updateLiveSwapBaseline);
   $("swapFromToken").addEventListener("input", () => scheduleSwapTokenResolve("from"));
   $("swapToToken").addEventListener("input", () => scheduleSwapTokenResolve("to"));
