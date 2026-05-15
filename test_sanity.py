@@ -1882,6 +1882,60 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Jupiter authorization is required for execution prepare.", html)
         self.assertIn("Jupiter is rate-limited right now. Try again later.", html)
 
+    def test_swap_ui_extracts_swap_prepare_error_details(self):
+        html = build_ui_html()
+
+        self.assertIn("function extractSwapPrepareErrorDetail(data)", html)
+        self.assertIn("const error = data?.error || {};", html)
+        self.assertIn("code: compactSwapPrepareErrorText(error.code)", html)
+        self.assertIn("message: compactSwapPrepareErrorText(error.message)", html)
+        self.assertIn("detail: compactSwapPrepareErrorText(error.detail)", html)
+
+    def test_swap_ui_maps_jupiter_auth_prepare_error_to_jup_api_key_copy(self):
+        html = build_ui_html()
+
+        self.assertIn('code === "SWAP_EXECUTION_JUPITER_AUTH_REQUIRED"', html)
+        self.assertIn("Jupiter authorization is required for execution prepare. Configure JUP_API_KEY and preview again.", html)
+
+    def test_swap_ui_maps_rate_limited_prepare_error(self):
+        html = build_ui_html()
+
+        self.assertIn('code === "SWAP_EXECUTION_RATE_LIMITED"', html)
+        self.assertIn("Jupiter is rate-limited right now. Try again later.", html)
+
+    def test_swap_ui_maps_prepare_failed_error(self):
+        html = build_ui_html()
+
+        self.assertIn('code === "SWAP_EXECUTION_PREPARE_FAILED"', html)
+        self.assertIn("Swap preparation failed. Preview again.", html)
+
+    def test_swap_ui_prepare_failure_logs_backend_response(self):
+        html = build_ui_html()
+        start = html.index("async function prepareSwapRoute(routeRequest)")
+        end = html.index("function isPhantomUserRejection", start)
+        prepare_block = html[start:end]
+
+        self.assertIn('console.warn("Swap execution prepare failed"', prepare_block)
+        self.assertIn("response: redactSwapPrepareFailureResponse(res.data)", prepare_block)
+
+    def test_swap_ui_prepare_failure_displays_backend_error_code_detail(self):
+        html = build_ui_html()
+        start = html.index("async function prepareSwapRoute(routeRequest)")
+        end = html.index("function isPhantomUserRejection", start)
+        prepare_block = html[start:end]
+
+        self.assertIn("const errorDetail = extractSwapPrepareErrorDetail(res.data);", prepare_block)
+        self.assertIn('errorDetail.code ? "Execution error: " + errorDetail.code : null', prepare_block)
+
+    def test_swap_ui_prepare_failure_does_not_render_transaction_base64(self):
+        html = build_ui_html()
+        start = html.index("async function prepareSwapRoute(routeRequest)")
+        end = html.index("function isPhantomUserRejection", start)
+        prepare_block = html[start:end]
+
+        self.assertNotIn("transaction_base64", prepare_block)
+        self.assertNotIn("swapTransaction", prepare_block)
+
     def test_swap_ui_prepare_route_requires_phantom_and_does_not_sign(self):
         html = build_ui_html()
         start = html.index("async function prepareSwapRoute(routeRequest)")

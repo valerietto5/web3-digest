@@ -1479,7 +1479,41 @@ function renderCompactAlternativeCard(opt, idx = 0) {
   `;
 }
 
-function swapPrepareErrorMessage(code) {
+function compactSwapPrepareErrorText(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/transaction_base64|swapTransaction/i.test(text)) return "";
+  if ((text.startsWith("{") || text.startsWith("[")) && text.length > 120) return "";
+  if (text.length > 220) return text.slice(0, 217) + "...";
+  return text;
+}
+
+function extractSwapPrepareErrorDetail(data) {
+  const error = data?.error || {};
+  return {
+    code: compactSwapPrepareErrorText(error.code),
+    message: compactSwapPrepareErrorText(error.message),
+    detail: compactSwapPrepareErrorText(error.detail)
+  };
+}
+
+function redactSwapPrepareFailureResponse(value) {
+  if (Array.isArray(value)) return value.map(redactSwapPrepareFailureResponse);
+  if (!value || typeof value !== "object") return value;
+
+  const redacted = {};
+  Object.entries(value).forEach(([key, item]) => {
+    if (/transaction_base64|swapTransaction/i.test(key)) {
+      redacted[key] = "[redacted]";
+    } else {
+      redacted[key] = redactSwapPrepareFailureResponse(item);
+    }
+  });
+  return redacted;
+}
+
+function swapPrepareErrorMessage(code, fallbackMessage = "") {
+  const safeFallback = compactSwapPrepareErrorText(fallbackMessage);
   if (code === "SWAP_EXECUTION_WALLET_REQUIRED") {
     return "Connect Phantom to prepare this swap.";
   }
@@ -1490,7 +1524,7 @@ function swapPrepareErrorMessage(code) {
     return "Only Solana execution is supported right now.";
   }
   if (code === "SWAP_EXECUTION_JUPITER_AUTH_REQUIRED") {
-    return "Jupiter authorization is required for execution prepare.";
+    return "Jupiter authorization is required for execution prepare. Configure JUP_API_KEY and preview again.";
   }
   if (code === "SWAP_EXECUTION_RATE_LIMITED") {
     return "Jupiter is rate-limited right now. Try again later.";
@@ -1501,7 +1535,7 @@ function swapPrepareErrorMessage(code) {
   if (code === "SWAP_EXECUTION_PREPARE_FAILED") {
     return "Swap preparation failed. Preview again.";
   }
-  return "Swap preparation failed.";
+  return safeFallback ? "Swap preparation failed. " + safeFallback : "Swap preparation failed.";
 }
 
 async function prepareSwapRoute(routeRequest) {
@@ -1557,8 +1591,18 @@ async function prepareSwapRoute(routeRequest) {
   }
 
   if (!res.ok || res.data?.ok === false) {
-    const code = res.data?.error?.code || "SWAP_EXECUTION_PREPARE_FAILED";
-    setSwapExecutionStatus("failed", swapPrepareErrorMessage(code));
+    const errorDetail = extractSwapPrepareErrorDetail(res.data);
+    const code = errorDetail.code || "SWAP_EXECUTION_PREPARE_FAILED";
+    console.warn("Swap execution prepare failed", {
+      status: res.status,
+      error: errorDetail,
+      response: redactSwapPrepareFailureResponse(res.data)
+    });
+    setSwapExecutionStatus(
+      "failed",
+      swapPrepareErrorMessage(code, errorDetail.message || errorDetail.detail),
+      errorDetail.code ? "Execution error: " + errorDetail.code : null
+    );
     return;
   }
 
