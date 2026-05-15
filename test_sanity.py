@@ -2026,6 +2026,7 @@ class TestSanity(unittest.TestCase):
         start = html.index("function renderPreparedSwapSummary(prepared)")
         end = html.index("function resetSwapExecutionPrepare", start)
         summary_block = html[start:end]
+        self.assertNotIn('lines.push("<div style="', summary_block)
         self.assertNotIn("transaction_base64", summary_block)
 
     def test_swap_ui_prepare_reset_clears_acknowledgement_and_disables_sign_button(self):

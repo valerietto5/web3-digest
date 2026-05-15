@@ -458,8 +458,8 @@ function renderPreparedSwapSummary(prepared) {
 
   const summary = prepared?.quote_summary || {};
   const lines = [];
-  lines.push("<div style=\"font-weight:600; color:#e5eefb;\">Prepared swap</div>");
-  lines.push("<div>Route: Jupiter</div>");
+  lines.push(`<div style="font-weight:600; color:#e5eefb;">Prepared swap</div>`);
+  lines.push(`<div>Route: Jupiter</div>`);
 
   if (summary.from_token || summary.amount != null) {
     const amount = summary.amount != null ? fmtNum(Number(summary.amount), 6) : "n/a";
@@ -485,8 +485,8 @@ function renderPreparedSwapSummary(prepared) {
     lines.push(`<div>Slippage: ${escapeHtml(String(summary.slippage_bps))} bps</div>`);
   }
 
-  lines.push("<div>Network: Solana mainnet</div>");
-  lines.push("<div style=\"margin-top:6px;\">This is a real mainnet transaction. Review in Phantom before signing.</div>");
+  lines.push(`<div>Network: Solana mainnet</div>`);
+  lines.push(`<div style="margin-top:6px;">This is a real mainnet transaction. Review in Phantom before signing.</div>`);
 
   box.innerHTML = lines.join("");
 }
