@@ -1643,10 +1643,46 @@ function mainnetExplorerLink(signature) {
   return `${MAINNET_EXPLORER_BASE}${signature}`;
 }
 
+function compactSwapRuntimeErrorText(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/transaction_base64|swapTransaction/i.test(text)) return "";
+  if ((text.startsWith("{") || text.startsWith("[")) && text.length > 120) return "";
+  if (text.length > 180) return text.slice(0, 177) + "...";
+  return text;
+}
+
+function swapRuntimeErrorDetail(err) {
+  const message = compactSwapRuntimeErrorText(err?.message || err?.reason || err);
+  return message ? "Reason: " + message : "";
+}
+
+function swapRuntimeFailureMessage(phase, err) {
+  if (phase === "deserialize") {
+    return "Could not read prepared swap transaction. Preview again.";
+  }
+  if (phase === "signing") {
+    return isPhantomUserRejection(err) ? "Swap was rejected in Phantom." : "Phantom signing failed.";
+  }
+  if (phase === "missing_signed_transaction") {
+    return "Phantom signing did not return a signed transaction.";
+  }
+  if (phase === "submit") {
+    return isExpiredSwapError(err) ? "Quote expired. Preview again." : "Transaction submission failed.";
+  }
+  if (phase === "confirm") {
+    return isExpiredSwapError(err) ? "Quote expired. Preview again." : "Swap confirmation failed.";
+  }
+  if (phase === "expired") {
+    return "Quote expired. Preview again.";
+  }
+  return "Swap failed.";
+}
+
 async function signAndSubmitPreparedSwap() {
   if (!latestPreparedSwap || !latestPreparedSwap.transaction_base64) {
     setSwapPreparedActionVisible(false);
-    setSwapExecutionStatus("failed", "Quote expired. Preview again.");
+    setSwapExecutionStatus("failed", swapRuntimeFailureMessage("expired"), "Execution phase: prepare");
     return;
   }
 
@@ -1682,9 +1718,14 @@ async function signAndSubmitPreparedSwap() {
     const bytes = Uint8Array.from(atob(transactionBase64), c => c.charCodeAt(0));
     tx = solanaWeb3.VersionedTransaction.deserialize(bytes);
   } catch (err) {
-    console.error("swap transaction deserialize error:", err);
+    console.error("swap deserialize error:", err);
     setSwapPreparedActionVisible(false);
-    setSwapExecutionStatus("failed", "Swap preparation failed. Preview again.");
+    const reason = swapRuntimeErrorDetail(err);
+    setSwapExecutionStatus(
+      "failed",
+      swapRuntimeFailureMessage("deserialize", err),
+      reason ? "Execution phase: deserialize. " + reason : "Execution phase: deserialize"
+    );
     return;
   }
 
@@ -1695,18 +1736,24 @@ async function signAndSubmitPreparedSwap() {
     setSwapExecutionStatus("signing", "Review and sign in Phantom…");
     signedTx = await phantomProvider.signTransaction(tx);
   } catch (err) {
-    if (isPhantomUserRejection(err)) {
-      setSwapExecutionStatus("failed", "Swap was rejected in Phantom.");
-    } else {
-      setSwapExecutionStatus("failed", "Swap failed.");
-    }
+    console.error("swap signing error:", err);
+    const reason = swapRuntimeErrorDetail(err);
+    setSwapExecutionStatus(
+      "failed",
+      swapRuntimeFailureMessage("signing", err),
+      reason ? "Execution phase: signing. " + reason : "Execution phase: signing"
+    );
     setSwapPreparedActionVisible(true);
     updateSwapSignButtonState();
     return;
   }
 
   if (!signedTx) {
-    setSwapExecutionStatus("failed", "Swap failed.");
+    setSwapExecutionStatus(
+      "failed",
+      swapRuntimeFailureMessage("missing_signed_transaction"),
+      "Execution phase: signing"
+    );
     setSwapPreparedActionVisible(true);
     updateSwapSignButtonState();
     return;
@@ -1714,10 +1761,13 @@ async function signAndSubmitPreparedSwap() {
 
   setSwapPreparedActionVisible(false);
 
+  let connection;
+  let signature;
+  let explorer;
   try {
     setSwapExecutionStatus("submitting", "Submitting transaction…");
-    const connection = new solanaWeb3.Connection(MAINNET_RPC_URL, "confirmed");
-    const signature = await connection.sendRawTransaction(signedTx.serialize(), {
+    connection = new solanaWeb3.Connection(MAINNET_RPC_URL, "confirmed");
+    signature = await connection.sendRawTransaction(signedTx.serialize(), {
       skipPreflight: false,
       preflightCommitment: "confirmed"
     });
@@ -1726,9 +1776,20 @@ async function signAndSubmitPreparedSwap() {
       throw new Error("No transaction signature returned after RPC submission.");
     }
 
-    const explorer = mainnetExplorerLink(signature);
+    explorer = mainnetExplorerLink(signature);
     setSwapExecutionStatus("submitted", "Swap submitted", "Signature: " + shortenMiddle(signature, 8, 8));
+  } catch (err) {
+    console.error("swap submit error:", err);
+    const reason = swapRuntimeErrorDetail(err);
+    setSwapExecutionStatus(
+      "failed",
+      swapRuntimeFailureMessage("submit", err),
+      reason ? "Execution phase: submit. " + reason : "Execution phase: submit"
+    );
+    return;
+  }
 
+  try {
     const blockhash = tx?.message?.recentBlockhash;
     const lastValidBlockHeight = latestPreparedSwap?.last_valid_block_height;
     const confirmPayload = blockhash && lastValidBlockHeight
@@ -1742,18 +1803,26 @@ async function signAndSubmitPreparedSwap() {
     );
 
     if (confirmation?.value?.err) {
-      setSwapExecutionStatus("failed", "Swap failed.", "Signature: " + shortenMiddle(signature, 8, 8));
+      console.error("swap confirmation error:", confirmation.value.err);
+      const err = new Error("Transaction confirmation returned an error.");
+      const reason = swapRuntimeErrorDetail(err);
+      setSwapExecutionStatus(
+        "failed",
+        swapRuntimeFailureMessage("confirm", err),
+        reason ? "Execution phase: confirm. " + reason : "Execution phase: confirm"
+      );
       return;
     }
 
     setSwapExecutionStatus("confirmed", "Swap confirmed", "Open in Solana Explorer: " + explorer);
   } catch (err) {
-    console.error("swap submit error:", err);
-    if (isExpiredSwapError(err)) {
-      setSwapExecutionStatus("failed", "Quote expired. Preview again.");
-    } else {
-      setSwapExecutionStatus("failed", "Swap failed.");
-    }
+    console.error("swap confirm error:", err);
+    const reason = swapRuntimeErrorDetail(err);
+    setSwapExecutionStatus(
+      "failed",
+      swapRuntimeFailureMessage("confirm", err),
+      reason ? "Execution phase: confirm. " + reason : "Execution phase: confirm"
+    );
   }
 }
 

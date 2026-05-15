@@ -2008,6 +2008,59 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Swap was rejected in Phantom.", html)
         self.assertIn("Quote expired. Preview again.", html)
 
+    def test_swap_ui_includes_runtime_error_helpers(self):
+        html = build_ui_html()
+
+        self.assertIn("function compactSwapRuntimeErrorText(value)", html)
+        self.assertIn("function swapRuntimeErrorDetail(err)", html)
+        self.assertIn("function swapRuntimeFailureMessage(phase, err)", html)
+        self.assertIn("Reason: ", html)
+        self.assertIn("transaction_base64|swapTransaction", html)
+
+    def test_swap_ui_signing_runtime_failure_copy_exists(self):
+        html = build_ui_html()
+
+        self.assertIn("Could not read prepared swap transaction. Preview again.", html)
+        self.assertIn("Phantom signing failed.", html)
+        self.assertIn("Phantom signing did not return a signed transaction.", html)
+        self.assertIn("Transaction submission failed.", html)
+        self.assertIn("Swap confirmation failed.", html)
+        self.assertIn("Quote expired. Preview again.", html)
+
+    def test_swap_ui_signing_failure_logs_phase_specific_errors(self):
+        html = build_ui_html()
+        start = html.index("async function signAndSubmitPreparedSwap()")
+        end = html.index("function handleSwapExecuteClick", start)
+        sign_block = html[start:end]
+
+        self.assertIn('console.error("swap deserialize error:", err);', sign_block)
+        self.assertIn('console.error("swap signing error:", err);', sign_block)
+        self.assertIn('console.error("swap submit error:", err);', sign_block)
+        self.assertIn('console.error("swap confirmation error:", confirmation.value.err);', sign_block)
+        self.assertIn('console.error("swap confirm error:", err);', sign_block)
+
+    def test_swap_ui_signing_displays_execution_phase_detail(self):
+        html = build_ui_html()
+        start = html.index("async function signAndSubmitPreparedSwap()")
+        end = html.index("function handleSwapExecuteClick", start)
+        sign_block = html[start:end]
+
+        self.assertIn("Execution phase: deserialize", sign_block)
+        self.assertIn("Execution phase: signing", sign_block)
+        self.assertIn("Execution phase: submit", sign_block)
+        self.assertIn("Execution phase: confirm", sign_block)
+
+    def test_swap_ui_signing_does_not_render_transaction_base64_in_status(self):
+        html = build_ui_html()
+        start = html.index("async function signAndSubmitPreparedSwap()")
+        end = html.index("function handleSwapExecuteClick", start)
+        sign_block = html[start:end]
+
+        for line in sign_block.splitlines():
+            if "setSwapExecutionStatus(" in line:
+                self.assertNotIn("transaction_base64", line)
+                self.assertNotIn("swapTransaction", line)
+
     def test_swap_ui_signing_requires_prepared_swap_phantom_and_versioned_tx(self):
         html = build_ui_html()
         start = html.index("async function signAndSubmitPreparedSwap()")
