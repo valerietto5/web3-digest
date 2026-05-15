@@ -208,6 +208,9 @@ def build_ui_html() -> str:
       <div class="muted" id="swapCoverageDepth" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
       <div class="muted" id="swapExternalTokenNotice" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
       <div class="muted" id="swapExecutionStatus" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;">Ready to prepare a swap route.</div>
+      <div id="swapPreparedAction" style="display:none; margin-top:8px;">
+        <button id="btnSignPreparedSwap" type="button" class="secondary">Review and sign in Phantom</button>
+      </div>
 
       <div class="muted" id="swapRecommendation" style="margin-top:8px;">recommendation: —</div>
       <div class="muted" id="swapCompareSummary" style="margin-top:8px;">comparison summary: —</div>
@@ -293,6 +296,8 @@ def build_ui_html() -> str:
 
   const DEVNET_RPC_URL = "https://api.devnet.solana.com";
   const DEVNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
+  const MAINNET_RPC_URL = "https://api.mainnet-beta.solana.com";
+  const MAINNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
 
   const ACTIVITY_LIMIT = 8;
   const activityItems = [];
@@ -406,7 +411,9 @@ function setSwapExecutionStatus(state, text, detail = null) {
   }
 
   const kind =
-    swapExecutionState === "prepared"
+    swapExecutionState === "prepared" ||
+    swapExecutionState === "submitted" ||
+    swapExecutionState === "confirmed"
       ? "ok"
       : swapExecutionState === "failed"
         ? "err"
@@ -417,8 +424,15 @@ function setSwapExecutionStatus(state, text, detail = null) {
   box.style.display = "block";
 }
 
+function setSwapPreparedActionVisible(visible) {
+  const box = $("swapPreparedAction");
+  if (!box) return;
+  box.style.display = visible ? "block" : "none";
+}
+
 function resetSwapExecutionPrepare() {
   latestPreparedSwap = null;
+  setSwapPreparedActionVisible(false);
   setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
 }
 
@@ -1431,6 +1445,7 @@ function swapPrepareErrorMessage(code) {
 
 async function prepareSwapRoute(routeRequest) {
   latestPreparedSwap = null;
+  setSwapPreparedActionVisible(false);
 
   const activeWalletPubkey =
     phantomProvider?.publicKey?.toString?.() || phantomPubkey || "";
@@ -1497,6 +1512,133 @@ async function prepareSwapRoute(routeRequest) {
     "Swap transaction prepared. Signing is not enabled yet.",
     receive
   );
+  setSwapPreparedActionVisible(true);
+}
+
+function isPhantomUserRejection(err) {
+  const code = err?.code ?? err?.data?.code;
+  const message = String(err?.message || err || "").toLowerCase();
+  return code === 4001 ||
+    message.includes("rejected") ||
+    message.includes("denied") ||
+    message.includes("cancelled") ||
+    message.includes("canceled");
+}
+
+function isExpiredSwapError(err) {
+  const message = String(err?.message || err || "").toLowerCase();
+  return message.includes("blockhash") ||
+    message.includes("expired") ||
+    message.includes("last valid block height") ||
+    message.includes("transaction was not confirmed");
+}
+
+function mainnetExplorerLink(signature) {
+  return `${MAINNET_EXPLORER_BASE}${signature}`;
+}
+
+async function signAndSubmitPreparedSwap() {
+  if (!latestPreparedSwap || !latestPreparedSwap.transaction_base64) {
+    setSwapPreparedActionVisible(false);
+    setSwapExecutionStatus("failed", "Quote expired. Preview again.");
+    return;
+  }
+
+  if (latestPreparedSwap.transaction_format !== "versioned") {
+    setSwapPreparedActionVisible(false);
+    setSwapExecutionStatus("failed", "Swap preparation failed. Preview again.");
+    return;
+  }
+
+  phantomProvider = getPhantomProvider();
+  const activeWalletPubkey =
+    phantomProvider?.publicKey?.toString?.() || phantomPubkey || "";
+
+  if (!phantomProvider || !activeWalletPubkey) {
+    setSwapExecutionStatus("failed", "Connect Phantom to continue.");
+    return;
+  }
+
+  if (!solanaWeb3?.VersionedTransaction?.deserialize) {
+    setSwapExecutionStatus("failed", "Swap signing is not supported in this browser session.");
+    return;
+  }
+
+  let tx;
+  try {
+    const transactionBase64 = latestPreparedSwap.transaction_base64;
+    const bytes = Uint8Array.from(atob(transactionBase64), c => c.charCodeAt(0));
+    tx = solanaWeb3.VersionedTransaction.deserialize(bytes);
+  } catch (err) {
+    console.error("swap transaction deserialize error:", err);
+    setSwapPreparedActionVisible(false);
+    setSwapExecutionStatus("failed", "Swap preparation failed. Preview again.");
+    return;
+  }
+
+  let signedTx;
+  try {
+    setSwapExecutionStatus("signing", "Review and sign in Phantom…");
+    signedTx = await phantomProvider.signTransaction(tx);
+  } catch (err) {
+    if (isPhantomUserRejection(err)) {
+      setSwapExecutionStatus("failed", "Swap was rejected in Phantom.");
+    } else {
+      setSwapExecutionStatus("failed", "Swap failed.");
+    }
+    setSwapPreparedActionVisible(true);
+    return;
+  }
+
+  if (!signedTx) {
+    setSwapExecutionStatus("failed", "Swap failed.");
+    setSwapPreparedActionVisible(true);
+    return;
+  }
+
+  setSwapPreparedActionVisible(false);
+
+  try {
+    setSwapExecutionStatus("submitting", "Submitting transaction…");
+    const connection = new solanaWeb3.Connection(MAINNET_RPC_URL, "confirmed");
+    const signature = await connection.sendRawTransaction(signedTx.serialize(), {
+      skipPreflight: false,
+      preflightCommitment: "confirmed"
+    });
+
+    if (!signature) {
+      throw new Error("No transaction signature returned after RPC submission.");
+    }
+
+    const explorer = mainnetExplorerLink(signature);
+    setSwapExecutionStatus("submitted", "Swap submitted", "Signature: " + shortenMiddle(signature, 8, 8));
+
+    const blockhash = tx?.message?.recentBlockhash;
+    const lastValidBlockHeight = latestPreparedSwap?.last_valid_block_height;
+    const confirmPayload = blockhash && lastValidBlockHeight
+      ? { signature, blockhash, lastValidBlockHeight }
+      : signature;
+    const confirmation = await confirmTransactionWithTimeout(
+      connection,
+      confirmPayload,
+      "confirmed",
+      30000
+    );
+
+    if (confirmation?.value?.err) {
+      setSwapExecutionStatus("failed", "Swap failed.", "Signature: " + shortenMiddle(signature, 8, 8));
+      return;
+    }
+
+    setSwapExecutionStatus("confirmed", "Swap confirmed", "Open in Solana Explorer: " + explorer);
+  } catch (err) {
+    console.error("swap submit error:", err);
+    if (isExpiredSwapError(err)) {
+      setSwapExecutionStatus("failed", "Quote expired. Preview again.");
+    } else {
+      setSwapExecutionStatus("failed", "Swap failed.");
+    }
+  }
 }
 
 function handleSwapExecuteClick(event) {
@@ -1516,6 +1658,7 @@ async function previewSwap() {
   showSwapStatus("warn", "Preview clicked", { step: "previewSwap entered" });
   latestSwapQuoteResponse = null;
   latestPreparedSwap = null;
+  setSwapPreparedActionVisible(false);
   setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
 
   const fromToken = $("swapFromToken").value;
@@ -2929,6 +3072,7 @@ function fmtUsdCost(x) {
   $("btnSendSol").addEventListener("click", sendSol);
   $("btnAirdropDevnet").addEventListener("click", requestDevnetAirdrop);
   $("btnPreviewSwap").addEventListener("click", previewSwap);
+  $("btnSignPreparedSwap").addEventListener("click", signAndSubmitPreparedSwap);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
   $("swapCard").addEventListener("click", handleSwapExecuteClick);
   $("swapAmount").addEventListener("input", updateLiveSwapBaseline);

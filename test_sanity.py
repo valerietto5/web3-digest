@@ -1885,16 +1885,17 @@ class TestSanity(unittest.TestCase):
     def test_swap_ui_prepare_route_requires_phantom_and_does_not_sign(self):
         html = build_ui_html()
         start = html.index("async function prepareSwapRoute(routeRequest)")
-        end = html.index("function handleSwapExecuteClick", start)
+        end = html.index("function isPhantomUserRejection", start)
         prepare_block = html[start:end]
 
         self.assertIn("Connect Phantom to prepare this swap.", prepare_block)
         self.assertIn("if (!activeWalletPubkey)", prepare_block)
         self.assertIn('routeRequest.provider !== "jupiter-metis"', prepare_block)
+        self.assertIn("setSwapPreparedActionVisible(true);", prepare_block)
         self.assertNotIn("signTransaction", prepare_block)
         self.assertNotIn("sendRawTransaction", prepare_block)
         self.assertNotIn("VersionedTransaction", prepare_block)
-        self.assertNotIn("transaction_base64", prepare_block)
+        self.assertNotIn("signAndSubmitPreparedSwap", prepare_block)
 
     def test_swap_ui_renders_swap_button_only_for_jupiter_executable_cards(self):
         html = build_ui_html()
@@ -1933,6 +1934,71 @@ class TestSanity(unittest.TestCase):
         self.assertIn('$("swapCard").addEventListener("click", handleSwapExecuteClick);', html)
         self.assertIn("latestSwapQuoteResponse = quote;", html)
         self.assertIn("runHolderConcentration();", html)
+
+    def test_swap_ui_includes_prepared_sign_action_and_copy(self):
+        html = build_ui_html()
+
+        self.assertIn('id="swapPreparedAction"', html)
+        self.assertIn('id="btnSignPreparedSwap"', html)
+        self.assertIn("Review and sign in Phantom", html)
+        self.assertIn("async function signAndSubmitPreparedSwap()", html)
+        self.assertIn('$("btnSignPreparedSwap").addEventListener("click", signAndSubmitPreparedSwap);', html)
+        self.assertIn("Swap submitted", html)
+        self.assertIn("Swap confirmed", html)
+        self.assertIn("Swap failed.", html)
+        self.assertIn("Swap was rejected in Phantom.", html)
+        self.assertIn("Quote expired. Preview again.", html)
+
+    def test_swap_ui_signing_requires_prepared_swap_phantom_and_versioned_tx(self):
+        html = build_ui_html()
+        start = html.index("async function signAndSubmitPreparedSwap()")
+        end = html.index("function handleSwapExecuteClick", start)
+        sign_block = html[start:end]
+
+        self.assertIn("if (!latestPreparedSwap || !latestPreparedSwap.transaction_base64)", sign_block)
+        self.assertIn('latestPreparedSwap.transaction_format !== "versioned"', sign_block)
+        self.assertIn("if (!phantomProvider || !activeWalletPubkey)", sign_block)
+        self.assertIn("if (!solanaWeb3?.VersionedTransaction?.deserialize)", sign_block)
+        self.assertIn("Swap signing is not supported in this browser session.", sign_block)
+        self.assertIn("Connect Phantom to continue.", sign_block)
+
+    def test_swap_ui_signing_deserializes_signs_submits_and_confirms(self):
+        html = build_ui_html()
+        start = html.index("async function signAndSubmitPreparedSwap()")
+        end = html.index("function handleSwapExecuteClick", start)
+        sign_block = html[start:end]
+
+        self.assertIn("Uint8Array.from(atob(transactionBase64), c => c.charCodeAt(0))", sign_block)
+        self.assertIn("solanaWeb3.VersionedTransaction.deserialize(bytes)", sign_block)
+        self.assertIn("phantomProvider.signTransaction(tx)", sign_block)
+        self.assertIn("new solanaWeb3.Connection(MAINNET_RPC_URL, \"confirmed\")", sign_block)
+        self.assertIn("connection.sendRawTransaction(signedTx.serialize()", sign_block)
+        self.assertIn("confirmTransactionWithTimeout(", sign_block)
+        self.assertIn("MAINNET_EXPLORER_BASE", html)
+        self.assertIn('const MAINNET_RPC_URL = "https://api.mainnet-beta.solana.com";', html)
+        self.assertNotIn("new solanaWeb3.Connection(DEVNET_RPC_URL", sign_block)
+
+    def test_swap_ui_prepare_success_reveals_sign_action_without_auto_signing(self):
+        html = build_ui_html()
+        start = html.index("async function prepareSwapRoute(routeRequest)")
+        end = html.index("function isPhantomUserRejection", start)
+        prepare_block = html[start:end]
+
+        self.assertIn("setSwapPreparedActionVisible(false);", prepare_block)
+        self.assertIn("latestPreparedSwap = res.data || null;", prepare_block)
+        self.assertIn("setSwapPreparedActionVisible(true);", prepare_block)
+        self.assertNotIn("signAndSubmitPreparedSwap()", prepare_block)
+
+    def test_swap_ui_signing_uses_mainnet_not_devnet_for_swap_submission(self):
+        html = build_ui_html()
+        start = html.index("async function signAndSubmitPreparedSwap()")
+        end = html.index("function handleSwapExecuteClick", start)
+        sign_block = html[start:end]
+
+        self.assertIn("MAINNET_RPC_URL", sign_block)
+        self.assertIn("MAINNET_EXPLORER_BASE", html)
+        self.assertNotIn("DEVNET_RPC_URL", sign_block)
+        self.assertNotIn("DEVNET_EXPLORER_BASE", sign_block)
 
     def test_insert_and_get_latest_prices_with_ts(self):
         t1 = "2026-02-25T00:00:00+00:00"
