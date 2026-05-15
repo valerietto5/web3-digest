@@ -1878,7 +1878,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("slippage_bps: 50", html)
         self.assertIn("user_public_key: activeWalletPubkey", html)
         self.assertIn('network: "solana"', html)
-        self.assertIn("Swap transaction prepared. Signing is not enabled yet.", html)
+        self.assertIn("Swap transaction prepared. Review the summary before signing.", html)
         self.assertIn("Jupiter authorization is required for execution prepare.", html)
         self.assertIn("Jupiter is rate-limited right now. Try again later.", html)
 
@@ -1939,10 +1939,15 @@ class TestSanity(unittest.TestCase):
         html = build_ui_html()
 
         self.assertIn('id="swapPreparedAction"', html)
+        self.assertIn('id="swapPreparedSummary"', html)
+        self.assertIn('id="swapSignAcknowledgement"', html)
         self.assertIn('id="btnSignPreparedSwap"', html)
+        self.assertIn('id="btnSignPreparedSwap" type="button" class="secondary" disabled', html)
         self.assertIn("Review and sign in Phantom", html)
+        self.assertIn("I understand this is a real Solana mainnet swap", html)
         self.assertIn("async function signAndSubmitPreparedSwap()", html)
         self.assertIn('$("btnSignPreparedSwap").addEventListener("click", signAndSubmitPreparedSwap);', html)
+        self.assertIn('$("swapSignAcknowledgement").addEventListener("change", updateSwapSignButtonState);', html)
         self.assertIn("Swap submitted", html)
         self.assertIn("Swap confirmed", html)
         self.assertIn("Swap failed.", html)
@@ -1956,6 +1961,9 @@ class TestSanity(unittest.TestCase):
         sign_block = html[start:end]
 
         self.assertIn("if (!latestPreparedSwap || !latestPreparedSwap.transaction_base64)", sign_block)
+        self.assertIn("const ack = $(\"swapSignAcknowledgement\");", sign_block)
+        self.assertIn("if (!ack?.checked)", sign_block)
+        self.assertIn("Confirm you understand this is a real mainnet swap before signing.", sign_block)
         self.assertIn('latestPreparedSwap.transaction_format !== "versioned"', sign_block)
         self.assertIn("if (!phantomProvider || !activeWalletPubkey)", sign_block)
         self.assertIn("if (!solanaWeb3?.VersionedTransaction?.deserialize)", sign_block)
@@ -1986,6 +1994,7 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn("setSwapPreparedActionVisible(false);", prepare_block)
         self.assertIn("latestPreparedSwap = res.data || null;", prepare_block)
+        self.assertIn("renderPreparedSwapSummary(latestPreparedSwap);", prepare_block)
         self.assertIn("setSwapPreparedActionVisible(true);", prepare_block)
         self.assertNotIn("signAndSubmitPreparedSwap()", prepare_block)
 
@@ -1999,6 +2008,33 @@ class TestSanity(unittest.TestCase):
         self.assertIn("MAINNET_EXPLORER_BASE", html)
         self.assertNotIn("DEVNET_RPC_URL", sign_block)
         self.assertNotIn("DEVNET_EXPLORER_BASE", sign_block)
+
+    def test_swap_ui_prepared_summary_renders_mainnet_guardrails(self):
+        html = build_ui_html()
+
+        self.assertIn("function renderPreparedSwapSummary(prepared)", html)
+        self.assertIn("Prepared swap", html)
+        self.assertIn("Route: Jupiter", html)
+        self.assertIn("From:", html)
+        self.assertIn("To:", html)
+        self.assertIn("Estimated receive:", html)
+        self.assertIn("Minimum receive:", html)
+        self.assertIn("Slippage:", html)
+        self.assertIn("Network: Solana mainnet", html)
+        self.assertIn("This is a real mainnet transaction. Review in Phantom before signing.", html)
+
+        start = html.index("function renderPreparedSwapSummary(prepared)")
+        end = html.index("function resetSwapExecutionPrepare", start)
+        summary_block = html[start:end]
+        self.assertNotIn("transaction_base64", summary_block)
+
+    def test_swap_ui_prepare_reset_clears_acknowledgement_and_disables_sign_button(self):
+        html = build_ui_html()
+
+        self.assertIn("function setSwapPreparedActionVisible(visible)", html)
+        self.assertIn("if (ack) ack.checked = false;", html)
+        self.assertIn("if (button) button.disabled = true;", html)
+        self.assertIn("button.disabled = !(latestPreparedSwap && ack?.checked);", html)
 
     def test_insert_and_get_latest_prices_with_ts(self):
         t1 = "2026-02-25T00:00:00+00:00"

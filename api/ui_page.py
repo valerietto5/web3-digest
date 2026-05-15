@@ -209,7 +209,12 @@ def build_ui_html() -> str:
       <div class="muted" id="swapExternalTokenNotice" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
       <div class="muted" id="swapExecutionStatus" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;">Ready to prepare a swap route.</div>
       <div id="swapPreparedAction" style="display:none; margin-top:8px;">
-        <button id="btnSignPreparedSwap" type="button" class="secondary">Review and sign in Phantom</button>
+        <div id="swapPreparedSummary" class="muted" style="font-size:12px; line-height:1.45;"></div>
+        <label class="muted" style="display:flex; align-items:flex-start; gap:6px; margin-top:8px; font-size:12px;">
+          <input id="swapSignAcknowledgement" type="checkbox" style="width:auto; min-width:0; margin-top:2px;" />
+          <span>I understand this is a real Solana mainnet swap and Phantom will ask me to approve it.</span>
+        </label>
+        <button id="btnSignPreparedSwap" type="button" class="secondary" disabled style="margin-top:8px;">Review and sign in Phantom</button>
       </div>
 
       <div class="muted" id="swapRecommendation" style="margin-top:8px;">recommendation: —</div>
@@ -428,6 +433,62 @@ function setSwapPreparedActionVisible(visible) {
   const box = $("swapPreparedAction");
   if (!box) return;
   box.style.display = visible ? "block" : "none";
+  if (!visible) {
+    const summary = $("swapPreparedSummary");
+    const ack = $("swapSignAcknowledgement");
+    const button = $("btnSignPreparedSwap");
+    if (summary) summary.textContent = "";
+    if (ack) ack.checked = false;
+    if (button) button.disabled = true;
+  } else {
+    updateSwapSignButtonState();
+  }
+}
+
+function updateSwapSignButtonState() {
+  const ack = $("swapSignAcknowledgement");
+  const button = $("btnSignPreparedSwap");
+  if (!button) return;
+  button.disabled = !(latestPreparedSwap && ack?.checked);
+}
+
+function renderPreparedSwapSummary(prepared) {
+  const box = $("swapPreparedSummary");
+  if (!box) return;
+
+  const summary = prepared?.quote_summary || {};
+  const lines = [];
+  lines.push("<div style=\"font-weight:600; color:#e5eefb;\">Prepared swap</div>");
+  lines.push("<div>Route: Jupiter</div>");
+
+  if (summary.from_token || summary.amount != null) {
+    const amount = summary.amount != null ? fmtNum(Number(summary.amount), 6) : "n/a";
+    const fromToken = summary.from_token || "";
+    lines.push(`<div>From: ${escapeHtml(amount)} ${escapeHtml(fromToken)}</div>`);
+  }
+
+  if (summary.to_token) {
+    lines.push(`<div>To: ${escapeHtml(summary.to_token)}</div>`);
+  }
+
+  if (summary.estimated_output != null) {
+    const out = fmtNum(Number(summary.estimated_output), 6);
+    lines.push(`<div>Estimated receive: ${escapeHtml(out)} ${escapeHtml(summary.to_token || "")}</div>`);
+  }
+
+  if (summary.min_received != null) {
+    const min = fmtNum(Number(summary.min_received), 6);
+    lines.push(`<div>Minimum receive: ${escapeHtml(min)} ${escapeHtml(summary.to_token || "")}</div>`);
+  }
+
+  if (summary.slippage_bps != null) {
+    lines.push(`<div>Slippage: ${escapeHtml(String(summary.slippage_bps))} bps</div>`);
+  }
+
+  lines.push("<div>Network: Solana mainnet</div>");
+  lines.push("<div style=\"margin-top:6px;\">This is a real mainnet transaction. Review in Phantom before signing.</div>");
+
+  box.innerHTML = lines.join("");
 }
 
 function resetSwapExecutionPrepare() {
@@ -1509,9 +1570,10 @@ async function prepareSwapRoute(routeRequest) {
 
   setSwapExecutionStatus(
     "prepared",
-    "Swap transaction prepared. Signing is not enabled yet.",
+    "Swap transaction prepared. Review the summary before signing.",
     receive
   );
+  renderPreparedSwapSummary(latestPreparedSwap);
   setSwapPreparedActionVisible(true);
 }
 
@@ -1541,6 +1603,12 @@ async function signAndSubmitPreparedSwap() {
   if (!latestPreparedSwap || !latestPreparedSwap.transaction_base64) {
     setSwapPreparedActionVisible(false);
     setSwapExecutionStatus("failed", "Quote expired. Preview again.");
+    return;
+  }
+
+  const ack = $("swapSignAcknowledgement");
+  if (!ack?.checked) {
+    setSwapExecutionStatus("failed", "Confirm you understand this is a real mainnet swap before signing.");
     return;
   }
 
@@ -1578,6 +1646,8 @@ async function signAndSubmitPreparedSwap() {
 
   let signedTx;
   try {
+    const signButton = $("btnSignPreparedSwap");
+    if (signButton) signButton.disabled = true;
     setSwapExecutionStatus("signing", "Review and sign in Phantom…");
     signedTx = await phantomProvider.signTransaction(tx);
   } catch (err) {
@@ -1587,12 +1657,14 @@ async function signAndSubmitPreparedSwap() {
       setSwapExecutionStatus("failed", "Swap failed.");
     }
     setSwapPreparedActionVisible(true);
+    updateSwapSignButtonState();
     return;
   }
 
   if (!signedTx) {
     setSwapExecutionStatus("failed", "Swap failed.");
     setSwapPreparedActionVisible(true);
+    updateSwapSignButtonState();
     return;
   }
 
@@ -3073,6 +3145,7 @@ function fmtUsdCost(x) {
   $("btnAirdropDevnet").addEventListener("click", requestDevnetAirdrop);
   $("btnPreviewSwap").addEventListener("click", previewSwap);
   $("btnSignPreparedSwap").addEventListener("click", signAndSubmitPreparedSwap);
+  $("swapSignAcknowledgement").addEventListener("change", updateSwapSignButtonState);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
   $("swapCard").addEventListener("click", handleSwapExecuteClick);
   $("swapAmount").addEventListener("input", updateLiveSwapBaseline);
