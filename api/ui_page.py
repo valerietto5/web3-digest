@@ -301,7 +301,6 @@ def build_ui_html() -> str:
 
   const DEVNET_RPC_URL = "https://api.devnet.solana.com";
   const DEVNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
-  const MAINNET_RPC_URL = "https://api.mainnet-beta.solana.com";
   const MAINNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
 
   const ACTIVITY_LIMIT = 8;
@@ -1679,6 +1678,35 @@ function swapRuntimeFailureMessage(phase, err) {
   return "Swap failed.";
 }
 
+function swapSubmitErrorMessage(code) {
+  if (code === "SWAP_SUBMIT_FORBIDDEN") {
+    return "Transaction submission was blocked by RPC.";
+  }
+  if (code === "SWAP_SUBMIT_RATE_LIMITED") {
+    return "RPC is rate-limited. Try again later.";
+  }
+  if (code === "SWAP_SUBMIT_RPC_CONFIG_MISSING") {
+    return "Swap submission RPC is not configured.";
+  }
+  if (code === "SWAP_SUBMIT_UNSUPPORTED_NETWORK") {
+    return "Only Solana transaction submission is supported right now.";
+  }
+  if (code === "SWAP_SUBMIT_SIGNED_TRANSACTION_REQUIRED") {
+    return "Transaction submission failed.";
+  }
+  return "Transaction submission failed.";
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.slice(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, chunk);
+  }
+  return btoa(binary);
+}
+
 async function signAndSubmitPreparedSwap() {
   if (!latestPreparedSwap || !latestPreparedSwap.transaction_base64) {
     setSwapPreparedActionVisible(false);
@@ -1761,68 +1789,47 @@ async function signAndSubmitPreparedSwap() {
 
   setSwapPreparedActionVisible(false);
 
-  let connection;
   let signature;
   let explorer;
   try {
     setSwapExecutionStatus("submitting", "Submitting transaction…");
-    connection = new solanaWeb3.Connection(MAINNET_RPC_URL, "confirmed");
-    signature = await connection.sendRawTransaction(signedTx.serialize(), {
-      skipPreflight: false,
-      preflightCommitment: "confirmed"
+    const signedTransactionBase64 = bytesToBase64(signedTx.serialize());
+    const submitResponse = await fetchMaybeJson("/swap/execute/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        network: "solana",
+        signed_transaction_base64: signedTransactionBase64,
+        skip_preflight: false,
+        preflight_commitment: "confirmed"
+      })
     });
 
+    if (!submitResponse.ok || submitResponse.data?.ok === false) {
+      const code = submitResponse.data?.error?.code || "SWAP_SUBMIT_FAILED";
+      const err = new Error(swapSubmitErrorMessage(code));
+      err.code = code;
+      throw err;
+    }
+
+    signature = submitResponse.data?.signature;
     if (!signature) {
-      throw new Error("No transaction signature returned after RPC submission.");
+      const err = new Error("Transaction submission failed.");
+      err.code = "SWAP_SUBMIT_FAILED";
+      throw err;
     }
 
     explorer = mainnetExplorerLink(signature);
-    setSwapExecutionStatus("submitted", "Swap submitted", "Signature: " + shortenMiddle(signature, 8, 8));
+    setSwapExecutionStatus("submitted", "Swap submitted", "Open in Solana Explorer: " + explorer);
   } catch (err) {
     console.error("swap submit error:", err);
     const reason = swapRuntimeErrorDetail(err);
     setSwapExecutionStatus(
       "failed",
-      swapRuntimeFailureMessage("submit", err),
+      err?.code ? swapSubmitErrorMessage(err.code) : swapRuntimeFailureMessage("submit", err),
       reason ? "Execution phase: submit. " + reason : "Execution phase: submit"
     );
     return;
-  }
-
-  try {
-    const blockhash = tx?.message?.recentBlockhash;
-    const lastValidBlockHeight = latestPreparedSwap?.last_valid_block_height;
-    const confirmPayload = blockhash && lastValidBlockHeight
-      ? { signature, blockhash, lastValidBlockHeight }
-      : signature;
-    const confirmation = await confirmTransactionWithTimeout(
-      connection,
-      confirmPayload,
-      "confirmed",
-      30000
-    );
-
-    if (confirmation?.value?.err) {
-      console.error("swap confirmation error:", confirmation.value.err);
-      const err = new Error("Transaction confirmation returned an error.");
-      const reason = swapRuntimeErrorDetail(err);
-      setSwapExecutionStatus(
-        "failed",
-        swapRuntimeFailureMessage("confirm", err),
-        reason ? "Execution phase: confirm. " + reason : "Execution phase: confirm"
-      );
-      return;
-    }
-
-    setSwapExecutionStatus("confirmed", "Swap confirmed", "Open in Solana Explorer: " + explorer);
-  } catch (err) {
-    console.error("swap confirm error:", err);
-    const reason = swapRuntimeErrorDetail(err);
-    setSwapExecutionStatus(
-      "failed",
-      swapRuntimeFailureMessage("confirm", err),
-      reason ? "Execution phase: confirm. " + reason : "Execution phase: confirm"
-    );
   }
 }
 

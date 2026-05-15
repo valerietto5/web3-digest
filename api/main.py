@@ -4,6 +4,8 @@ from fastapi.responses import HTMLResponse
 from .ui_page import build_ui_html
 from fastapi import FastAPI, HTTPException, Query
 from pathlib import Path
+import base64
+import binascii
 import json
 from datetime import datetime, timezone
 import inspect
@@ -1235,6 +1237,149 @@ SOLANA_MAINNET_RPC_URL = os.environ.get(
     "SOLANA_MAINNET_RPC_URL",
     "https://api.mainnet-beta.solana.com",
 ).strip()
+
+
+MAX_SIGNED_SWAP_TRANSACTION_BASE64_CHARS = 200_000
+
+
+def _configured_swap_submit_rpc_url() -> tuple[str | None, str | None]:
+    for name in ("SWAP_SUBMIT_RPC_URL", "SOLANA_RPC_URL", "SOLANA_MAINNET_RPC_URL", "HELIUS_RPC_URL"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value, name
+    return None, None
+
+
+def _swap_submit_error(code: str, message: str, **extra) -> dict:
+    return {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            **extra,
+        },
+    }
+
+
+def _is_swap_submit_rate_limited(value) -> bool:
+    text = str(value or "").lower()
+    return "too many requests" in text or "rate limit" in text or "rate-limited" in text
+
+
+def _is_swap_submit_forbidden(value) -> bool:
+    text = str(value or "").lower()
+    return "forbidden" in text or "access denied" in text or "not authorized" in text
+
+
+def _safe_rpc_request_exception_detail(exc: Exception) -> str:
+    exc_type = type(exc).__name__
+    return f"RPC request failed before a response was received. error_type={exc_type}"
+
+
+def _fetch_solana_send_transaction(
+    *,
+    signed_transaction_base64: str,
+    rpc_url: str,
+    skip_preflight: bool = False,
+    preflight_commitment: str = "confirmed",
+) -> dict:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "sendTransaction",
+        "params": [
+            signed_transaction_base64,
+            {
+                "encoding": "base64",
+                "skipPreflight": bool(skip_preflight),
+                "preflightCommitment": preflight_commitment or "confirmed",
+            },
+        ],
+    }
+
+    try:
+        response = requests.post(
+            rpc_url,
+            json=payload,
+            timeout=25,
+            headers={"accept": "application/json", "content-type": "application/json"},
+        )
+    except requests.RequestException as exc:
+        return _swap_submit_error(
+            "SWAP_SUBMIT_FAILED",
+            "Transaction submission failed.",
+            detail=_safe_rpc_request_exception_detail(exc),
+        )
+
+    if response.status_code == 403:
+        return _swap_submit_error(
+            "SWAP_SUBMIT_FORBIDDEN",
+            "Transaction submission was blocked by RPC.",
+            status_code=response.status_code,
+        )
+    if response.status_code == 429:
+        return _swap_submit_error(
+            "SWAP_SUBMIT_RATE_LIMITED",
+            "RPC is rate-limited. Try again later.",
+            status_code=response.status_code,
+        )
+    if not response.ok:
+        return _swap_submit_error(
+            "SWAP_SUBMIT_FAILED",
+            "Transaction submission failed.",
+            status_code=response.status_code,
+            detail=(response.text or "")[:500],
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        return _swap_submit_error(
+            "SWAP_SUBMIT_FAILED",
+            "Transaction submission returned invalid JSON.",
+            detail=str(exc),
+        )
+
+    if not isinstance(data, dict):
+        return _swap_submit_error(
+            "SWAP_SUBMIT_FAILED",
+            "Transaction submission returned an unexpected response shape.",
+        )
+
+    if data.get("error"):
+        rpc_error = data.get("error")
+        if _is_swap_submit_rate_limited(rpc_error):
+            return _swap_submit_error(
+                "SWAP_SUBMIT_RATE_LIMITED",
+                "RPC is rate-limited. Try again later.",
+                status_code=429,
+                rpc_error=rpc_error,
+            )
+        if _is_swap_submit_forbidden(rpc_error):
+            return _swap_submit_error(
+                "SWAP_SUBMIT_FORBIDDEN",
+                "Transaction submission was blocked by RPC.",
+                status_code=403,
+                rpc_error=rpc_error,
+            )
+        return _swap_submit_error(
+            "SWAP_SUBMIT_FAILED",
+            "Transaction submission failed.",
+            rpc_error=rpc_error,
+        )
+
+    signature = data.get("result")
+    if not isinstance(signature, str) or not signature.strip():
+        return _swap_submit_error(
+            "SWAP_SUBMIT_FAILED",
+            "Transaction submission did not return a signature.",
+        )
+
+    return {
+        "ok": True,
+        "signature": signature.strip(),
+        "status": "submitted",
+    }
 
 
 def _solana_rpc_call(
@@ -3591,6 +3736,66 @@ def swap_execute_prepare(payload: dict = Body(...)):
             variant_id=variant_id,
         ),
         "warnings": ["quote_refreshed_before_execution"],
+    }
+
+
+@app.post("/swap/execute/submit")
+def swap_execute_submit(payload: dict = Body(...)):
+    network = (payload.get("network") or "solana").strip().lower()
+    signed_transaction_base64 = (payload.get("signed_transaction_base64") or "").strip()
+    skip_preflight = bool(payload.get("skip_preflight", False))
+    preflight_commitment = (payload.get("preflight_commitment") or "confirmed").strip() or "confirmed"
+
+    if network != "solana":
+        return _swap_submit_error(
+            "SWAP_SUBMIT_UNSUPPORTED_NETWORK",
+            "Only Solana signed transaction submission is supported for now.",
+        )
+
+    if not signed_transaction_base64:
+        return _swap_submit_error(
+            "SWAP_SUBMIT_SIGNED_TRANSACTION_REQUIRED",
+            "Signed transaction is required for submission.",
+        )
+
+    if len(signed_transaction_base64) > MAX_SIGNED_SWAP_TRANSACTION_BASE64_CHARS:
+        return _swap_submit_error(
+            "SWAP_SUBMIT_FAILED",
+            "Signed transaction payload is too large.",
+        )
+
+    try:
+        base64.b64decode(signed_transaction_base64, validate=True)
+    except (binascii.Error, ValueError):
+        return _swap_submit_error(
+            "SWAP_SUBMIT_FAILED",
+            "Signed transaction must be valid base64.",
+        )
+
+    rpc_url, rpc_source = _configured_swap_submit_rpc_url()
+    if not rpc_url:
+        return _swap_submit_error(
+            "SWAP_SUBMIT_RPC_CONFIG_MISSING",
+            "Set SWAP_SUBMIT_RPC_URL, SOLANA_RPC_URL, SOLANA_MAINNET_RPC_URL, or HELIUS_RPC_URL to submit swaps.",
+        )
+
+    result = _fetch_solana_send_transaction(
+        signed_transaction_base64=signed_transaction_base64,
+        rpc_url=rpc_url,
+        skip_preflight=skip_preflight,
+        preflight_commitment=preflight_commitment,
+    )
+    if result.get("ok") is not True:
+        return result
+
+    return {
+        "ok": True,
+        "signature": result.get("signature"),
+        "status": "submitted",
+        "rpc": {
+            "source": rpc_source,
+            "url_configured": True,
+        },
     }
 
 

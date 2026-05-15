@@ -43,8 +43,10 @@ from api.main import (
     _try_fetch_phantom_quote,
     _try_fetch_phoenix_quote,
     _try_fetch_pumpswap_quote,
+    _fetch_solana_send_transaction,
     _fetch_jupiter_swap_transaction,
     swap_execute_prepare,
+    swap_execute_submit,
     swap_quote,
     swap_tokens,
     token_resolve,
@@ -2003,7 +2005,6 @@ class TestSanity(unittest.TestCase):
         self.assertIn('$("btnSignPreparedSwap").addEventListener("click", signAndSubmitPreparedSwap);', html)
         self.assertIn('$("swapSignAcknowledgement").addEventListener("change", updateSwapSignButtonState);', html)
         self.assertIn("Swap submitted", html)
-        self.assertIn("Swap confirmed", html)
         self.assertIn("Swap failed.", html)
         self.assertIn("Swap was rejected in Phantom.", html)
         self.assertIn("Quote expired. Preview again.", html)
@@ -2024,7 +2025,8 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Phantom signing failed.", html)
         self.assertIn("Phantom signing did not return a signed transaction.", html)
         self.assertIn("Transaction submission failed.", html)
-        self.assertIn("Swap confirmation failed.", html)
+        self.assertIn("Transaction submission was blocked by RPC.", html)
+        self.assertIn("RPC is rate-limited. Try again later.", html)
         self.assertIn("Quote expired. Preview again.", html)
 
     def test_swap_ui_signing_failure_logs_phase_specific_errors(self):
@@ -2036,8 +2038,6 @@ class TestSanity(unittest.TestCase):
         self.assertIn('console.error("swap deserialize error:", err);', sign_block)
         self.assertIn('console.error("swap signing error:", err);', sign_block)
         self.assertIn('console.error("swap submit error:", err);', sign_block)
-        self.assertIn('console.error("swap confirmation error:", confirmation.value.err);', sign_block)
-        self.assertIn('console.error("swap confirm error:", err);', sign_block)
 
     def test_swap_ui_signing_displays_execution_phase_detail(self):
         html = build_ui_html()
@@ -2048,7 +2048,6 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Execution phase: deserialize", sign_block)
         self.assertIn("Execution phase: signing", sign_block)
         self.assertIn("Execution phase: submit", sign_block)
-        self.assertIn("Execution phase: confirm", sign_block)
 
     def test_swap_ui_signing_does_not_render_transaction_base64_in_status(self):
         html = build_ui_html()
@@ -2086,12 +2085,13 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Uint8Array.from(atob(transactionBase64), c => c.charCodeAt(0))", sign_block)
         self.assertIn("solanaWeb3.VersionedTransaction.deserialize(bytes)", sign_block)
         self.assertIn("phantomProvider.signTransaction(tx)", sign_block)
-        self.assertIn("new solanaWeb3.Connection(MAINNET_RPC_URL, \"confirmed\")", sign_block)
-        self.assertIn("connection.sendRawTransaction(signedTx.serialize()", sign_block)
-        self.assertIn("confirmTransactionWithTimeout(", sign_block)
+        self.assertIn("bytesToBase64(signedTx.serialize())", sign_block)
+        self.assertIn('fetchMaybeJson("/swap/execute/submit"', sign_block)
+        self.assertIn("signed_transaction_base64: signedTransactionBase64", sign_block)
+        self.assertIn("skip_preflight: false", sign_block)
+        self.assertIn('preflight_commitment: "confirmed"', sign_block)
         self.assertIn("MAINNET_EXPLORER_BASE", html)
-        self.assertIn('const MAINNET_RPC_URL = "https://api.mainnet-beta.solana.com";', html)
-        self.assertNotIn("new solanaWeb3.Connection(DEVNET_RPC_URL", sign_block)
+        self.assertNotIn("sendRawTransaction", sign_block)
 
     def test_swap_ui_prepare_success_reveals_sign_action_without_auto_signing(self):
         html = build_ui_html()
@@ -2105,14 +2105,19 @@ class TestSanity(unittest.TestCase):
         self.assertIn("setSwapPreparedActionVisible(true);", prepare_block)
         self.assertNotIn("signAndSubmitPreparedSwap()", prepare_block)
 
-    def test_swap_ui_signing_uses_mainnet_not_devnet_for_swap_submission(self):
+    def test_swap_ui_signing_uses_backend_submit_not_browser_rpc(self):
         html = build_ui_html()
         start = html.index("async function signAndSubmitPreparedSwap()")
         end = html.index("function handleSwapExecuteClick", start)
         sign_block = html[start:end]
 
-        self.assertIn("MAINNET_RPC_URL", sign_block)
+        self.assertIn("/swap/execute/submit", sign_block)
+        self.assertIn("signed_transaction_base64", sign_block)
+        self.assertIn("SWAP_SUBMIT_FORBIDDEN", html)
+        self.assertIn("SWAP_SUBMIT_RATE_LIMITED", html)
+        self.assertIn("SWAP_SUBMIT_FAILED", html)
         self.assertIn("MAINNET_EXPLORER_BASE", html)
+        self.assertNotIn("MAINNET_RPC_URL", html)
         self.assertNotIn("DEVNET_RPC_URL", sign_block)
         self.assertNotIn("DEVNET_EXPLORER_BASE", sign_block)
 
@@ -5859,6 +5864,146 @@ class TestSanity(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
+    def test_swap_execute_submit_rejects_missing_signed_transaction(self):
+        result = swap_execute_submit({"network": "solana", "signed_transaction_base64": ""})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_SUBMIT_SIGNED_TRANSACTION_REQUIRED")
+
+    def test_swap_execute_submit_rejects_unsupported_network(self):
+        result = swap_execute_submit({"network": "ethereum", "signed_transaction_base64": "AQID"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_SUBMIT_UNSUPPORTED_NETWORK")
+
+    def test_swap_execute_submit_requires_configured_rpc(self):
+        with patch.dict(os.environ, {}, clear=True):
+            result = swap_execute_submit({"network": "solana", "signed_transaction_base64": "AQID"})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_SUBMIT_RPC_CONFIG_MISSING")
+
+    def test_swap_execute_submit_returns_signature_on_mocked_success(self):
+        with (
+            patch.dict(os.environ, {"SWAP_SUBMIT_RPC_URL": "https://rpc.example?api-key=secret"}, clear=True),
+            patch(
+                "api.main._fetch_solana_send_transaction",
+                return_value={"ok": True, "signature": "signature123", "status": "submitted"},
+            ) as submit,
+        ):
+            result = swap_execute_submit({
+                "network": "solana",
+                "signed_transaction_base64": "AQID",
+                "skip_preflight": False,
+                "preflight_commitment": "confirmed",
+            })
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["signature"], "signature123")
+        self.assertEqual(result["status"], "submitted")
+        self.assertEqual(result["rpc"]["source"], "SWAP_SUBMIT_RPC_URL")
+        self.assertNotIn("rpc.example", json.dumps(result))
+        self.assertNotIn("AQID", json.dumps(result))
+        submit.assert_called_once()
+        self.assertEqual(submit.call_args.kwargs["signed_transaction_base64"], "AQID")
+
+    def test_swap_execute_submit_does_not_mutate_token_meta(self):
+        before = json.dumps(TOKEN_META, sort_keys=True)
+        with (
+            patch.dict(os.environ, {"SOLANA_RPC_URL": "https://rpc.example"}, clear=True),
+            patch(
+                "api.main._fetch_solana_send_transaction",
+                return_value={"ok": True, "signature": "signature123", "status": "submitted"},
+            ),
+        ):
+            result = swap_execute_submit({"network": "solana", "signed_transaction_base64": "AQID"})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
+    def test_fetch_solana_send_transaction_maps_http_errors(self):
+        class Response:
+            def __init__(self, status_code, text=""):
+                self.status_code = status_code
+                self.text = text
+                self.ok = status_code < 400
+
+            def json(self):
+                return {}
+
+        with patch("api.main.requests.post", return_value=Response(403, "Access forbidden")):
+            forbidden = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url="https://rpc.example",
+            )
+        with patch("api.main.requests.post", return_value=Response(429, "Too many requests")):
+            limited = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url="https://rpc.example",
+            )
+
+        self.assertEqual(forbidden["error"]["code"], "SWAP_SUBMIT_FORBIDDEN")
+        self.assertEqual(limited["error"]["code"], "SWAP_SUBMIT_RATE_LIMITED")
+
+    def test_fetch_solana_send_transaction_maps_rpc_errors_and_success(self):
+        class Response:
+            status_code = 200
+            ok = True
+            text = ""
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        with patch("api.main.requests.post", return_value=Response({"error": {"code": 403, "message": "Access forbidden"}})):
+            forbidden = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url="https://rpc.example",
+            )
+        with patch("api.main.requests.post", return_value=Response({"error": {"code": -32005, "message": "Too many requests"}})):
+            limited = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url="https://rpc.example",
+            )
+        with patch("api.main.requests.post", return_value=Response({"error": {"code": -32000, "message": "simulation failed"}})):
+            failed = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url="https://rpc.example",
+            )
+        with patch("api.main.requests.post", return_value=Response({"result": "signature123"})):
+            success = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url="https://rpc.example",
+            )
+
+        self.assertEqual(forbidden["error"]["code"], "SWAP_SUBMIT_FORBIDDEN")
+        self.assertEqual(limited["error"]["code"], "SWAP_SUBMIT_RATE_LIMITED")
+        self.assertEqual(failed["error"]["code"], "SWAP_SUBMIT_FAILED")
+        self.assertTrue(success["ok"])
+        self.assertEqual(success["signature"], "signature123")
+
+    def test_fetch_solana_send_transaction_redacts_request_exception_secrets(self):
+        secret_url = "https://example-rpc.com/?api-key=SECRET&token=ALSOSECRET"
+        exc = requests.RequestException(f"Connection failed for {secret_url}")
+
+        with patch("api.main.requests.post", side_effect=exc):
+            result = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url=secret_url,
+            )
+
+        result_json = json.dumps(result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_SUBMIT_FAILED")
+        self.assertNotIn("SECRET", result_json)
+        self.assertNotIn("ALSOSECRET", result_json)
+        self.assertNotIn("api-key=SECRET", result_json)
+        self.assertNotIn("token=ALSOSECRET", result_json)
+        self.assertNotIn(secret_url, result_json)
+        self.assertIn("RPC request failed before a response was received.", result["error"]["detail"])
 
     def test_fetch_jupiter_swap_transaction_calls_swap_endpoint(self):
         captured = {}
