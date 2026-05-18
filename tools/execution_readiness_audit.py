@@ -128,6 +128,10 @@ def audit_pair(args: argparse.Namespace, pair: AuditPair) -> dict[str, Any]:
         "best_surface": (option or {}).get("execution_surface_label"),
         "jupiter_ready": jupiter_ready,
         "stage": readiness.get("execution_stage") or "quote_only",
+        "provider_status": readiness.get("provider_status"),
+        "provider_label": readiness.get("provider_label"),
+        "prepare_capable": bool(readiness.get("prepare_capable")),
+        "submit_capable": bool(readiness.get("submit_capable")),
         "prepare_checked": False,
         "prepare_ok": None,
         "error_code": None,
@@ -155,7 +159,11 @@ def audit_pair(args: argparse.Namespace, pair: AuditPair) -> dict[str, Any]:
 
 
 def render_text_report(rows: list[dict[str, Any]]) -> str:
-    header = "pair | quote_ok | best_surface | jupiter_ready | stage | prepare_checked | prepare_ok | error_code | external"
+    header = (
+        "pair | quote_ok | best_surface | jupiter_ready | stage | provider_status | "
+        "provider_label | prepare_capable | submit_capable | prepare_checked | "
+        "prepare_ok | error_code | external"
+    )
     lines = [header]
     for row in rows:
         lines.append(
@@ -166,6 +174,10 @@ def render_text_report(rows: list[dict[str, Any]]) -> str:
                     str(row.get("best_surface") or ""),
                     str(row.get("jupiter_ready")),
                     str(row.get("stage") or ""),
+                    str(row.get("provider_status") or ""),
+                    str(row.get("provider_label") or ""),
+                    str(row.get("prepare_capable")),
+                    str(row.get("submit_capable")),
                     str(row.get("prepare_checked")),
                     str(row.get("prepare_ok")),
                     str(row.get("error_code") or ""),

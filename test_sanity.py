@@ -13,6 +13,7 @@ from api.main import (
     METEORA_DLMM_USDC_MINT,
     METEORA_DLMM_BONK_MINT,
     TOKEN_META,
+    SWAP_EXECUTION_PROVIDER_CAPABILITIES,
     _build_promotion_audit_summary,
     _build_meteora_dlmm_quote_payload,
     _build_orca_whirlpool_quote_payload,
@@ -47,6 +48,7 @@ from api.main import (
     _fetch_jupiter_swap_transaction,
     build_swap_execution_readiness,
     get_swap_execution_provider,
+    get_swap_execution_provider_capability,
     prepare_swap_transaction_with_provider,
     swap_execute_prepare,
     swap_execute_submit,
@@ -6262,7 +6264,40 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(result["execution_ready"])
         self.assertEqual(result["execution_stage"], "prepare_available")
         self.assertEqual(result["execution_provider"], "jupiter-metis")
+        self.assertEqual(result["provider_status"], "executable_v1")
+        self.assertTrue(result["prepare_capable"])
+        self.assertTrue(result["submit_capable"])
         self.assertEqual(result["reasons"], [])
+
+    def test_swap_execution_provider_capability_matrix_covers_quote_universes(self):
+        expected = {
+            "jupiter-metis",
+            "raydium-trade-api",
+            "orca-whirlpool",
+            "meteora-dlmm",
+            "pumpswap",
+            "phantom-routing-api",
+            "phoenix-clob",
+        }
+
+        self.assertTrue(expected.issubset(set(SWAP_EXECUTION_PROVIDER_CAPABILITIES)))
+        jupiter = SWAP_EXECUTION_PROVIDER_CAPABILITIES["jupiter-metis"]
+        self.assertTrue(jupiter["prepare"])
+        self.assertTrue(jupiter["submit"])
+
+        for provider_id in expected - {"jupiter-metis"}:
+            capability = SWAP_EXECUTION_PROVIDER_CAPABILITIES[provider_id]
+            self.assertFalse(capability["prepare"])
+            self.assertFalse(capability["submit"])
+
+    def test_swap_execution_provider_capability_unknown_fallback_is_safe(self):
+        capability = get_swap_execution_provider_capability("unknown-provider")
+
+        self.assertEqual(capability["provider"], "unknown-provider")
+        self.assertFalse(capability["quote"])
+        self.assertFalse(capability["prepare"])
+        self.assertFalse(capability["submit"])
+        self.assertEqual(capability["status"], "unknown")
 
     def test_swap_execution_readiness_marks_non_jupiter_quote_only(self):
         result = build_swap_execution_readiness(
@@ -6274,6 +6309,9 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(result["execution_ready"])
         self.assertEqual(result["execution_stage"], "quote_only")
         self.assertIn("NON_JUPITER_ROUTE", result["reasons"])
+        self.assertEqual(result["provider_status"], "execution_research")
+        self.assertFalse(result["prepare_capable"])
+        self.assertFalse(result["submit_capable"])
 
     def test_swap_execution_readiness_marks_comparison_only_quote_only(self):
         result = build_swap_execution_readiness(
@@ -6382,6 +6420,9 @@ class TestSanity(unittest.TestCase):
         self.assertIn("NON_JUPITER_ROUTE: \"Quote-only route.\"", html)
         self.assertIn("COMPARISON_ONLY_ROUTE: \"Comparison-only route.\"", html)
         self.assertIn("TOKEN_DECIMALS_UNAVAILABLE: \"Token decimals unavailable.\"", html)
+        self.assertIn("Quote-only · Execution research planned", html)
+        self.assertIn("Quote-only · Benchmark route", html)
+        self.assertIn("Quote-only · Advanced research route", html)
 
     def test_swap_ui_button_gating_still_requires_jupiter_executable(self):
         html = build_ui_html()
@@ -6405,6 +6446,34 @@ class TestSanity(unittest.TestCase):
         args = parser.parse_args(["--pair", "SOL:USDC", "--pair", "SOL:WIF"])
         pairs = audit.build_pairs(args)
         self.assertEqual([pair.label for pair in pairs], ["SOL:USDC", "SOL:WIF"])
+
+    def test_execution_readiness_audit_tool_reports_provider_capabilities(self):
+        from tools import execution_readiness_audit as audit
+
+        rows = [
+            {
+                "pair": "SOL:USDC",
+                "quote_ok": True,
+                "best_surface": "Jupiter",
+                "jupiter_ready": True,
+                "stage": "prepare_available",
+                "provider_status": "executable_v1",
+                "provider_label": "Jupiter",
+                "prepare_capable": True,
+                "submit_capable": True,
+                "prepare_checked": False,
+                "prepare_ok": None,
+                "error_code": None,
+                "external": False,
+            }
+        ]
+
+        text = audit.render_text_report(rows)
+        self.assertIn("provider_status", text)
+        self.assertIn("provider_label", text)
+        self.assertIn("prepare_capable", text)
+        self.assertIn("submit_capable", text)
+        self.assertIn("executable_v1", text)
 
     def test_execution_readiness_audit_prepare_requires_user_public_key(self):
         from tools import execution_readiness_audit as audit

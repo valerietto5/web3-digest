@@ -922,8 +922,18 @@ function renderSwapExecutionReadinessLine(opt) {
     `;
   }
 
-  if (opt?.is_comparison_only === true) {
-    return "";
+  const providerStatus = readiness?.provider_status || "";
+  const statusLabels = {
+    execution_research: "Quote-only · Execution research planned",
+    benchmark_quote_only: "Quote-only · Benchmark route",
+    advanced_research: "Quote-only · Advanced research route"
+  };
+  if (statusLabels[providerStatus]) {
+    return `
+      <div class="muted" style="margin-top:4px;">
+        ${escapeHtml(statusLabels[providerStatus])}
+      </div>
+    `;
   }
 
   const reason = Array.isArray(readiness?.reasons) ? readiness.reasons[0] : null;

@@ -1097,6 +1097,58 @@ JUPITER_EXECUTION_PROVIDER_ALIASES = {
 
 SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis"}
 
+SWAP_EXECUTION_PROVIDER_CAPABILITIES = {
+    "jupiter-metis": {
+        "quote": True,
+        "prepare": True,
+        "submit": True,
+        "status": "executable_v1",
+        "label": "Jupiter",
+    },
+    "raydium-trade-api": {
+        "quote": True,
+        "prepare": False,
+        "submit": False,
+        "status": "execution_research",
+        "label": "Raydium",
+    },
+    "orca-whirlpool": {
+        "quote": True,
+        "prepare": False,
+        "submit": False,
+        "status": "execution_research",
+        "label": "Orca",
+    },
+    "meteora-dlmm": {
+        "quote": True,
+        "prepare": False,
+        "submit": False,
+        "status": "execution_research",
+        "label": "Meteora",
+    },
+    "pumpswap": {
+        "quote": True,
+        "prepare": False,
+        "submit": False,
+        "status": "execution_research",
+        "label": "PumpSwap",
+    },
+    "phantom-routing-api": {
+        "quote": True,
+        "prepare": False,
+        "submit": False,
+        "status": "benchmark_quote_only",
+        "label": "Phantom",
+    },
+    "phoenix-clob": {
+        "quote": True,
+        "prepare": False,
+        "submit": False,
+        "status": "advanced_research",
+        "label": "Phoenix",
+    },
+}
+
 JUPITER_EXECUTION_VARIANTS = {
     "recommended_default",
     "broader_search",
@@ -1113,6 +1165,24 @@ def _resolution_has_mint_and_decimals(resolution: dict | None) -> bool:
     return bool(resolution.get("mint")) and isinstance(decimals, int)
 
 
+def get_swap_execution_provider_capability(provider_id: str | None) -> dict:
+    provider = _normalize_execution_provider(provider_id or "") or (provider_id or "").strip().lower()
+    capability = SWAP_EXECUTION_PROVIDER_CAPABILITIES.get(provider)
+    if capability:
+        return {
+            "provider": provider,
+            **capability,
+        }
+    return {
+        "provider": provider or None,
+        "quote": False,
+        "prepare": False,
+        "submit": False,
+        "status": "unknown",
+        "label": provider or "Unknown",
+    }
+
+
 def build_swap_execution_readiness(
     option,
     *,
@@ -1123,6 +1193,7 @@ def build_swap_execution_readiness(
     reasons = []
     warnings = []
     provider = (option or {}).get("provider") if isinstance(option, dict) else None
+    capability = get_swap_execution_provider_capability(provider)
 
     if (network or "").lower() != "solana":
         reasons.append("UNSUPPORTED_NETWORK")
@@ -1147,6 +1218,10 @@ def build_swap_execution_readiness(
         "execution_ready": execution_ready,
         "execution_stage": "prepare_available" if execution_ready else "quote_only",
         "execution_provider": "jupiter-metis" if execution_ready else None,
+        "provider_status": capability.get("status"),
+        "provider_label": capability.get("label"),
+        "prepare_capable": bool(capability.get("prepare")),
+        "submit_capable": bool(capability.get("submit")),
         "reasons": reasons,
         "warnings": warnings,
     }
