@@ -46,6 +46,8 @@ from api.main import (
     _fetch_solana_send_transaction,
     _fetch_jupiter_swap_transaction,
     build_swap_execution_readiness,
+    get_swap_execution_provider,
+    prepare_swap_transaction_with_provider,
     swap_execute_prepare,
     swap_execute_submit,
     swap_quote,
@@ -5690,12 +5692,37 @@ class TestSanity(unittest.TestCase):
     def test_swap_execute_prepare_rejects_unsupported_provider(self):
         result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="raydium-trade-api"))
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_UNSUPPORTED_PROVIDER")
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED")
 
     def test_swap_execute_prepare_rejects_non_jupiter_provider_in_v1(self):
         result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="PumpSwap"))
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_UNSUPPORTED_PROVIDER")
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED")
+
+    def test_get_swap_execution_provider_returns_jupiter_provider(self):
+        provider = get_swap_execution_provider("jupiter-metis")
+
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider["provider"], "jupiter-metis")
+        self.assertEqual(provider["execution_surface_label"], "Jupiter")
+        self.assertTrue(callable(provider["prepare"]))
+
+    def test_prepare_swap_transaction_with_provider_blocks_unimplemented_provider(self):
+        result = prepare_swap_transaction_with_provider(
+            provider_id="raydium-trade-api",
+            input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            output_meta={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+            amount=1.0,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            variant_id="recommended_default",
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            from_token_query="SOL",
+            to_token_query="USDC",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED")
 
     def test_swap_execute_prepare_accepts_jupiter_provider_alias(self):
         quote = self._mock_jupiter_execution_quote()

@@ -1095,6 +1095,8 @@ JUPITER_EXECUTION_PROVIDER_ALIASES = {
     "jupiter-metis": "jupiter-metis",
 }
 
+SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis"}
+
 JUPITER_EXECUTION_VARIANTS = {
     "recommended_default",
     "broader_search",
@@ -1153,6 +1155,17 @@ def build_swap_execution_readiness(
 def _normalize_execution_provider(provider: str) -> str | None:
     key = (provider or "").strip().lower()
     return JUPITER_EXECUTION_PROVIDER_ALIASES.get(key)
+
+
+def get_swap_execution_provider(provider_id: str) -> dict | None:
+    provider = _normalize_execution_provider(provider_id) or (provider_id or "").strip().lower()
+    if provider == "jupiter-metis":
+        return {
+            "provider": "jupiter-metis",
+            "execution_surface_label": "Jupiter",
+            "prepare": _prepare_jupiter_swap_transaction,
+        }
+    return None
 
 
 def _build_jupiter_execution_quote_params(
@@ -1277,6 +1290,105 @@ def _jupiter_execution_quote_summary(
         "slippage_bps": slippage_bps,
         "variant_id": variant_id,
     }
+
+
+def _provider_not_implemented_error(provider_id: str) -> dict:
+    return _swap_execution_error(
+        "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED",
+        "Execution is not available for this provider yet.",
+        provider=provider_id or None,
+    )
+
+
+def _prepare_jupiter_swap_transaction(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount: float,
+    amount_raw: int,
+    slippage_bps: int,
+    variant_id: str,
+    user_public_key: str,
+    from_token_query: str,
+    to_token_query: str,
+) -> dict:
+    if variant_id not in JUPITER_EXECUTION_VARIANTS:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_UNSUPPORTED_ROUTE",
+            "This route cannot be prepared for execution.",
+        )
+
+    fresh_quote = _fetch_fresh_jupiter_execution_quote(
+        input_meta=input_meta,
+        output_meta=output_meta,
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+        variant_id=variant_id,
+    )
+    if fresh_quote.get("ok") is not True:
+        return fresh_quote
+
+    swap_tx = _fetch_jupiter_swap_transaction(
+        quote_response=fresh_quote["quote"],
+        user_public_key=user_public_key,
+        as_legacy_transaction=False,
+    )
+    if swap_tx.get("ok") is not True:
+        return swap_tx
+
+    from_token = input_meta.get("quote_label") or input_meta.get("symbol") or from_token_query
+    to_token = output_meta.get("quote_label") or output_meta.get("symbol") or to_token_query
+
+    return {
+        "ok": True,
+        "provider": "jupiter-metis",
+        "execution_surface_label": "Jupiter",
+        "execution_status": "prepared",
+        "transaction_base64": swap_tx.get("swap_transaction"),
+        "transaction_format": "versioned",
+        "last_valid_block_height": swap_tx.get("last_valid_block_height"),
+        "quote_summary": _jupiter_execution_quote_summary(
+            quote=fresh_quote["quote"],
+            from_token=from_token,
+            to_token=to_token,
+            amount=amount,
+            output_decimals=output_meta["decimals"],
+            slippage_bps=slippage_bps,
+            variant_id=variant_id,
+        ),
+        "warnings": ["quote_refreshed_before_execution"],
+    }
+
+
+def prepare_swap_transaction_with_provider(
+    *,
+    provider_id: str,
+    input_meta: dict,
+    output_meta: dict,
+    amount: float,
+    amount_raw: int,
+    slippage_bps: int,
+    variant_id: str,
+    user_public_key: str,
+    from_token_query: str,
+    to_token_query: str,
+) -> dict:
+    provider = get_swap_execution_provider(provider_id)
+    if not provider:
+        return _provider_not_implemented_error(provider_id)
+
+    prepare = provider["prepare"]
+    return prepare(
+        input_meta=input_meta,
+        output_meta=output_meta,
+        amount=amount,
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+        variant_id=variant_id,
+        user_public_key=user_public_key,
+        from_token_query=from_token_query,
+        to_token_query=to_token_query,
+    )
 
 
 
@@ -3693,7 +3805,8 @@ def swap_instructions(payload: dict = Body(...)):
 
 @app.post("/swap/execute/prepare")
 def swap_execute_prepare(payload: dict = Body(...)):
-    provider = _normalize_execution_provider(payload.get("provider") or "")
+    provider_id = payload.get("provider") or ""
+    provider = _normalize_execution_provider(provider_id) or provider_id.strip().lower()
     variant_id = (payload.get("variant_id") or "").strip()
     from_token_query = (payload.get("from_token") or "").strip()
     to_token_query = (payload.get("to_token") or "").strip()
@@ -3712,17 +3825,8 @@ def swap_execute_prepare(payload: dict = Body(...)):
             "Only Solana swap execution is supported for now.",
         )
 
-    if provider != "jupiter-metis":
-        return _swap_execution_error(
-            "SWAP_EXECUTION_UNSUPPORTED_PROVIDER",
-            "Only Jupiter swap execution is supported in V1.",
-        )
-
-    if variant_id not in JUPITER_EXECUTION_VARIANTS:
-        return _swap_execution_error(
-            "SWAP_EXECUTION_UNSUPPORTED_ROUTE",
-            "This route cannot be prepared for execution.",
-        )
+    if provider not in SUPPORTED_EXECUTION_PROVIDERS:
+        return _provider_not_implemented_error(provider)
 
     try:
         amount = float(payload.get("amount"))
@@ -3783,46 +3887,18 @@ def swap_execute_prepare(payload: dict = Body(...)):
             detail=e.detail,
         )
 
-    fresh_quote = _fetch_fresh_jupiter_execution_quote(
+    return prepare_swap_transaction_with_provider(
+        provider_id=provider,
         input_meta=input_meta,
         output_meta=output_meta,
+        amount=amount,
         amount_raw=amount_raw,
         slippage_bps=slippage_bps,
         variant_id=variant_id,
-    )
-    if fresh_quote.get("ok") is not True:
-        return fresh_quote
-
-    swap_tx = _fetch_jupiter_swap_transaction(
-        quote_response=fresh_quote["quote"],
         user_public_key=user_public_key,
-        as_legacy_transaction=False,
+        from_token_query=from_token_query,
+        to_token_query=to_token_query,
     )
-    if swap_tx.get("ok") is not True:
-        return swap_tx
-
-    from_token = input_meta.get("quote_label") or input_meta.get("symbol") or from_token_query
-    to_token = output_meta.get("quote_label") or output_meta.get("symbol") or to_token_query
-
-    return {
-        "ok": True,
-        "provider": "jupiter-metis",
-        "execution_surface_label": "Jupiter",
-        "execution_status": "prepared",
-        "transaction_base64": swap_tx.get("swap_transaction"),
-        "transaction_format": "versioned",
-        "last_valid_block_height": swap_tx.get("last_valid_block_height"),
-        "quote_summary": _jupiter_execution_quote_summary(
-            quote=fresh_quote["quote"],
-            from_token=from_token,
-            to_token=to_token,
-            amount=amount,
-            output_decimals=output_meta["decimals"],
-            slippage_bps=slippage_bps,
-            variant_id=variant_id,
-        ),
-        "warnings": ["quote_refreshed_before_execution"],
-    }
 
 
 @app.post("/swap/execute/submit")

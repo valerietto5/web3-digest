@@ -1554,7 +1554,11 @@ function swapPrepareErrorMessage(code, fallbackMessage = "") {
   if (code === "SWAP_EXECUTION_WALLET_REQUIRED") {
     return "Connect Phantom to prepare this swap.";
   }
-  if (code === "SWAP_EXECUTION_UNSUPPORTED_PROVIDER" || code === "SWAP_EXECUTION_UNSUPPORTED_ROUTE") {
+  if (
+    code === "SWAP_EXECUTION_UNSUPPORTED_PROVIDER" ||
+    code === "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED" ||
+    code === "SWAP_EXECUTION_UNSUPPORTED_ROUTE"
+  ) {
     return "This route is not executable yet.";
   }
   if (code === "SWAP_EXECUTION_UNSUPPORTED_NETWORK") {
