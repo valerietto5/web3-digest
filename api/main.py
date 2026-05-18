@@ -1276,6 +1276,23 @@ def _safe_rpc_request_exception_detail(exc: Exception) -> str:
     return f"RPC request failed before a response was received. error_type={exc_type}"
 
 
+def _safe_submit_rpc_error(value) -> dict:
+    if not isinstance(value, dict):
+        return {
+            "message": "RPC returned an error.",
+        }
+
+    safe = {}
+    if value.get("code") is not None:
+        safe["code"] = value.get("code")
+
+    message = str(value.get("message") or "RPC returned an error.")
+    if len(message) > 240:
+        message = message[:237] + "..."
+    safe["message"] = message
+    return safe
+
+
 def _fetch_solana_send_transaction(
     *,
     signed_transaction_base64: str,
@@ -1328,7 +1345,7 @@ def _fetch_solana_send_transaction(
             "SWAP_SUBMIT_FAILED",
             "Transaction submission failed.",
             status_code=response.status_code,
-            detail=(response.text or "")[:500],
+            detail="RPC returned an HTTP error.",
         )
 
     try:
@@ -1348,24 +1365,25 @@ def _fetch_solana_send_transaction(
 
     if data.get("error"):
         rpc_error = data.get("error")
+        safe_rpc_error = _safe_submit_rpc_error(rpc_error)
         if _is_swap_submit_rate_limited(rpc_error):
             return _swap_submit_error(
                 "SWAP_SUBMIT_RATE_LIMITED",
                 "RPC is rate-limited. Try again later.",
                 status_code=429,
-                rpc_error=rpc_error,
+                rpc_error=safe_rpc_error,
             )
         if _is_swap_submit_forbidden(rpc_error):
             return _swap_submit_error(
                 "SWAP_SUBMIT_FORBIDDEN",
                 "Transaction submission was blocked by RPC.",
                 status_code=403,
-                rpc_error=rpc_error,
+                rpc_error=safe_rpc_error,
             )
         return _swap_submit_error(
             "SWAP_SUBMIT_FAILED",
             "Transaction submission failed.",
-            rpc_error=rpc_error,
+            rpc_error=safe_rpc_error,
         )
 
     signature = data.get("result")

@@ -5946,6 +5946,30 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(forbidden["error"]["code"], "SWAP_SUBMIT_FORBIDDEN")
         self.assertEqual(limited["error"]["code"], "SWAP_SUBMIT_RATE_LIMITED")
 
+    def test_fetch_solana_send_transaction_redacts_generic_http_error_body(self):
+        class Response:
+            status_code = 500
+            ok = False
+            text = "upstream failed for https://rpc.example?api-key=SECRET"
+
+            def json(self):
+                return {}
+
+        with patch("api.main.requests.post", return_value=Response()):
+            result = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url="https://rpc.example?api-key=SECRET",
+            )
+
+        result_json = json.dumps(result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_SUBMIT_FAILED")
+        self.assertEqual(result["error"]["status_code"], 500)
+        self.assertNotIn("SECRET", result_json)
+        self.assertNotIn("api-key", result_json)
+        self.assertNotIn("rpc.example", result_json)
+        self.assertEqual(result["error"]["detail"], "RPC returned an HTTP error.")
+
     def test_fetch_solana_send_transaction_maps_rpc_errors_and_success(self):
         class Response:
             status_code = 200
@@ -5984,6 +6008,95 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(failed["error"]["code"], "SWAP_SUBMIT_FAILED")
         self.assertTrue(success["ok"])
         self.assertEqual(success["signature"], "signature123")
+
+    def test_fetch_solana_send_transaction_sanitizes_rpc_error_payloads(self):
+        class Response:
+            status_code = 200
+            ok = True
+            text = ""
+
+            def json(self):
+                return {
+                    "error": {
+                        "code": -32000,
+                        "message": "simulation failed",
+                        "signed_transaction_base64": "AQID",
+                        "params": ["AQID"],
+                        "data": {
+                            "transaction": "AQID",
+                            "url": "https://rpc.example?api-key=SECRET",
+                        },
+                    }
+                }
+
+        with patch("api.main.requests.post", return_value=Response()):
+            result = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url="https://rpc.example?api-key=SECRET",
+            )
+
+        result_json = json.dumps(result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_SUBMIT_FAILED")
+        self.assertEqual(result["error"]["rpc_error"]["code"], -32000)
+        self.assertEqual(result["error"]["rpc_error"]["message"], "simulation failed")
+        self.assertNotIn("AQID", result_json)
+        self.assertNotIn("signed_transaction_base64", result_json)
+        self.assertNotIn("api-key", result_json)
+        self.assertNotIn("SECRET", result_json)
+        self.assertNotIn("rpc.example", result_json)
+        self.assertNotIn("transaction", result_json)
+        self.assertNotIn("params", result_json)
+        self.assertNotIn("data", result_json)
+
+    def test_fetch_solana_send_transaction_sanitizes_rate_limit_and_forbidden_rpc_errors(self):
+        class Response:
+            status_code = 200
+            ok = True
+            text = ""
+
+            def __init__(self, error):
+                self.error = error
+
+            def json(self):
+                return {"error": self.error}
+
+        leaked_error = {
+            "code": -32005,
+            "message": "Too many requests",
+            "data": {"transaction": "AQID", "url": "https://rpc.example?api-key=SECRET"},
+            "params": ["AQID"],
+        }
+        forbidden_error = {
+            "code": 403,
+            "message": "Access forbidden",
+            "data": {"signed_transaction_base64": "AQID"},
+        }
+
+        with patch("api.main.requests.post", return_value=Response(leaked_error)):
+            limited = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url="https://rpc.example?api-key=SECRET",
+            )
+        with patch("api.main.requests.post", return_value=Response(forbidden_error)):
+            forbidden = _fetch_solana_send_transaction(
+                signed_transaction_base64="AQID",
+                rpc_url="https://rpc.example?api-key=SECRET",
+            )
+
+        limited_json = json.dumps(limited)
+        forbidden_json = json.dumps(forbidden)
+        self.assertEqual(limited["error"]["code"], "SWAP_SUBMIT_RATE_LIMITED")
+        self.assertEqual(forbidden["error"]["code"], "SWAP_SUBMIT_FORBIDDEN")
+        for payload in (limited_json, forbidden_json):
+            self.assertNotIn("AQID", payload)
+            self.assertNotIn("signed_transaction_base64", payload)
+            self.assertNotIn("api-key", payload)
+            self.assertNotIn("SECRET", payload)
+            self.assertNotIn("rpc.example", payload)
+            self.assertNotIn("transaction", payload)
+            self.assertNotIn("params", payload)
+            self.assertNotIn("data", payload)
 
     def test_fetch_solana_send_transaction_redacts_request_exception_secrets(self):
         secret_url = "https://example-rpc.com/?api-key=SECRET&token=ALSOSECRET"
