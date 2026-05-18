@@ -45,6 +45,7 @@ from api.main import (
     _try_fetch_pumpswap_quote,
     _fetch_solana_send_transaction,
     _fetch_jupiter_swap_transaction,
+    build_swap_execution_readiness,
     swap_execute_prepare,
     swap_execute_submit,
     swap_quote,
@@ -6212,6 +6213,205 @@ class TestSanity(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PREPARE_FAILED")
+
+    def _readiness_jupiter_option(self, **overrides):
+        option = {
+            "provider": "jupiter-metis",
+            "variant_id": "recommended_default",
+            "is_comparison_only": False,
+            "is_clickable": True,
+            "execution_status": "executable_capable",
+        }
+        option.update(overrides)
+        return option
+
+    def test_swap_execution_readiness_marks_jupiter_prepare_available(self):
+        result = build_swap_execution_readiness(
+            self._readiness_jupiter_option(),
+            from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+        )
+
+        self.assertTrue(result["execution_ready"])
+        self.assertEqual(result["execution_stage"], "prepare_available")
+        self.assertEqual(result["execution_provider"], "jupiter-metis")
+        self.assertEqual(result["reasons"], [])
+
+    def test_swap_execution_readiness_marks_non_jupiter_quote_only(self):
+        result = build_swap_execution_readiness(
+            self._readiness_jupiter_option(provider="raydium-trade-api"),
+            from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+        )
+
+        self.assertFalse(result["execution_ready"])
+        self.assertEqual(result["execution_stage"], "quote_only")
+        self.assertIn("NON_JUPITER_ROUTE", result["reasons"])
+
+    def test_swap_execution_readiness_marks_comparison_only_quote_only(self):
+        result = build_swap_execution_readiness(
+            self._readiness_jupiter_option(is_comparison_only=True),
+            from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+        )
+
+        self.assertFalse(result["execution_ready"])
+        self.assertIn("COMPARISON_ONLY_ROUTE", result["reasons"])
+
+    def test_swap_execution_readiness_blocks_missing_decimals(self):
+        result = build_swap_execution_readiness(
+            self._readiness_jupiter_option(),
+            from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            to_resolution={"mint": "CustomMint111", "decimals": None},
+        )
+
+        self.assertFalse(result["execution_ready"])
+        self.assertIn("TOKEN_DECIMALS_UNAVAILABLE", result["reasons"])
+
+    def test_swap_execution_readiness_blocks_unsupported_network(self):
+        result = build_swap_execution_readiness(
+            self._readiness_jupiter_option(),
+            from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+            network="ethereum",
+        )
+
+        self.assertFalse(result["execution_ready"])
+        self.assertIn("UNSUPPORTED_NETWORK", result["reasons"])
+
+    def test_swap_execution_readiness_blocks_unsupported_variant(self):
+        result = build_swap_execution_readiness(
+            self._readiness_jupiter_option(variant_id="pumpswap_quote"),
+            from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+        )
+
+        self.assertFalse(result["execution_ready"])
+        self.assertIn("UNSUPPORTED_VARIANT", result["reasons"])
+
+    def test_swap_execution_readiness_does_not_mutate_token_meta(self):
+        before = json.dumps(TOKEN_META, sort_keys=True)
+        result = build_swap_execution_readiness(
+            self._readiness_jupiter_option(),
+            from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+        )
+
+        self.assertTrue(result["execution_ready"])
+        self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
+    def test_swap_quote_adds_execution_readiness_metadata(self):
+        jupiter_quote = {
+            "inputMint": METEORA_DLMM_SOL_MINT,
+            "inAmount": "1000000000",
+            "outputMint": METEORA_DLMM_USDC_MINT,
+            "outAmount": "85000000",
+            "otherAmountThreshold": "84575000",
+            "slippageBps": 50,
+            "priceImpactPct": "0",
+            "swapUsdValue": "84",
+            "routePlan": [
+                {
+                    "swapInfo": {
+                        "label": "Orca",
+                        "inputMint": METEORA_DLMM_SOL_MINT,
+                        "outputMint": METEORA_DLMM_USDC_MINT,
+                        "inAmount": "1000000000",
+                        "outAmount": "85000000",
+                    },
+                    "percent": 100,
+                }
+            ],
+        }
+        unsupported = {"ok": False, "error": {"status_code": 400, "detail": "unsupported"}}
+
+        with (
+            patch("api.main._fetch_jupiter_quote", return_value=jupiter_quote),
+            patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+            patch("api.main._resolve_quote_reference_prices_usd", return_value={}),
+        ):
+            response = swap_quote(from_token="SOL", to_token="USDC", amount=1.0)
+
+        self.assertIn("execution_readiness", response["recommended_option"])
+        self.assertIn("execution_readiness", response["recommended_executable_option"])
+        self.assertIn("execution_readiness", response["direct_route_check"])
+        self.assertTrue(response["recommended_executable_option"]["execution_readiness"]["execution_ready"])
+        self.assertEqual(
+            response["recommended_executable_option"]["execution_readiness"]["execution_stage"],
+            "prepare_available",
+        )
+
+    def test_swap_ui_renders_execution_readiness_labels(self):
+        html = build_ui_html()
+
+        self.assertIn("Execution-ready via Jupiter", html)
+        self.assertIn("Comparison-only - no swap action available yet.", html)
+        self.assertIn("function swapExecutionReadinessReasonLabel(reason)", html)
+        self.assertIn("NON_JUPITER_ROUTE: \"Quote-only route.\"", html)
+        self.assertIn("COMPARISON_ONLY_ROUTE: \"Comparison-only route.\"", html)
+        self.assertIn("TOKEN_DECIMALS_UNAVAILABLE: \"Token decimals unavailable.\"", html)
+
+    def test_swap_ui_button_gating_still_requires_jupiter_executable(self):
+        html = build_ui_html()
+        start = html.index("function isJupiterExecutableRouteOption(opt)")
+        end = html.index("function renderRouteActionButton", start)
+        gate = html[start:end]
+
+        self.assertIn('opt?.provider === "jupiter-metis"', gate)
+        self.assertIn("opt?.is_clickable === true", gate)
+        self.assertIn("opt?.is_comparison_only !== true", gate)
+        self.assertIn('opt?.execution_status === "executable_capable"', gate)
+
+    def test_execution_readiness_audit_tool_defaults_and_pair_parsing(self):
+        from tools import execution_readiness_audit as audit
+
+        self.assertIn("SOL:USDC", audit.DEFAULT_PAIRS)
+        self.assertIn("SOL:BONK", audit.DEFAULT_PAIRS)
+        self.assertIn("SOL:WIF", audit.DEFAULT_PAIRS)
+
+        parser = audit.build_parser()
+        args = parser.parse_args(["--pair", "SOL:USDC", "--pair", "SOL:WIF"])
+        pairs = audit.build_pairs(args)
+        self.assertEqual([pair.label for pair in pairs], ["SOL:USDC", "SOL:WIF"])
+
+    def test_execution_readiness_audit_prepare_requires_user_public_key(self):
+        from tools import execution_readiness_audit as audit
+
+        parser = audit.build_parser()
+        missing_key = parser.parse_args(["--pair", "SOL:USDC", "--check-prepare"])
+        with_key = parser.parse_args([
+            "--pair",
+            "SOL:USDC",
+            "--check-prepare",
+            "--user-public-key",
+            "Wallet111",
+        ])
+
+        self.assertFalse(audit.should_check_prepare(missing_key))
+        self.assertTrue(audit.should_check_prepare(with_key))
+
+    def test_execution_readiness_audit_tool_has_no_sign_or_submit_path(self):
+        source = Path("tools/execution_readiness_audit.py").read_text()
+
+        self.assertNotIn("/swap/execute/submit", source)
+        self.assertNotIn("signTransaction", source)
+        self.assertNotIn("sendRawTransaction", source)
+
+    def test_execution_readiness_audit_tool_does_not_mutate_token_meta(self):
+        from tools import execution_readiness_audit as audit
+
+        before = json.dumps(TOKEN_META, sort_keys=True)
+        parser = audit.build_parser()
+        args = parser.parse_args(["--pair", "SOL:USDC"])
+        pairs = audit.build_pairs(args)
+
+        self.assertEqual([pair.label for pair in pairs], ["SOL:USDC"])
+        self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
 
 if __name__ == "__main__":
     unittest.main()

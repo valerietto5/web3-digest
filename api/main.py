@@ -1103,6 +1103,53 @@ JUPITER_EXECUTION_VARIANTS = {
 }
 
 
+def _resolution_has_mint_and_decimals(resolution: dict | None) -> bool:
+    if not isinstance(resolution, dict):
+        return True
+
+    decimals = resolution.get("decimals")
+    return bool(resolution.get("mint")) and isinstance(decimals, int)
+
+
+def build_swap_execution_readiness(
+    option,
+    *,
+    from_resolution: dict | None = None,
+    to_resolution: dict | None = None,
+    network: str = "solana",
+) -> dict:
+    reasons = []
+    warnings = []
+    provider = (option or {}).get("provider") if isinstance(option, dict) else None
+
+    if (network or "").lower() != "solana":
+        reasons.append("UNSUPPORTED_NETWORK")
+    elif provider != "jupiter-metis":
+        reasons.append("NON_JUPITER_ROUTE")
+    elif (option or {}).get("is_comparison_only") is True:
+        reasons.append("COMPARISON_ONLY_ROUTE")
+    elif (option or {}).get("is_clickable") is not True:
+        reasons.append("NOT_CLICKABLE")
+    elif (option or {}).get("execution_status") != "executable_capable":
+        reasons.append("NOT_CLICKABLE")
+    elif (option or {}).get("variant_id") not in JUPITER_EXECUTION_VARIANTS:
+        reasons.append("UNSUPPORTED_VARIANT")
+    elif (
+        not _resolution_has_mint_and_decimals(from_resolution)
+        or not _resolution_has_mint_and_decimals(to_resolution)
+    ):
+        reasons.append("TOKEN_DECIMALS_UNAVAILABLE")
+
+    execution_ready = not reasons
+    return {
+        "execution_ready": execution_ready,
+        "execution_stage": "prepare_available" if execution_ready else "quote_only",
+        "execution_provider": "jupiter-metis" if execution_ready else None,
+        "reasons": reasons,
+        "warnings": warnings,
+    }
+
+
 def _normalize_execution_provider(provider: str) -> str | None:
     key = (provider or "").strip().lower()
     return JUPITER_EXECUTION_PROVIDER_ALIASES.get(key)
@@ -3495,6 +3542,27 @@ def _with_quote_role(option: dict | None, *, kind: str, label: str) -> dict | No
     }
 
 
+def _with_execution_readiness(
+    option: dict | None,
+    *,
+    input_meta: dict | None,
+    output_meta: dict | None,
+    network: str = "solana",
+) -> dict | None:
+    if not option:
+        return option
+
+    return {
+        **option,
+        "execution_readiness": build_swap_execution_readiness(
+            option,
+            from_resolution=input_meta,
+            to_resolution=output_meta,
+            network=network,
+        ),
+    }
+
+
 def _strip_internal_sort_key(option: dict | None) -> dict | None:
     if not option:
         return option
@@ -4357,6 +4425,38 @@ def swap_quote(
     recommended_option = best_quote_option
     ranked_other_options = [_strip_internal_sort_key(x) for x in ranked_other_options]
     direct_route_output = _strip_internal_sort_key(direct_route_output)
+
+    best_quote_option = _with_execution_readiness(
+        best_quote_option,
+        input_meta=input_meta,
+        output_meta=output_meta,
+        network=network,
+    )
+    if _same_quote_option(recommended_executable_option, best_quote_option):
+        recommended_executable_option = best_quote_option
+    else:
+        recommended_executable_option = _with_execution_readiness(
+            recommended_executable_option,
+            input_meta=input_meta,
+            output_meta=output_meta,
+            network=network,
+        )
+    recommended_option = best_quote_option
+    ranked_other_options = [
+        _with_execution_readiness(
+            opt,
+            input_meta=input_meta,
+            output_meta=output_meta,
+            network=network,
+        )
+        for opt in ranked_other_options
+    ]
+    direct_route_output = _with_execution_readiness(
+        direct_route_output,
+        input_meta=input_meta,
+        output_meta=output_meta,
+        network=network,
+    )
 
     return {
         "ok": True,

@@ -900,6 +900,42 @@ function renderRouteActionButton(label, opt, cardRole) {
   `;
 }
 
+function swapExecutionReadinessReasonLabel(reason) {
+  const labels = {
+    NON_JUPITER_ROUTE: "Quote-only route.",
+    COMPARISON_ONLY_ROUTE: "Comparison-only route.",
+    TOKEN_DECIMALS_UNAVAILABLE: "Token decimals unavailable.",
+    UNSUPPORTED_NETWORK: "Unsupported network.",
+    UNSUPPORTED_VARIANT: "Unsupported execution variant.",
+    NOT_CLICKABLE: "Route is not executable yet."
+  };
+  return labels[reason] || "Quote-only route.";
+}
+
+function renderSwapExecutionReadinessLine(opt) {
+  const readiness = opt?.execution_readiness || null;
+  if (readiness?.execution_ready === true && readiness?.execution_provider === "jupiter-metis") {
+    return `
+      <div class="muted" style="margin-top:4px;">
+        Execution-ready via Jupiter
+      </div>
+    `;
+  }
+
+  if (opt?.is_comparison_only === true) {
+    return "";
+  }
+
+  const reason = Array.isArray(readiness?.reasons) ? readiness.reasons[0] : null;
+  if (!reason) return "";
+
+  return `
+    <div class="muted" style="margin-top:4px;">
+      Quote-only: ${escapeHtml(swapExecutionReadinessReasonLabel(reason))}
+    </div>
+  `;
+}
+
 function surfaceRouteLabel(opt) {
   return opt?.execution_surface_label
     ? `Via ${opt.execution_surface_label}`
@@ -1346,6 +1382,7 @@ function renderSwapOptionCard(opt, opts = {}) {
           `
           : ""
       }
+      ${renderSwapExecutionReadinessLine(opt)}
       ${
         isRecommendedCard && showRecommendedAction && isExecutableRoute
           ? `
@@ -1467,6 +1504,7 @@ function renderCompactAlternativeCard(opt, idx = 0) {
           `
           : ""
       }
+      ${renderSwapExecutionReadinessLine(opt)}
       <div class="muted" style="margin-top:4px;">
         Receive: ${escapeHtml(estOut)} ${escapeHtml(outToken)}${escapeHtml(receiveUsdText)}
       </div>
