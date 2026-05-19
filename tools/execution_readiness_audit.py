@@ -21,6 +21,8 @@ DEFAULT_PAIRS = [
     "USDC:POPCAT",
 ]
 
+PREPARE_PROVIDERS = {"jupiter-metis", "raydium-trade-api"}
+
 
 @dataclass
 class AuditPair:
@@ -94,10 +96,22 @@ def quote_url(server_url: str, pair: AuditPair, amount: float) -> str:
     return f"{server_url.rstrip('/')}/swap/quote?{query}"
 
 
-def prepare_payload(pair: AuditPair, option: dict[str, Any], amount: float, user_public_key: str) -> dict[str, Any]:
+def prepare_variant_id(provider: str, option: dict[str, Any]) -> str:
+    if provider == "raydium-trade-api":
+        return "raydium_quote"
+    return option.get("variant_id") or "recommended_default"
+
+
+def prepare_payload(
+    pair: AuditPair,
+    option: dict[str, Any],
+    amount: float,
+    user_public_key: str,
+    provider: str = "jupiter-metis",
+) -> dict[str, Any]:
     return {
-        "provider": "jupiter-metis",
-        "variant_id": option.get("variant_id") or "recommended_default",
+        "provider": provider,
+        "variant_id": prepare_variant_id(provider, option),
         "from_token": pair.from_token,
         "to_token": pair.to_token,
         "amount": amount,
@@ -111,6 +125,41 @@ def _best_option(data: dict[str, Any]) -> dict[str, Any] | None:
     option = data.get("recommended_executable_option") or data.get("recommended_option")
     if isinstance(option, dict):
         return option
+    return None
+
+
+def _candidate_options(data: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = []
+    for key in (
+        "recommended_executable_option",
+        "recommended_option",
+        "best_quote_option",
+        "recommended",
+        "direct_route_check",
+    ):
+        option = data.get(key)
+        if isinstance(option, dict):
+            candidates.append(option)
+
+    for option in data.get("other_options") or []:
+        if isinstance(option, dict):
+            candidates.append(option)
+
+    return candidates
+
+
+def find_option_by_provider(data: dict[str, Any], provider: str) -> dict[str, Any] | None:
+    for option in _candidate_options(data):
+        if option.get("provider") == provider:
+            return option
+    return None
+
+
+def prepare_option_for_provider(data: dict[str, Any], provider: str) -> dict[str, Any] | None:
+    if provider == "jupiter-metis":
+        return _best_option(data)
+    if provider == "raydium-trade-api":
+        return find_option_by_provider(data, "raydium-trade-api")
     return None
 
 
@@ -135,6 +184,8 @@ def audit_pair(args: argparse.Namespace, pair: AuditPair) -> dict[str, Any]:
         "prepare_checked": False,
         "prepare_ok": None,
         "error_code": None,
+        "transaction_present": False,
+        "transaction_format": None,
         "external": bool((quote_data.get("summary") or {}).get("uses_external_tokens")),
     }
 
@@ -142,8 +193,27 @@ def audit_pair(args: argparse.Namespace, pair: AuditPair) -> dict[str, Any]:
         row["error_code"] = ((quote_data.get("error") or {}).get("code") or "QUOTE_FAILED")
         return row
 
-    if should_check_prepare(args) and jupiter_ready and option:
-        payload = prepare_payload(pair, option, args.amount, args.user_public_key)
+    if should_check_prepare(args):
+        prepare_option = prepare_option_for_provider(quote_data, args.prepare_provider)
+        if args.prepare_provider == "jupiter-metis" and not jupiter_ready:
+            row["prepare_ok"] = False
+            row["error_code"] = "JUPITER_OPTION_NOT_READY"
+            return row
+        if not prepare_option:
+            row["prepare_ok"] = False
+            if args.prepare_provider == "raydium-trade-api":
+                row["error_code"] = "RAYDIUM_OPTION_NOT_FOUND"
+            else:
+                row["error_code"] = "PREPARE_OPTION_NOT_FOUND"
+            return row
+
+        payload = prepare_payload(
+            pair,
+            prepare_option,
+            args.amount,
+            args.user_public_key,
+            provider=args.prepare_provider,
+        )
         prepare_result = _request_json(
             "POST",
             f"{args.server_url.rstrip('/')}/swap/execute/prepare",
@@ -152,6 +222,8 @@ def audit_pair(args: argparse.Namespace, pair: AuditPair) -> dict[str, Any]:
         prepare_data = prepare_result.get("data") or {}
         row["prepare_checked"] = True
         row["prepare_ok"] = bool(prepare_result.get("ok") and prepare_data.get("ok"))
+        row["transaction_present"] = bool(prepare_data.get("transaction_base64"))
+        row["transaction_format"] = prepare_data.get("transaction_format")
         if not row["prepare_ok"]:
             row["error_code"] = ((prepare_data.get("error") or {}).get("code") or "PREPARE_FAILED")
 
@@ -162,7 +234,7 @@ def render_text_report(rows: list[dict[str, Any]]) -> str:
     header = (
         "pair | quote_ok | best_surface | jupiter_ready | stage | provider_status | "
         "provider_label | prepare_capable | submit_capable | prepare_checked | "
-        "prepare_ok | error_code | external"
+        "prepare_ok | error_code | transaction_present | transaction_format | external"
     )
     lines = [header]
     for row in rows:
@@ -181,6 +253,8 @@ def render_text_report(rows: list[dict[str, Any]]) -> str:
                     str(row.get("prepare_checked")),
                     str(row.get("prepare_ok")),
                     str(row.get("error_code") or ""),
+                    str(row.get("transaction_present")),
+                    str(row.get("transaction_format") or ""),
                     str(row.get("external")),
                 ]
             )
@@ -197,6 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--amount", type=float, default=1.0)
     parser.add_argument("--user-public-key")
     parser.add_argument("--check-prepare", action="store_true")
+    parser.add_argument("--prepare-provider", choices=sorted(PREPARE_PROVIDERS), default="jupiter-metis")
     parser.add_argument("--json", action="store_true")
     return parser
 

@@ -6707,6 +6707,137 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(audit.should_check_prepare(missing_key))
         self.assertTrue(audit.should_check_prepare(with_key))
 
+    def test_execution_readiness_audit_prepare_provider_defaults_and_supports_raydium(self):
+        from tools import execution_readiness_audit as audit
+
+        parser = audit.build_parser()
+        default_args = parser.parse_args([])
+        raydium_args = parser.parse_args(["--prepare-provider", "raydium-trade-api"])
+
+        self.assertEqual(default_args.prepare_provider, "jupiter-metis")
+        self.assertEqual(raydium_args.prepare_provider, "raydium-trade-api")
+
+    def test_execution_readiness_audit_raydium_prepare_payload(self):
+        from tools import execution_readiness_audit as audit
+
+        pair = audit.AuditPair(from_token="SOL", to_token="USDC")
+        payload = audit.prepare_payload(
+            pair,
+            {"provider": "raydium-trade-api", "variant_id": "ignored"},
+            1.25,
+            "Wallet111",
+            provider="raydium-trade-api",
+        )
+
+        self.assertEqual(payload["provider"], "raydium-trade-api")
+        self.assertEqual(payload["variant_id"], "raydium_quote")
+        self.assertEqual(payload["network"], "solana")
+        self.assertEqual(payload["user_public_key"], "Wallet111")
+
+    def test_execution_readiness_audit_selects_raydium_option(self):
+        from tools import execution_readiness_audit as audit
+
+        quote_data = {
+            "recommended_executable_option": {"provider": "jupiter-metis", "variant_id": "recommended_default"},
+            "other_options": [
+                {"provider": "meteora-dlmm", "variant_id": "meteora_dlmm_quote"},
+                {"provider": "raydium-trade-api", "variant_id": "raydium_quote"},
+            ],
+        }
+
+        option = audit.prepare_option_for_provider(quote_data, "raydium-trade-api")
+        self.assertIsNotNone(option)
+        self.assertEqual(option["variant_id"], "raydium_quote")
+
+    def test_execution_readiness_audit_raydium_missing_option_reports_error(self):
+        from tools import execution_readiness_audit as audit
+
+        parser = audit.build_parser()
+        args = parser.parse_args([
+            "--pair",
+            "SOL:USDC",
+            "--check-prepare",
+            "--user-public-key",
+            "Wallet111",
+            "--prepare-provider",
+            "raydium-trade-api",
+        ])
+        quote_response = {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "ok": True,
+                "recommended_executable_option": {
+                    "provider": "jupiter-metis",
+                    "variant_id": "recommended_default",
+                    "execution_readiness": {"execution_ready": True},
+                },
+                "other_options": [],
+                "summary": {"uses_external_tokens": False},
+            },
+        }
+
+        with patch("tools.execution_readiness_audit._request_json", return_value=quote_response):
+            row = audit.audit_pair(args, audit.AuditPair(from_token="SOL", to_token="USDC"))
+
+        self.assertFalse(row["prepare_checked"])
+        self.assertFalse(row["prepare_ok"])
+        self.assertEqual(row["error_code"], "RAYDIUM_OPTION_NOT_FOUND")
+
+    def test_execution_readiness_audit_raydium_records_transaction_presence_without_payload(self):
+        from tools import execution_readiness_audit as audit
+
+        parser = audit.build_parser()
+        args = parser.parse_args([
+            "--pair",
+            "SOL:USDC",
+            "--check-prepare",
+            "--user-public-key",
+            "Wallet111",
+            "--prepare-provider",
+            "raydium-trade-api",
+            "--json",
+        ])
+        quote_response = {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "ok": True,
+                "recommended_executable_option": {
+                    "provider": "jupiter-metis",
+                    "variant_id": "recommended_default",
+                    "execution_readiness": {"execution_ready": True},
+                },
+                "other_options": [
+                    {
+                        "provider": "raydium-trade-api",
+                        "variant_id": "raydium_quote",
+                        "execution_surface_label": "Raydium",
+                    }
+                ],
+                "summary": {"uses_external_tokens": False},
+            },
+        }
+        prepare_response = {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "ok": True,
+                "transaction_base64": "raydium-secret-transaction",
+                "transaction_format": "versioned",
+            },
+        }
+
+        with patch("tools.execution_readiness_audit._request_json", side_effect=[quote_response, prepare_response]):
+            row = audit.audit_pair(args, audit.AuditPair(from_token="SOL", to_token="USDC"))
+
+        self.assertTrue(row["prepare_checked"])
+        self.assertTrue(row["prepare_ok"])
+        self.assertTrue(row["transaction_present"])
+        self.assertEqual(row["transaction_format"], "versioned")
+        self.assertNotIn("transaction_base64", row)
+        self.assertNotIn("raydium-secret-transaction", json.dumps(row))
+
     def test_execution_readiness_audit_tool_has_no_sign_or_submit_path(self):
         source = Path("tools/execution_readiness_audit.py").read_text()
 
