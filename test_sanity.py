@@ -46,6 +46,7 @@ from api.main import (
     _try_fetch_pumpswap_quote,
     _fetch_solana_send_transaction,
     _fetch_jupiter_swap_transaction,
+    _fetch_raydium_swap_transaction,
     build_swap_execution_readiness,
     get_swap_execution_provider,
     get_swap_execution_provider_capability,
@@ -5692,7 +5693,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_WALLET_REQUIRED")
 
     def test_swap_execute_prepare_rejects_unsupported_provider(self):
-        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="raydium-trade-api"))
+        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="orca-whirlpool"))
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED")
 
@@ -5711,7 +5712,7 @@ class TestSanity(unittest.TestCase):
 
     def test_prepare_swap_transaction_with_provider_blocks_unimplemented_provider(self):
         result = prepare_swap_transaction_with_provider(
-            provider_id="raydium-trade-api",
+            provider_id="orca-whirlpool",
             input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
             output_meta={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
             amount=1.0,
@@ -5725,6 +5726,16 @@ class TestSanity(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED")
+
+    def test_get_swap_execution_provider_returns_raydium_provider_without_capability_flip(self):
+        provider = get_swap_execution_provider("raydium-trade-api")
+
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider["provider"], "raydium-trade-api")
+        self.assertEqual(provider["execution_surface_label"], "Raydium")
+        self.assertTrue(callable(provider["prepare"]))
+        self.assertFalse(SWAP_EXECUTION_PROVIDER_CAPABILITIES["raydium-trade-api"]["prepare"])
+        self.assertFalse(SWAP_EXECUTION_PROVIDER_CAPABILITIES["raydium-trade-api"]["submit"])
 
     def test_swap_execute_prepare_accepts_jupiter_provider_alias(self):
         quote = self._mock_jupiter_execution_quote()
@@ -5891,6 +5902,211 @@ class TestSanity(unittest.TestCase):
             ),
         ):
             result = swap_execute_prepare(self._base_swap_execute_prepare_payload())
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
+    def _fake_urlopen_response(self, payload):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        return FakeResponse()
+
+    def _mock_raydium_execution_quote(self):
+        return {
+            "success": True,
+            "data": {
+                "outputAmount": "85000000",
+                "otherAmountThreshold": "84575000",
+                "slippageBps": 50,
+            },
+        }
+
+    def test_fetch_raydium_swap_transaction_maps_http_errors(self):
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.HTTPError(
+                "https://transaction-v1.raydium.io/transaction/swap-base-in",
+                429,
+                "Too Many Requests",
+                {},
+                io.BytesIO(b"too many requests"),
+            ),
+        ):
+            limited = _fetch_raydium_swap_transaction(
+                swap_response={"success": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.HTTPError(
+                "https://transaction-v1.raydium.io/transaction/swap-base-in",
+                403,
+                "Forbidden",
+                {},
+                io.BytesIO(b"forbidden"),
+            ),
+        ):
+            forbidden = _fetch_raydium_swap_transaction(
+                swap_response={"success": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.HTTPError(
+                "https://transaction-v1.raydium.io/transaction/swap-base-in",
+                500,
+                "Server Error",
+                {},
+                io.BytesIO(b"error"),
+            ),
+        ):
+            failed = _fetch_raydium_swap_transaction(
+                swap_response={"success": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(limited["error"]["code"], "SWAP_EXECUTION_RAYDIUM_RATE_LIMITED")
+        self.assertEqual(forbidden["error"]["code"], "SWAP_EXECUTION_RAYDIUM_FORBIDDEN")
+        self.assertEqual(failed["error"]["code"], "SWAP_EXECUTION_RAYDIUM_PREPARE_FAILED")
+
+    def test_fetch_raydium_swap_transaction_rejects_missing_or_multiple_transactions(self):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=self._fake_urlopen_response({"success": True, "data": []}),
+        ):
+            missing = _fetch_raydium_swap_transaction(
+                swap_response={"success": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+        with patch(
+            "urllib.request.urlopen",
+            return_value=self._fake_urlopen_response({
+                "success": True,
+                "data": [{"transaction": "tx1"}, {"transaction": "tx2"}],
+            }),
+        ):
+            multiple = _fetch_raydium_swap_transaction(
+                swap_response={"success": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(missing["error"]["code"], "SWAP_EXECUTION_RAYDIUM_TRANSACTION_MISSING")
+        self.assertEqual(
+            multiple["error"]["code"],
+            "SWAP_EXECUTION_RAYDIUM_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+        )
+
+    def test_fetch_raydium_swap_transaction_returns_single_transaction_and_payload(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=20):
+            captured["url"] = req.full_url
+            captured["payload"] = json.loads(req.data.decode("utf-8"))
+            return self._fake_urlopen_response({
+                "success": True,
+                "data": [{"transaction": "raydium-base64tx"}],
+            })
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = _fetch_raydium_swap_transaction(
+                swap_response={"success": True, "data": {"outputAmount": "1"}},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                tx_version="V0",
+                wrap_sol=True,
+                unwrap_sol=False,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transaction_base64"], "raydium-base64tx")
+        self.assertEqual(captured["url"], "https://transaction-v1.raydium.io/transaction/swap-base-in")
+        self.assertEqual(captured["payload"]["wallet"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
+        self.assertEqual(captured["payload"]["txVersion"], "V0")
+        self.assertTrue(captured["payload"]["wrapSol"])
+        self.assertFalse(captured["payload"]["unwrapSol"])
+        self.assertIn("swapResponse", captured["payload"])
+
+    def test_raydium_prepare_rebuilds_quote_and_returns_normalized_response(self):
+        quote = self._mock_raydium_execution_quote()
+        with (
+            patch("api.main._fetch_raydium_quote", return_value=quote) as fetch_quote,
+            patch(
+                "api.main._fetch_raydium_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "transaction_base64": "raydium-base64tx",
+                    "raw": {"data": [{"transaction": "raydium-base64tx"}]},
+                },
+            ) as fetch_swap,
+        ):
+            result = swap_execute_prepare(
+                self._base_swap_execute_prepare_payload(
+                    provider="raydium-trade-api",
+                    variant_id="raydium_quote",
+                )
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["provider"], "raydium-trade-api")
+        self.assertEqual(result["execution_surface_label"], "Raydium")
+        self.assertEqual(result["execution_status"], "prepared")
+        self.assertEqual(result["transaction_base64"], "raydium-base64tx")
+        self.assertEqual(result["transaction_format"], "versioned")
+        self.assertEqual(result["quote_summary"]["estimated_output_raw"], "85000000")
+        self.assertEqual(result["quote_summary"]["variant_id"], "raydium_quote")
+        self.assertIn("quote_refreshed_before_execution", result["warnings"])
+        fetch_quote.assert_called_once()
+        self.assertEqual(fetch_quote.call_args.args[0]["txVersion"], "V0")
+        fetch_swap.assert_called_once()
+        self.assertEqual(fetch_swap.call_args.kwargs["user_public_key"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
+        self.assertEqual(fetch_swap.call_args.kwargs["tx_version"], "V0")
+        self.assertTrue(fetch_swap.call_args.kwargs["wrap_sol"])
+        self.assertFalse(fetch_swap.call_args.kwargs["unwrap_sol"])
+
+    def test_raydium_prepare_rejects_non_raydium_variant(self):
+        result = prepare_swap_transaction_with_provider(
+            provider_id="raydium-trade-api",
+            input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            output_meta={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+            amount=1.0,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            variant_id="recommended_default",
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            from_token_query="SOL",
+            to_token_query="USDC",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_UNSUPPORTED_ROUTE")
+
+    def test_raydium_prepare_does_not_mutate_token_meta(self):
+        before = json.dumps(TOKEN_META, sort_keys=True)
+        quote = self._mock_raydium_execution_quote()
+        with (
+            patch("api.main._fetch_raydium_quote", return_value=quote),
+            patch(
+                "api.main._fetch_raydium_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "transaction_base64": "raydium-base64tx",
+                    "raw": {"data": [{"transaction": "raydium-base64tx"}]},
+                },
+            ),
+        ):
+            result = swap_execute_prepare(
+                self._base_swap_execute_prepare_payload(
+                    provider="raydium-trade-api",
+                    variant_id="raydium_quote",
+                )
+            )
 
         self.assertTrue(result["ok"])
         self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)

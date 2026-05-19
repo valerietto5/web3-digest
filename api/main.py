@@ -1095,7 +1095,7 @@ JUPITER_EXECUTION_PROVIDER_ALIASES = {
     "jupiter-metis": "jupiter-metis",
 }
 
-SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis"}
+SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis", "raydium-trade-api"}
 
 SWAP_EXECUTION_PROVIDER_CAPABILITIES = {
     "jupiter-metis": {
@@ -1240,6 +1240,12 @@ def get_swap_execution_provider(provider_id: str) -> dict | None:
             "execution_surface_label": "Jupiter",
             "prepare": _prepare_jupiter_swap_transaction,
         }
+    if provider == "raydium-trade-api":
+        return {
+            "provider": "raydium-trade-api",
+            "execution_surface_label": "Raydium",
+            "prepare": _prepare_raydium_swap_transaction,
+        }
     return None
 
 
@@ -1367,6 +1373,185 @@ def _jupiter_execution_quote_summary(
     }
 
 
+RAYDIUM_EXECUTION_SOL_MINT = "So11111111111111111111111111111111111111112"
+
+
+def _raydium_execution_error(code: str, message: str, **extra) -> dict:
+    return _swap_execution_error(code, message, **extra)
+
+
+def _raydium_quote_error_response(e: HTTPException) -> dict:
+    return _swap_execution_error(
+        "SWAP_EXECUTION_QUOTE_FAILED",
+        "Could not refresh a Raydium quote for swap execution.",
+        status_code=e.status_code,
+    )
+
+
+def _fetch_fresh_raydium_execution_quote(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount_raw: int,
+    slippage_bps: int,
+) -> dict:
+    params = _build_raydium_quote_params(
+        input_mint=input_meta["mint"],
+        output_mint=output_meta["mint"],
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+        tx_version="V0",
+    )
+
+    try:
+        return {
+            "ok": True,
+            "quote": _fetch_raydium_quote(params),
+            "params": params,
+        }
+    except HTTPException as e:
+        return _raydium_quote_error_response(e)
+
+
+def _extract_raydium_transaction_base64(payload: dict) -> dict:
+    data = payload.get("data")
+    if isinstance(data, list):
+        if len(data) > 1:
+            return _raydium_execution_error(
+                "SWAP_EXECUTION_RAYDIUM_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+                "Raydium returned multiple transactions, which are not supported in V1.",
+            )
+        if not data:
+            return _raydium_execution_error(
+                "SWAP_EXECUTION_RAYDIUM_TRANSACTION_MISSING",
+                "Raydium did not return a swap transaction.",
+            )
+        item = data[0]
+    elif isinstance(data, dict):
+        item = data
+    else:
+        item = payload
+
+    transaction = None
+    if isinstance(item, dict):
+        transaction = item.get("transaction") or item.get("transactionBase64")
+
+    if not transaction:
+        return _raydium_execution_error(
+            "SWAP_EXECUTION_RAYDIUM_TRANSACTION_MISSING",
+            "Raydium did not return a swap transaction.",
+        )
+
+    return {
+        "ok": True,
+        "transaction_base64": transaction,
+    }
+
+
+def _fetch_raydium_swap_transaction(
+    *,
+    swap_response: dict,
+    user_public_key: str,
+    tx_version: str = "V0",
+    wrap_sol: bool = False,
+    unwrap_sol: bool = False,
+    compute_unit_price_micro_lamports: str | None = None,
+    input_account: str | None = None,
+    output_account: str | None = None,
+) -> dict:
+    payload = {
+        "txVersion": tx_version,
+        "wallet": user_public_key,
+        "wrapSol": bool(wrap_sol),
+        "unwrapSol": bool(unwrap_sol),
+        "swapResponse": swap_response,
+    }
+    if compute_unit_price_micro_lamports is not None:
+        payload["computeUnitPriceMicroLamports"] = str(compute_unit_price_micro_lamports)
+    if input_account:
+        payload["inputAccount"] = input_account
+    if output_account:
+        payload["outputAccount"] = output_account
+
+    req = urllib.request.Request(
+        "https://transaction-v1.raydium.io/transaction/swap-base-in",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "web3-digest/0.1 raydium-execution-prepare",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return _raydium_execution_error(
+                "SWAP_EXECUTION_RAYDIUM_RATE_LIMITED",
+                "Raydium transaction preparation is rate-limited right now.",
+                status_code=e.code,
+            )
+        if e.code in (401, 403):
+            return _raydium_execution_error(
+                "SWAP_EXECUTION_RAYDIUM_FORBIDDEN",
+                "Raydium transaction preparation was blocked by the provider.",
+                status_code=e.code,
+            )
+        return _raydium_execution_error(
+            "SWAP_EXECUTION_RAYDIUM_PREPARE_FAILED",
+            "Raydium transaction preparation failed.",
+            status_code=e.code,
+        )
+    except Exception:
+        return _raydium_execution_error(
+            "SWAP_EXECUTION_RAYDIUM_PREPARE_FAILED",
+            "Raydium transaction preparation failed.",
+        )
+
+    if data.get("success") is False:
+        return _raydium_execution_error(
+            "SWAP_EXECUTION_RAYDIUM_PREPARE_FAILED",
+            "Raydium transaction preparation was not successful.",
+        )
+
+    extracted = _extract_raydium_transaction_base64(data)
+    if extracted.get("ok") is not True:
+        return extracted
+
+    return {
+        "ok": True,
+        "transaction_base64": extracted["transaction_base64"],
+        "raw": data,
+    }
+
+
+def _raydium_execution_quote_summary(
+    *,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    amount: float,
+    output_decimals: int,
+    slippage_bps: int,
+    variant_id: str,
+) -> dict:
+    data = quote.get("data") or {}
+    return {
+        "from_token": from_token,
+        "to_token": to_token,
+        "amount": amount,
+        "estimated_output": _ui_amount(data.get("outputAmount"), output_decimals),
+        "estimated_output_raw": data.get("outputAmount"),
+        "min_received": _ui_amount(data.get("otherAmountThreshold"), output_decimals),
+        "min_received_raw": data.get("otherAmountThreshold"),
+        "slippage_bps": slippage_bps,
+        "variant_id": variant_id,
+    }
+
+
 def _provider_not_implemented_error(provider_id: str) -> dict:
     return _swap_execution_error(
         "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED",
@@ -1423,6 +1608,68 @@ def _prepare_jupiter_swap_transaction(
         "transaction_format": "versioned",
         "last_valid_block_height": swap_tx.get("last_valid_block_height"),
         "quote_summary": _jupiter_execution_quote_summary(
+            quote=fresh_quote["quote"],
+            from_token=from_token,
+            to_token=to_token,
+            amount=amount,
+            output_decimals=output_meta["decimals"],
+            slippage_bps=slippage_bps,
+            variant_id=variant_id,
+        ),
+        "warnings": ["quote_refreshed_before_execution"],
+    }
+
+
+def _prepare_raydium_swap_transaction(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount: float,
+    amount_raw: int,
+    slippage_bps: int,
+    variant_id: str,
+    user_public_key: str,
+    from_token_query: str,
+    to_token_query: str,
+) -> dict:
+    if variant_id != "raydium_quote":
+        return _swap_execution_error(
+            "SWAP_EXECUTION_UNSUPPORTED_ROUTE",
+            "This Raydium route cannot be prepared for execution.",
+        )
+
+    fresh_quote = _fetch_fresh_raydium_execution_quote(
+        input_meta=input_meta,
+        output_meta=output_meta,
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+    )
+    if fresh_quote.get("ok") is not True:
+        return fresh_quote
+
+    wrap_sol = input_meta.get("mint") == RAYDIUM_EXECUTION_SOL_MINT
+    unwrap_sol = output_meta.get("mint") == RAYDIUM_EXECUTION_SOL_MINT
+    swap_tx = _fetch_raydium_swap_transaction(
+        swap_response=fresh_quote["quote"],
+        user_public_key=user_public_key,
+        tx_version="V0",
+        wrap_sol=wrap_sol,
+        unwrap_sol=unwrap_sol,
+    )
+    if swap_tx.get("ok") is not True:
+        return swap_tx
+
+    from_token = input_meta.get("quote_label") or input_meta.get("symbol") or from_token_query
+    to_token = output_meta.get("quote_label") or output_meta.get("symbol") or to_token_query
+
+    return {
+        "ok": True,
+        "provider": "raydium-trade-api",
+        "execution_surface_label": "Raydium",
+        "execution_status": "prepared",
+        "transaction_base64": swap_tx.get("transaction_base64"),
+        "transaction_format": "versioned",
+        "quote_summary": _raydium_execution_quote_summary(
             quote=fresh_quote["quote"],
             from_token=from_token,
             to_token=to_token,
