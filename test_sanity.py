@@ -46,6 +46,7 @@ from api.main import (
     _try_fetch_pumpswap_quote,
     _fetch_solana_send_transaction,
     _fetch_jupiter_swap_transaction,
+    _fetch_orca_whirlpool_swap_transaction,
     _fetch_raydium_swap_transaction,
     build_swap_execution_readiness,
     get_swap_execution_provider,
@@ -1367,8 +1368,9 @@ class TestSanity(unittest.TestCase):
         resolver.assert_called_once_with(ext_mint, allow_external=True)
 
         raydium_option = next(opt for opt in response["other_options"] if opt["provider"] == "raydium-trade-api")
-        self.assertTrue(raydium_option["is_comparison_only"])
-        self.assertFalse(raydium_option["is_clickable"])
+        self.assertFalse(raydium_option["is_comparison_only"])
+        self.assertTrue(raydium_option["is_clickable"])
+        self.assertEqual(raydium_option["execution_status"], "executable_capable")
         diagnostic_variants = {item["variant_id"] for item in response["debug"]["variant_errors"]}
         self.assertIn("phoenix_quote", diagnostic_variants)
         self.assertIn("pumpswap_quote", diagnostic_variants)
@@ -1878,7 +1880,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("function setSwapExecutionStatus(state, text, detail = null)", html)
         self.assertIn("async function prepareSwapRoute(routeRequest)", html)
         self.assertIn('fetchMaybeJson("/swap/execute/prepare"', html)
-        self.assertIn('provider: "jupiter-metis"', html)
+        self.assertIn("provider,", html)
         self.assertIn("variant_id: variantId", html)
         self.assertIn("from_token: fromToken", html)
         self.assertIn("to_token: toToken", html)
@@ -1952,39 +1954,44 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn("Connect Phantom to prepare this swap.", prepare_block)
         self.assertIn("if (!activeWalletPubkey)", prepare_block)
-        self.assertIn('routeRequest.provider !== "jupiter-metis"', prepare_block)
+        self.assertIn("SWAP_EXECUTABLE_PROVIDERS.has(provider)", prepare_block)
+        self.assertIn("SWAP_EXECUTABLE_VARIANTS[provider]", prepare_block)
         self.assertIn("setSwapPreparedActionVisible(true);", prepare_block)
         self.assertNotIn("signTransaction", prepare_block)
         self.assertNotIn("sendRawTransaction", prepare_block)
         self.assertNotIn("VersionedTransaction", prepare_block)
         self.assertNotIn("signAndSubmitPreparedSwap", prepare_block)
 
-    def test_swap_ui_renders_swap_button_only_for_jupiter_executable_cards(self):
+    def test_swap_ui_renders_swap_button_for_supported_executable_cards(self):
         html = build_ui_html()
 
-        self.assertIn("function isJupiterExecutableRouteOption(opt)", html)
-        self.assertIn('opt?.provider === "jupiter-metis"', html)
+        self.assertIn("function isExecutableRouteOption(opt)", html)
+        self.assertIn('"jupiter-metis"', html)
+        self.assertIn('"raydium-trade-api"', html)
+        self.assertIn('"orca-whirlpool"', html)
+        self.assertIn('"raydium_quote"', html)
+        self.assertIn('"orca_whirlpool_quote"', html)
+        self.assertIn("SWAP_EXECUTABLE_PROVIDERS.has(provider)", html)
+        self.assertIn("supportedVariants?.has(opt?.variant_id) === true", html)
+        self.assertIn("opt?.execution_readiness?.execution_ready === true", html)
         self.assertIn("opt?.is_clickable === true", html)
         self.assertIn("opt?.is_comparison_only !== true", html)
         self.assertIn('opt?.execution_status === "executable_capable"', html)
         self.assertIn("!!opt?.variant_id", html)
         self.assertIn('data-swap-execute="true"', html)
-        self.assertIn('data-provider="jupiter-metis"', html)
+        self.assertIn('data-provider="${escapeHtml(opt.provider)}"', html)
         self.assertIn('data-variant-id="${escapeHtml(opt.variant_id)}"', html)
         self.assertIn('data-card-role="${escapeHtml(cardRole || opt.kind || "route")}"', html)
+        self.assertIn("Swap via Raydium", html)
+        self.assertIn("Swap via Orca", html)
         self.assertIn("Comparison-only - no swap action available yet.", html)
-
-        start = html.index("function renderCompactAlternativeCard")
-        end = html.index("function swapPrepareErrorMessage", start)
-        alternative_block = html[start:end]
-        self.assertNotIn('data-swap-execute="true"', alternative_block)
 
     def test_swap_ui_direct_route_uses_direct_variant_for_prepare(self):
         html = build_ui_html()
 
         self.assertIn('showDirectAction: true,', html)
         self.assertIn('cardRole: "direct"', html)
-        self.assertIn('renderRouteActionButton("Swap this route", opt, opts.cardRole || "direct")', html)
+        self.assertIn('renderRouteActionButton(executableRouteButtonLabel(opt), opt, opts.cardRole || "direct")', html)
         self.assertIn("variant_id: button.dataset.variantId", html)
         self.assertNotIn("Try direct route", html)
 
@@ -2132,7 +2139,8 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn("function renderPreparedSwapSummary(prepared)", html)
         self.assertIn("Prepared swap", html)
-        self.assertIn("Route: Jupiter", html)
+        self.assertIn("Route: ${escapeHtml(routeLabel)}", html)
+        self.assertIn('prepared?.execution_surface_label || summary.provider_label || "Jupiter"', html)
         self.assertIn("From:", html)
         self.assertIn("To:", html)
         self.assertIn("Estimated receive:", html)
@@ -2229,7 +2237,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["provider"], "raydium-trade-api")
         self.assertEqual(option["execution_surface_label"], "Raydium")
         self.assertEqual(option["quote_status"], "live")
-        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertEqual(option["execution_status"], "executable_capable")
         self.assertTrue(option["supports_current_pair"])
         self.assertEqual(option["quote_source_type"], "venue_trade_api")
         self.assertEqual(option["cost_transparency"]["ranking_basis"], "highest_receive_amount")
@@ -2238,8 +2246,8 @@ class TestSanity(unittest.TestCase):
             "unavailable_for_quote_only_preview",
         )
         self.assertTrue(option["cost_transparency"]["explicit_fees_may_be_reflected_in_output"])
-        self.assertTrue(option["is_comparison_only"])
-        self.assertFalse(option["is_clickable"])
+        self.assertFalse(option["is_comparison_only"])
+        self.assertTrue(option["is_clickable"])
         self.assertEqual(option["route_label"], "Raydium")
         self.assertEqual(option["route_step_count"], 1)
         self.assertEqual(option["estimated_output_raw"], "13738391")
@@ -3375,11 +3383,11 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["provider"], "orca-whirlpool")
         self.assertEqual(option["execution_surface_label"], "Orca")
         self.assertEqual(option["quote_status"], "live")
-        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertEqual(option["execution_status"], "executable_capable")
         self.assertTrue(option["supports_current_pair"])
         self.assertEqual(option["quote_source_type"], "venue_native_pool_sdk")
-        self.assertTrue(option["is_comparison_only"])
-        self.assertFalse(option["is_clickable"])
+        self.assertFalse(option["is_comparison_only"])
+        self.assertTrue(option["is_clickable"])
         self.assertEqual(option["estimated_output"], 84.05)
         self.assertEqual(option["min_received"], 83.62975)
         self.assertEqual(option["route_shape"], "single-pool")
@@ -4052,11 +4060,16 @@ class TestSanity(unittest.TestCase):
         self.assertIn("orca-whirlpool", visible_providers)
         self.assertIn("phantom-routing-api", visible_providers)
         self.assertNotIn("phoenix-clob", visible_providers)
-        for provider in ["meteora-dlmm", "orca-whirlpool", "phantom-routing-api"]:
+        for provider in ["meteora-dlmm", "phantom-routing-api"]:
             option = next(opt for opt in visible if opt and opt["provider"] == provider)
             self.assertTrue(option["is_comparison_only"])
             self.assertFalse(option["is_clickable"])
             self.assertIsNotNone(option["estimated_output_usd"])
+        orca_option = next(opt for opt in visible if opt and opt["provider"] == "orca-whirlpool")
+        self.assertFalse(orca_option["is_comparison_only"])
+        self.assertTrue(orca_option["is_clickable"])
+        self.assertEqual(orca_option["execution_status"], "executable_capable")
+        self.assertIsNotNone(orca_option["estimated_output_usd"])
 
     def test_swap_quote_sol_to_wif_can_show_successful_real_universes(self):
         sol_mint = "So11111111111111111111111111111111111111112"
@@ -4194,13 +4207,19 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("phoenix-clob", visible_providers)
         self.assertNotIn("pumpswap", visible_providers)
 
-        for provider in ["meteora-dlmm", "orca-whirlpool", "phantom-routing-api"]:
+        for provider in ["meteora-dlmm", "phantom-routing-api"]:
             option = next(opt for opt in visible if opt and opt["provider"] == provider)
             self.assertEqual(option["quote_status"], "live")
             self.assertEqual(option["execution_status"], "quote_only")
             self.assertTrue(option["is_comparison_only"])
             self.assertFalse(option["is_clickable"])
             self.assertIsNotNone(option["estimated_output_usd"])
+        orca_option = next(opt for opt in visible if opt and opt["provider"] == "orca-whirlpool")
+        self.assertEqual(orca_option["quote_status"], "live")
+        self.assertEqual(orca_option["execution_status"], "executable_capable")
+        self.assertFalse(orca_option["is_comparison_only"])
+        self.assertTrue(orca_option["is_clickable"])
+        self.assertIsNotNone(orca_option["estimated_output_usd"])
 
     def test_swap_quote_accepts_new_curated_meme_tokens_without_fake_cards(self):
         sol_mint = "So11111111111111111111111111111111111111112"
@@ -4764,9 +4783,9 @@ class TestSanity(unittest.TestCase):
             ]
             orca_option = next(opt for opt in visible if opt and opt["provider"] == "orca-whirlpool")
             self.assertEqual(orca_option["quote_status"], "live")
-            self.assertEqual(orca_option["execution_status"], "quote_only")
-            self.assertTrue(orca_option["is_comparison_only"])
-            self.assertFalse(orca_option["is_clickable"])
+            self.assertEqual(orca_option["execution_status"], "executable_capable")
+            self.assertFalse(orca_option["is_comparison_only"])
+            self.assertTrue(orca_option["is_clickable"])
             self.assertEqual(orca_option["raw_quote"]["discovery"]["selected_pool"]["address"], pool_address)
 
     def test_swap_quote_can_include_pumpswap_for_docs_token(self):
@@ -5161,8 +5180,9 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(response["recommended_option"]["provider"], "orca-whirlpool")
         self.assertEqual(response["recommended_option"]["variant_id"], "orca_whirlpool_quote")
-        self.assertTrue(response["recommended_option"]["is_comparison_only"])
-        self.assertFalse(response["recommended_option"]["is_clickable"])
+        self.assertFalse(response["recommended_option"]["is_comparison_only"])
+        self.assertTrue(response["recommended_option"]["is_clickable"])
+        self.assertEqual(response["recommended_option"]["execution_status"], "executable_capable")
         self.assertEqual(response["summary"]["recommended_variant_id"], "orca_whirlpool_quote")
         self.assertIn("orca_whirlpool_quote", response["summary"]["checked_variants"])
 
@@ -5693,7 +5713,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_WALLET_REQUIRED")
 
     def test_swap_execute_prepare_rejects_unsupported_provider(self):
-        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="orca-whirlpool"))
+        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="meteora-dlmm"))
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED")
 
@@ -5712,7 +5732,7 @@ class TestSanity(unittest.TestCase):
 
     def test_prepare_swap_transaction_with_provider_blocks_unimplemented_provider(self):
         result = prepare_swap_transaction_with_provider(
-            provider_id="orca-whirlpool",
+            provider_id="meteora-dlmm",
             input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
             output_meta={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
             amount=1.0,
@@ -5727,15 +5747,25 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED")
 
-    def test_get_swap_execution_provider_returns_raydium_provider_without_capability_flip(self):
+    def test_get_swap_execution_provider_returns_orca_provider_with_capability_enabled(self):
+        provider = get_swap_execution_provider("orca-whirlpool")
+
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider["provider"], "orca-whirlpool")
+        self.assertEqual(provider["execution_surface_label"], "Orca")
+        self.assertTrue(callable(provider["prepare"]))
+        self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["orca-whirlpool"]["prepare"])
+        self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["orca-whirlpool"]["submit"])
+
+    def test_get_swap_execution_provider_returns_raydium_provider_with_capability_enabled(self):
         provider = get_swap_execution_provider("raydium-trade-api")
 
         self.assertIsNotNone(provider)
         self.assertEqual(provider["provider"], "raydium-trade-api")
         self.assertEqual(provider["execution_surface_label"], "Raydium")
         self.assertTrue(callable(provider["prepare"]))
-        self.assertFalse(SWAP_EXECUTION_PROVIDER_CAPABILITIES["raydium-trade-api"]["prepare"])
-        self.assertFalse(SWAP_EXECUTION_PROVIDER_CAPABILITIES["raydium-trade-api"]["submit"])
+        self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["raydium-trade-api"]["prepare"])
+        self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["raydium-trade-api"]["submit"])
 
     def test_swap_execute_prepare_accepts_jupiter_provider_alias(self):
         quote = self._mock_jupiter_execution_quote()
@@ -5977,6 +6007,92 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(forbidden["error"]["code"], "SWAP_EXECUTION_RAYDIUM_FORBIDDEN")
         self.assertEqual(failed["error"]["code"], "SWAP_EXECUTION_RAYDIUM_PREPARE_FAILED")
 
+    def test_fetch_raydium_swap_transaction_success_false_returns_safe_provider_message(self):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=self._fake_urlopen_response({
+                "success": False,
+                "msg": "insufficient liquidity for requested amount",
+                "code": "LIQUIDITY_LOW",
+            }),
+        ):
+            result = _fetch_raydium_swap_transaction(
+                swap_response={"success": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_RAYDIUM_PREPARE_FAILED")
+        self.assertEqual(result["error"]["provider_message"], "insufficient liquidity for requested amount")
+        self.assertEqual(result["error"]["provider_code"], "LIQUIDITY_LOW")
+
+    def test_fetch_raydium_swap_transaction_success_false_does_not_leak_payloads_or_urls(self):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=self._fake_urlopen_response({
+                "success": False,
+                "message": "see https://raydium.example?api-key=SECRET",
+                "code": "PREPARE_FAILED",
+                "data": {
+                    "transaction_base64": "raydium-secret-transaction",
+                    "url": "https://raydium.example?api-key=SECRET",
+                },
+                "error": {
+                    "message": "fallback https://raydium.example?api-key=SECRET",
+                    "data": {"transaction": "raydium-secret-transaction"},
+                },
+            }),
+        ):
+            result = _fetch_raydium_swap_transaction(
+                swap_response={"success": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        encoded = json.dumps(result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_RAYDIUM_PREPARE_FAILED")
+        self.assertNotIn("raydium-secret-transaction", encoded)
+        self.assertNotIn("transaction_base64", encoded)
+        self.assertNotIn("api-key", encoded)
+        self.assertNotIn("SECRET", encoded)
+        self.assertNotIn("raydium.example", encoded)
+
+    def test_fetch_raydium_swap_transaction_success_false_does_not_leak_transaction_markers(self):
+        cases = [
+            ("msg", "transaction_base64=SECRET_TX"),
+            ("message", "swapTransaction=SECRET_TX"),
+            ("msg", "signed_transaction=SECRET_TX"),
+        ]
+
+        for key, provider_text in cases:
+            with self.subTest(key=key, provider_text=provider_text):
+                with patch(
+                    "urllib.request.urlopen",
+                    return_value=self._fake_urlopen_response({
+                        "success": False,
+                        key: provider_text,
+                        "code": "PREPARE_FAILED",
+                        "data": {
+                            "transaction_base64": "SECRET_TX",
+                            "swapTransaction": "SECRET_TX",
+                            "signed_transaction": "SECRET_TX",
+                        },
+                    }),
+                ):
+                    result = _fetch_raydium_swap_transaction(
+                        swap_response={"success": True},
+                        user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                    )
+
+                encoded = json.dumps(result)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_RAYDIUM_PREPARE_FAILED")
+                self.assertNotIn("provider_message", result["error"])
+                self.assertNotIn("SECRET_TX", encoded)
+                self.assertNotIn("transaction_base64", encoded)
+                self.assertNotIn("swapTransaction", encoded)
+                self.assertNotIn("signed_transaction", encoded)
+
     def test_fetch_raydium_swap_transaction_rejects_missing_or_multiple_transactions(self):
         with patch(
             "urllib.request.urlopen",
@@ -6031,7 +6147,28 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(captured["payload"]["txVersion"], "V0")
         self.assertTrue(captured["payload"]["wrapSol"])
         self.assertFalse(captured["payload"]["unwrapSol"])
+        self.assertEqual(captured["payload"]["computeUnitPriceMicroLamports"], "10000")
         self.assertIn("swapResponse", captured["payload"])
+
+    def test_fetch_raydium_swap_transaction_allows_compute_unit_price_override(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=20):
+            captured["payload"] = json.loads(req.data.decode("utf-8"))
+            return self._fake_urlopen_response({
+                "success": True,
+                "data": [{"transaction": "raydium-base64tx"}],
+            })
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = _fetch_raydium_swap_transaction(
+                swap_response={"success": True, "data": {"outputAmount": "1"}},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                compute_unit_price_micro_lamports="25000",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["payload"]["computeUnitPriceMicroLamports"], "25000")
 
     def test_raydium_prepare_rebuilds_quote_and_returns_normalized_response(self):
         quote = self._mock_raydium_execution_quote()
@@ -6459,6 +6596,337 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PREPARE_FAILED")
 
+    def _mock_orca_execution_quote(self):
+        return {
+            "ok": True,
+            "provider": "orca_whirlpool",
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "85000000",
+            "min_out_amount_raw": "84575000",
+            "slippage_bps": 50,
+            "pool": {"address": "orca_pool", "name": "SOL-USDC"},
+        }
+
+    def _fake_subprocess_result(self, payload: dict, returncode: int = 0):
+        return subprocess.CompletedProcess(
+            args=["node", "tools/orca_whirlpool_prepare.mjs"],
+            returncode=returncode,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    def test_fetch_orca_whirlpool_swap_transaction_rejects_missing_or_multiple_transactions(self):
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({"ok": True, "transactions": []}),
+            ),
+        ):
+            missing = _fetch_orca_whirlpool_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({
+                    "ok": True,
+                    "transactions": [{"transaction": "tx1"}, {"transaction": "tx2"}],
+                }),
+            ),
+        ):
+            multiple = _fetch_orca_whirlpool_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(missing["error"]["code"], "SWAP_EXECUTION_ORCA_TRANSACTION_MISSING")
+        self.assertEqual(
+            multiple["error"]["code"],
+            "SWAP_EXECUTION_ORCA_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+        )
+
+    def test_fetch_orca_whirlpool_swap_transaction_maps_helper_failures(self):
+        with patch("pathlib.Path.exists", return_value=False):
+            missing_helper = _fetch_orca_whirlpool_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({"ok": False, "error": {"message": "failed"}}, returncode=1),
+            ),
+        ):
+            failed = _fetch_orca_whirlpool_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(missing_helper["error"]["code"], "SWAP_EXECUTION_ORCA_HELPER_FAILED")
+        self.assertEqual(failed["error"]["code"], "SWAP_EXECUTION_ORCA_PREPARE_FAILED")
+
+    def test_fetch_orca_whirlpool_swap_transaction_returns_safe_helper_diagnostics(self):
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({
+                    "ok": False,
+                    "error": {
+                        "code": "ORCA_PREPARE_FAILED",
+                        "message": "missing pool tick arrays",
+                        "detail": "quote_response.pool.address missing",
+                    },
+                }, returncode=1),
+            ),
+        ):
+            result = _fetch_orca_whirlpool_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_ORCA_PREPARE_FAILED")
+        self.assertEqual(result["error"]["provider_code"], "ORCA_PREPARE_FAILED")
+        self.assertEqual(result["error"]["provider_message"], "missing pool tick arrays")
+        self.assertEqual(result["error"]["provider_detail"], "quote_response.pool.address missing")
+
+    def test_fetch_orca_whirlpool_swap_transaction_passes_configured_rpc_url_to_helper(self):
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured.update(json.loads(kwargs["input"]))
+            return self._fake_subprocess_result({
+                "ok": True,
+                "transaction_base64": "orca-base64tx",
+            })
+
+        with (
+            patch.dict(os.environ, {"SWAP_PREPARE_RPC_URL": "https://rpc.example?api-key=SECRET"}, clear=True),
+            patch("pathlib.Path.exists", return_value=True),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = _fetch_orca_whirlpool_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["rpc_url"], "https://rpc.example?api-key=SECRET")
+        self.assertNotIn("SECRET", json.dumps(result))
+        self.assertNotIn("api-key", json.dumps(result))
+        self.assertNotIn("rpc.example", json.dumps(result))
+
+    def test_fetch_orca_whirlpool_swap_transaction_maps_helper_error_codes_safely(self):
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({
+                    "ok": False,
+                    "error": {
+                        "code": "ORCA_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+                        "message": "multiple",
+                        "transaction_base64": "orca-secret-transaction",
+                    },
+                }, returncode=1),
+            ),
+        ):
+            multiple = _fetch_orca_whirlpool_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({
+                    "ok": False,
+                    "error": {
+                        "code": "INVALID_QUOTE_RESPONSE",
+                        "message": "bad request",
+                        "detail": "see https://orca.example?api-key=SECRET",
+                        "transaction_base64": "orca-secret-transaction",
+                        "data": {
+                            "transaction_base64": "orca-secret-transaction",
+                            "url": "https://orca.example?api-key=SECRET",
+                        },
+                    },
+                }, returncode=1),
+            ),
+        ):
+            helper_failed = _fetch_orca_whirlpool_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(
+            multiple["error"]["code"],
+            "SWAP_EXECUTION_ORCA_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+        )
+        self.assertEqual(helper_failed["error"]["code"], "SWAP_EXECUTION_ORCA_HELPER_FAILED")
+        self.assertNotIn("orca-secret-transaction", json.dumps(multiple))
+        self.assertNotIn("orca-secret-transaction", json.dumps(helper_failed))
+        self.assertNotIn("api-key", json.dumps(helper_failed))
+        self.assertNotIn("SECRET", json.dumps(helper_failed))
+        self.assertNotIn("orca.example", json.dumps(helper_failed))
+
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({
+                    "ok": False,
+                    "error": {
+                        "code": "ORCA_PREPARE_FAILED",
+                        "message": "failed",
+                        "detail": "transaction_base64=orca-secret-transaction",
+                    },
+                }, returncode=1),
+            ),
+        ):
+            unsafe_detail = _fetch_orca_whirlpool_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(unsafe_detail["error"]["code"], "SWAP_EXECUTION_ORCA_PREPARE_FAILED")
+        self.assertNotIn("provider_detail", unsafe_detail["error"])
+        self.assertNotIn("orca-secret-transaction", json.dumps(unsafe_detail))
+        self.assertNotIn("transaction_base64", json.dumps(unsafe_detail))
+
+    def test_fetch_orca_whirlpool_swap_transaction_rejects_camel_case_transaction_markers(self):
+        cases = [
+            ("message", "transactionBase64=SECRET_TX"),
+            ("detail", "signedTransaction=SECRET_TX"),
+        ]
+
+        for key, provider_text in cases:
+            with self.subTest(key=key, provider_text=provider_text):
+                with (
+                    patch("pathlib.Path.exists", return_value=True),
+                    patch(
+                        "subprocess.run",
+                        return_value=self._fake_subprocess_result({
+                            "ok": False,
+                            "error": {
+                                "code": "ORCA_PREPARE_FAILED",
+                                key: provider_text,
+                            },
+                        }, returncode=1),
+                    ),
+                ):
+                    result = _fetch_orca_whirlpool_swap_transaction(
+                        quote_response={"ok": True},
+                        user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                    )
+
+                encoded = json.dumps(result)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_ORCA_PREPARE_FAILED")
+                self.assertNotIn("provider_message", result["error"])
+                self.assertNotIn("provider_detail", result["error"])
+                self.assertNotIn("SECRET_TX", encoded)
+                self.assertNotIn("transactionBase64", encoded)
+                self.assertNotIn("signedTransaction", encoded)
+                self.assertNotIn("transactionbase64", encoded)
+                self.assertNotIn("signedtransaction", encoded)
+
+    def test_orca_whirlpool_prepare_helper_exists_and_is_prepare_only(self):
+        source = Path("tools/orca_whirlpool_prepare.mjs").read_text()
+
+        self.assertIn("for await (const chunk of process.stdin)", source)
+        self.assertIn("writeJson", source)
+        self.assertIn("safeScalar", source)
+        self.assertIn("request.rpc_url || quote.rpc_url", source)
+        self.assertIn('"transactionbase64"', source)
+        self.assertIn('"signedtransaction"', source)
+        self.assertIn("transaction_base64", source)
+        self.assertNotIn("console.log", source)
+        self.assertNotIn("sendTransaction", source)
+        self.assertNotIn("signTransaction", source)
+        self.assertNotIn("/swap/execute/submit", source)
+
+    def test_orca_prepare_rebuilds_quote_and_returns_normalized_response(self):
+        quote = self._mock_orca_execution_quote()
+        with (
+            patch("api.main._fetch_orca_whirlpool_quote", return_value=quote) as fetch_quote,
+            patch(
+                "api.main._fetch_orca_whirlpool_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "transaction_base64": "orca-base64tx",
+                    "raw": {"transactions": [{"transaction": "orca-base64tx"}]},
+                },
+            ) as fetch_swap,
+        ):
+            result = swap_execute_prepare(
+                self._base_swap_execute_prepare_payload(
+                    provider="orca-whirlpool",
+                    variant_id="orca_whirlpool_quote",
+                )
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["provider"], "orca-whirlpool")
+        self.assertEqual(result["execution_surface_label"], "Orca")
+        self.assertEqual(result["execution_status"], "prepared")
+        self.assertEqual(result["transaction_base64"], "orca-base64tx")
+        self.assertEqual(result["transaction_format"], "versioned")
+        self.assertEqual(result["quote_summary"]["estimated_output_raw"], "85000000")
+        self.assertEqual(result["quote_summary"]["variant_id"], "orca_whirlpool_quote")
+        self.assertIn("quote_refreshed_before_execution", result["warnings"])
+        fetch_quote.assert_called_once()
+        self.assertEqual(fetch_quote.call_args.args[0]["amount_raw"], "1000000000")
+        fetch_swap.assert_called_once()
+        self.assertEqual(fetch_swap.call_args.kwargs["user_public_key"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
+
+    def test_orca_prepare_rejects_unsupported_variant(self):
+        result = prepare_swap_transaction_with_provider(
+            provider_id="orca-whirlpool",
+            input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            output_meta={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+            amount=1.0,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            variant_id="recommended_default",
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            from_token_query="SOL",
+            to_token_query="USDC",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_ORCA_UNSUPPORTED_ROUTE")
+
+    def test_orca_prepare_does_not_mutate_token_meta(self):
+        quote = self._mock_orca_execution_quote()
+        before = json.dumps(TOKEN_META, sort_keys=True)
+        with (
+            patch("api.main._fetch_orca_whirlpool_quote", return_value=quote),
+            patch(
+                "api.main._fetch_orca_whirlpool_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "transaction_base64": "orca-base64tx",
+                    "raw": {"transactions": [{"transaction": "orca-base64tx"}]},
+                },
+            ),
+        ):
+            result = swap_execute_prepare(
+                self._base_swap_execute_prepare_payload(
+                    provider="orca-whirlpool",
+                    variant_id="orca_whirlpool_quote",
+                )
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
     def _readiness_jupiter_option(self, **overrides):
         option = {
             "provider": "jupiter-metis",
@@ -6501,7 +6969,13 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(jupiter["prepare"])
         self.assertTrue(jupiter["submit"])
 
-        for provider_id in expected - {"jupiter-metis"}:
+        for provider_id in {"raydium-trade-api", "orca-whirlpool"}:
+            capability = SWAP_EXECUTION_PROVIDER_CAPABILITIES[provider_id]
+            self.assertTrue(capability["prepare"])
+            self.assertTrue(capability["submit"])
+            self.assertEqual(capability["status"], "executable_v1")
+
+        for provider_id in expected - {"jupiter-metis", "raydium-trade-api", "orca-whirlpool"}:
             capability = SWAP_EXECUTION_PROVIDER_CAPABILITIES[provider_id]
             self.assertFalse(capability["prepare"])
             self.assertFalse(capability["submit"])
@@ -6515,19 +6989,60 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(capability["submit"])
         self.assertEqual(capability["status"], "unknown")
 
-    def test_swap_execution_readiness_marks_non_jupiter_quote_only(self):
+    def test_swap_execution_readiness_marks_raydium_prepare_available(self):
         result = build_swap_execution_readiness(
-            self._readiness_jupiter_option(provider="raydium-trade-api"),
+            self._readiness_jupiter_option(
+                provider="raydium-trade-api",
+                variant_id="raydium_quote",
+            ),
             from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
             to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
         )
 
-        self.assertFalse(result["execution_ready"])
-        self.assertEqual(result["execution_stage"], "quote_only")
-        self.assertIn("NON_JUPITER_ROUTE", result["reasons"])
-        self.assertEqual(result["provider_status"], "execution_research")
-        self.assertFalse(result["prepare_capable"])
-        self.assertFalse(result["submit_capable"])
+        self.assertTrue(result["execution_ready"])
+        self.assertEqual(result["execution_stage"], "prepare_available")
+        self.assertEqual(result["execution_provider"], "raydium-trade-api")
+        self.assertEqual(result["provider_status"], "executable_v1")
+        self.assertTrue(result["prepare_capable"])
+        self.assertTrue(result["submit_capable"])
+
+    def test_swap_execution_readiness_marks_orca_prepare_available(self):
+        result = build_swap_execution_readiness(
+            self._readiness_jupiter_option(
+                provider="orca-whirlpool",
+                variant_id="orca_whirlpool_quote",
+            ),
+            from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+        )
+
+        self.assertTrue(result["execution_ready"])
+        self.assertEqual(result["execution_stage"], "prepare_available")
+        self.assertEqual(result["execution_provider"], "orca-whirlpool")
+        self.assertEqual(result["provider_status"], "executable_v1")
+        self.assertTrue(result["prepare_capable"])
+        self.assertTrue(result["submit_capable"])
+
+    def test_swap_execution_readiness_rejects_unsupported_non_jupiter_providers(self):
+        for provider_id in ("meteora-dlmm", "pumpswap", "phantom-routing-api", "phoenix-clob"):
+            result = build_swap_execution_readiness(
+                self._readiness_jupiter_option(provider=provider_id, variant_id=f"{provider_id}_quote"),
+                from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+                to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+            )
+            self.assertFalse(result["execution_ready"])
+            self.assertEqual(result["execution_stage"], "quote_only")
+            self.assertIn("NON_JUPITER_ROUTE", result["reasons"])
+
+    def test_swap_execution_readiness_rejects_raydium_or_orca_unsupported_variant(self):
+        for provider_id in ("raydium-trade-api", "orca-whirlpool"):
+            result = build_swap_execution_readiness(
+                self._readiness_jupiter_option(provider=provider_id, variant_id="recommended_default"),
+                from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+                to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+            )
+            self.assertFalse(result["execution_ready"])
+            self.assertIn("UNSUPPORTED_VARIANT", result["reasons"])
 
     def test_swap_execution_readiness_marks_comparison_only_quote_only(self):
         result = build_swap_execution_readiness(
@@ -6631,6 +7146,8 @@ class TestSanity(unittest.TestCase):
         html = build_ui_html()
 
         self.assertIn("Execution-ready via Jupiter", html)
+        self.assertIn("Execution-ready via Raydium", html)
+        self.assertIn("Execution-ready via Orca", html)
         self.assertIn("Comparison-only - no swap action available yet.", html)
         self.assertIn("function swapExecutionReadinessReasonLabel(reason)", html)
         self.assertIn("NON_JUPITER_ROUTE: \"Quote-only route.\"", html)
@@ -6640,13 +7157,17 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Quote-only · Benchmark route", html)
         self.assertIn("Quote-only · Advanced research route", html)
 
-    def test_swap_ui_button_gating_still_requires_jupiter_executable(self):
+    def test_swap_ui_button_gating_requires_supported_executable_readiness(self):
         html = build_ui_html()
-        start = html.index("function isJupiterExecutableRouteOption(opt)")
+        start = html.index("function isExecutableRouteOption(opt)")
         end = html.index("function renderRouteActionButton", start)
         gate = html[start:end]
 
-        self.assertIn('opt?.provider === "jupiter-metis"', gate)
+        self.assertIn("SWAP_EXECUTABLE_PROVIDERS.has(provider)", gate)
+        self.assertIn("supportedVariants?.has(opt?.variant_id) === true", gate)
+        self.assertIn("opt?.execution_readiness?.execution_ready === true", gate)
+        self.assertIn("opt?.execution_readiness?.prepare_capable === true", gate)
+        self.assertIn("opt?.execution_readiness?.submit_capable === true", gate)
         self.assertIn("opt?.is_clickable === true", gate)
         self.assertIn("opt?.is_comparison_only !== true", gate)
         self.assertIn('opt?.execution_status === "executable_capable"', gate)

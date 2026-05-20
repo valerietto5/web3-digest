@@ -456,9 +456,10 @@ function renderPreparedSwapSummary(prepared) {
   if (!box) return;
 
   const summary = prepared?.quote_summary || {};
+  const routeLabel = prepared?.execution_surface_label || summary.provider_label || "Jupiter";
   const lines = [];
   lines.push(`<div style="font-weight:600; color:#e5eefb;">Prepared swap</div>`);
-  lines.push(`<div>Route: Jupiter</div>`);
+  lines.push(`<div>Route: ${escapeHtml(routeLabel)}</div>`);
 
   if (summary.from_token || summary.amount != null) {
     const amount = summary.amount != null ? fmtNum(Number(summary.amount), 6) : "n/a";
@@ -872,9 +873,38 @@ function getSwapThrownErrorInfo(err) {
 
 
 
-function isJupiterExecutableRouteOption(opt) {
+const SWAP_EXECUTABLE_PROVIDERS = new Set([
+  "jupiter-metis",
+  "raydium-trade-api",
+  "orca-whirlpool"
+]);
+
+const SWAP_EXECUTABLE_VARIANTS = {
+  "jupiter-metis": new Set([
+    "recommended_default",
+    "broader_search",
+    "exclude_recommended_dexes",
+    "direct_route_check"
+  ]),
+  "raydium-trade-api": new Set(["raydium_quote"]),
+  "orca-whirlpool": new Set(["orca_whirlpool_quote"])
+};
+
+const SWAP_EXECUTION_READY_LABELS = {
+  "jupiter-metis": "Execution-ready via Jupiter",
+  "raydium-trade-api": "Execution-ready via Raydium",
+  "orca-whirlpool": "Execution-ready via Orca"
+};
+
+function isExecutableRouteOption(opt) {
+  const provider = opt?.provider || "";
+  const supportedVariants = SWAP_EXECUTABLE_VARIANTS[provider];
   return (
-    opt?.provider === "jupiter-metis" &&
+    SWAP_EXECUTABLE_PROVIDERS.has(provider) &&
+    supportedVariants?.has(opt?.variant_id) === true &&
+    opt?.execution_readiness?.execution_ready === true &&
+    opt?.execution_readiness?.prepare_capable === true &&
+    opt?.execution_readiness?.submit_capable === true &&
     opt?.is_clickable === true &&
     opt?.is_comparison_only !== true &&
     opt?.execution_status === "executable_capable" &&
@@ -882,8 +912,14 @@ function isJupiterExecutableRouteOption(opt) {
   );
 }
 
+function executableRouteButtonLabel(opt) {
+  if (opt?.provider === "raydium-trade-api") return "Swap via Raydium";
+  if (opt?.provider === "orca-whirlpool") return "Swap via Orca";
+  return "Swap this route";
+}
+
 function renderRouteActionButton(label, opt, cardRole) {
-  if (!isJupiterExecutableRouteOption(opt)) return "";
+  if (!isExecutableRouteOption(opt)) return "";
 
   return `
     <button
@@ -891,11 +927,11 @@ function renderRouteActionButton(label, opt, cardRole) {
       class="secondary"
       style="min-width:160px;"
       data-swap-execute="true"
-      data-provider="jupiter-metis"
+      data-provider="${escapeHtml(opt.provider)}"
       data-variant-id="${escapeHtml(opt.variant_id)}"
       data-card-role="${escapeHtml(cardRole || opt.kind || "route")}"
     >
-      ${escapeHtml(label)}
+      ${escapeHtml(label || executableRouteButtonLabel(opt))}
     </button>
   `;
 }
@@ -914,10 +950,13 @@ function swapExecutionReadinessReasonLabel(reason) {
 
 function renderSwapExecutionReadinessLine(opt) {
   const readiness = opt?.execution_readiness || null;
-  if (readiness?.execution_ready === true && readiness?.execution_provider === "jupiter-metis") {
+  if (readiness?.execution_ready === true) {
+    const readyLabel =
+      SWAP_EXECUTION_READY_LABELS[readiness?.execution_provider] ||
+      ("Execution-ready via " + (readiness?.provider_label || "provider"));
     return `
       <div class="muted" style="margin-top:4px;">
-        Execution-ready via Jupiter
+        ${escapeHtml(readyLabel)}
       </div>
     `;
   }
@@ -1273,8 +1312,8 @@ function renderSwapOptionCard(opt, opts = {}) {
   const compactDirect = !!opts.compactDirect;
   const showRecommendedAction = !!opts.showRecommendedAction;
   const showDirectAction = !!opts.showDirectAction;
-  const isComparisonOnly = opt.is_comparison_only === true;
-  const isExecutableRoute = isJupiterExecutableRouteOption(opt);
+  const isExecutableRoute = isExecutableRouteOption(opt);
+  const isComparisonOnly = opt.is_comparison_only === true && !isExecutableRoute;
   const estOut = fmtNum(Number(opt.estimated_output || 0), 6);
   const receiveUsd = Number(opt?.estimated_output_usd);
   const receiveUsdText = Number.isFinite(receiveUsd) ? " ≈ " + fmtUsdCost(receiveUsd) : "";
@@ -1397,13 +1436,13 @@ function renderSwapOptionCard(opt, opts = {}) {
         isRecommendedCard && showRecommendedAction && isExecutableRoute
           ? `
             <div style="position:absolute; top:12px; right:12px;">
-              ${renderRouteActionButton("Swap this route", opt, opts.cardRole || "recommended")}
+              ${renderRouteActionButton(executableRouteButtonLabel(opt), opt, opts.cardRole || "recommended")}
             </div>
           `
           : (compactDirect && showDirectAction && isExecutableRoute
               ? `
                 <div style="position:absolute; top:12px; right:12px;">
-                  ${renderRouteActionButton("Swap this route", opt, opts.cardRole || "direct")}
+                  ${renderRouteActionButton(executableRouteButtonLabel(opt), opt, opts.cardRole || "direct")}
                 </div>
               `
               : "")
@@ -1492,7 +1531,8 @@ function renderCompactAlternativeCard(opt, idx = 0) {
   if (!opt) return "";
 
   const routeLabel = surfaceRouteLabel(opt);
-  const isComparisonOnly = opt.is_comparison_only === true;
+  const isExecutableRoute = isExecutableRouteOption(opt);
+  const isComparisonOnly = opt.is_comparison_only === true && !isExecutableRoute;
   const estOut = fmtNum(Number(opt?.estimated_output || 0), 6);
   const receiveUsd = Number(opt?.estimated_output_usd);
   const receiveUsdText = Number.isFinite(receiveUsd) ? " ≈ " + fmtUsdCost(receiveUsd) : "";
@@ -1515,6 +1555,15 @@ function renderCompactAlternativeCard(opt, idx = 0) {
           : ""
       }
       ${renderSwapExecutionReadinessLine(opt)}
+      ${
+        isExecutableRoute
+          ? `
+            <div style="position:absolute; top:12px; right:12px;">
+              ${renderRouteActionButton(executableRouteButtonLabel(opt), opt, opt.kind || "alternative")}
+            </div>
+          `
+          : ""
+      }
       <div class="muted" style="margin-top:4px;">
         Receive: ${escapeHtml(estOut)} ${escapeHtml(outToken)}${escapeHtml(receiveUsdText)}
       </div>
@@ -1601,15 +1650,22 @@ async function prepareSwapRoute(routeRequest) {
     return;
   }
 
-  if (!routeRequest || routeRequest.provider !== "jupiter-metis") {
+  const provider = routeRequest?.provider || "";
+  if (!SWAP_EXECUTABLE_PROVIDERS.has(provider)) {
     setSwapExecutionStatus("failed", "This route is not executable yet.");
     return;
   }
 
   const variantId = routeRequest.variant_id || "";
+  const supportedVariants = SWAP_EXECUTABLE_VARIANTS[provider];
   const fromToken = $("swapFromToken").value;
   const toToken = $("swapToToken").value;
   const amount = Number(($("swapAmount").value || "").trim());
+
+  if (supportedVariants?.has(variantId) !== true) {
+    setSwapExecutionStatus("failed", "This route is not executable yet.");
+    return;
+  }
 
   if (!variantId || !Number.isFinite(amount) || amount <= 0) {
     setSwapExecutionStatus("failed", "Could not refresh quote. Preview again.");
@@ -1617,7 +1673,7 @@ async function prepareSwapRoute(routeRequest) {
   }
 
   const payload = {
-    provider: "jupiter-metis",
+    provider,
     variant_id: variantId,
     from_token: fromToken,
     to_token: toToken,

@@ -1095,7 +1095,7 @@ JUPITER_EXECUTION_PROVIDER_ALIASES = {
     "jupiter-metis": "jupiter-metis",
 }
 
-SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis", "raydium-trade-api"}
+SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis", "raydium-trade-api", "orca-whirlpool"}
 
 SWAP_EXECUTION_PROVIDER_CAPABILITIES = {
     "jupiter-metis": {
@@ -1107,16 +1107,16 @@ SWAP_EXECUTION_PROVIDER_CAPABILITIES = {
     },
     "raydium-trade-api": {
         "quote": True,
-        "prepare": False,
-        "submit": False,
-        "status": "execution_research",
+        "prepare": True,
+        "submit": True,
+        "status": "executable_v1",
         "label": "Raydium",
     },
     "orca-whirlpool": {
         "quote": True,
-        "prepare": False,
-        "submit": False,
-        "status": "execution_research",
+        "prepare": True,
+        "submit": True,
+        "status": "executable_v1",
         "label": "Orca",
     },
     "meteora-dlmm": {
@@ -1154,6 +1154,12 @@ JUPITER_EXECUTION_VARIANTS = {
     "broader_search",
     "exclude_recommended_dexes",
     "direct_route_check",
+}
+
+SWAP_EXECUTION_PROVIDER_VARIANTS = {
+    "jupiter-metis": JUPITER_EXECUTION_VARIANTS,
+    "raydium-trade-api": {"raydium_quote"},
+    "orca-whirlpool": {"orca_whirlpool_quote"},
 }
 
 
@@ -1194,19 +1200,22 @@ def build_swap_execution_readiness(
     warnings = []
     provider = (option or {}).get("provider") if isinstance(option, dict) else None
     capability = get_swap_execution_provider_capability(provider)
+    provider_id = capability.get("provider")
+    supported_variants = SWAP_EXECUTION_PROVIDER_VARIANTS.get(provider_id, set())
+    variant_id = (option or {}).get("variant_id")
 
     if (network or "").lower() != "solana":
         reasons.append("UNSUPPORTED_NETWORK")
-    elif provider != "jupiter-metis":
+    elif not capability.get("prepare") or not capability.get("submit"):
         reasons.append("NON_JUPITER_ROUTE")
+    elif variant_id not in supported_variants:
+        reasons.append("UNSUPPORTED_VARIANT")
     elif (option or {}).get("is_comparison_only") is True:
         reasons.append("COMPARISON_ONLY_ROUTE")
     elif (option or {}).get("is_clickable") is not True:
         reasons.append("NOT_CLICKABLE")
     elif (option or {}).get("execution_status") != "executable_capable":
         reasons.append("NOT_CLICKABLE")
-    elif (option or {}).get("variant_id") not in JUPITER_EXECUTION_VARIANTS:
-        reasons.append("UNSUPPORTED_VARIANT")
     elif (
         not _resolution_has_mint_and_decimals(from_resolution)
         or not _resolution_has_mint_and_decimals(to_resolution)
@@ -1217,7 +1226,7 @@ def build_swap_execution_readiness(
     return {
         "execution_ready": execution_ready,
         "execution_stage": "prepare_available" if execution_ready else "quote_only",
-        "execution_provider": "jupiter-metis" if execution_ready else None,
+        "execution_provider": provider_id if execution_ready else None,
         "provider_status": capability.get("status"),
         "provider_label": capability.get("label"),
         "prepare_capable": bool(capability.get("prepare")),
@@ -1245,6 +1254,12 @@ def get_swap_execution_provider(provider_id: str) -> dict | None:
             "provider": "raydium-trade-api",
             "execution_surface_label": "Raydium",
             "prepare": _prepare_raydium_swap_transaction,
+        }
+    if provider == "orca-whirlpool":
+        return {
+            "provider": "orca-whirlpool",
+            "execution_surface_label": "Orca",
+            "prepare": _prepare_orca_whirlpool_swap_transaction,
         }
     return None
 
@@ -1374,6 +1389,7 @@ def _jupiter_execution_quote_summary(
 
 
 RAYDIUM_EXECUTION_SOL_MINT = "So11111111111111111111111111111111111111112"
+RAYDIUM_DEFAULT_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS = "10000"
 
 
 def _raydium_execution_error(code: str, message: str, **extra) -> dict:
@@ -1386,6 +1402,73 @@ def _raydium_quote_error_response(e: HTTPException) -> dict:
         "Could not refresh a Raydium quote for swap execution.",
         status_code=e.status_code,
     )
+
+
+def _safe_raydium_provider_scalar(value, *, fallback: str | None = None):
+    if value is None or isinstance(value, (dict, list, tuple)):
+        return fallback
+
+    text = str(value).strip()
+    if not text:
+        return fallback
+
+    lower = text.lower()
+    unsafe_markers = (
+        "http://",
+        "https://",
+        "api-key",
+        "api_key",
+        "access_token",
+        "key=",
+        "token=",
+        "auth=",
+        "signature=",
+        "password",
+        "secret",
+        "transaction_base64",
+        "transactionbase64",
+        "swaptransaction",
+        "signed_transaction",
+        "signedtransaction",
+    )
+    if any(marker in lower for marker in unsafe_markers):
+        return fallback
+
+    if len(text) > 240:
+        text = text[:237] + "..."
+    return text
+
+
+def _safe_raydium_provider_error_details(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+
+    provider_message = None
+    for key in ("msg", "message"):
+        provider_message = _safe_raydium_provider_scalar(payload.get(key))
+        if provider_message:
+            break
+
+    provider_code = _safe_raydium_provider_scalar(payload.get("code") or payload.get("id"))
+
+    error = payload.get("error")
+    if isinstance(error, dict):
+        if not provider_message:
+            for key in ("msg", "message"):
+                provider_message = _safe_raydium_provider_scalar(error.get(key))
+                if provider_message:
+                    break
+        if not provider_code:
+            provider_code = _safe_raydium_provider_scalar(error.get("code") or error.get("id"))
+    elif error is not None and not provider_message:
+        provider_message = _safe_raydium_provider_scalar(error)
+
+    details = {}
+    if provider_message:
+        details["provider_message"] = provider_message
+    if provider_code:
+        details["provider_code"] = provider_code
+    return details
 
 
 def _fetch_fresh_raydium_execution_quote(
@@ -1465,9 +1548,12 @@ def _fetch_raydium_swap_transaction(
         "wrapSol": bool(wrap_sol),
         "unwrapSol": bool(unwrap_sol),
         "swapResponse": swap_response,
+        "computeUnitPriceMicroLamports": str(
+            RAYDIUM_DEFAULT_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS
+            if compute_unit_price_micro_lamports is None
+            else compute_unit_price_micro_lamports
+        ),
     }
-    if compute_unit_price_micro_lamports is not None:
-        payload["computeUnitPriceMicroLamports"] = str(compute_unit_price_micro_lamports)
     if input_account:
         payload["inputAccount"] = input_account
     if output_account:
@@ -1515,6 +1601,7 @@ def _fetch_raydium_swap_transaction(
         return _raydium_execution_error(
             "SWAP_EXECUTION_RAYDIUM_PREPARE_FAILED",
             "Raydium transaction preparation was not successful.",
+            **_safe_raydium_provider_error_details(data),
         )
 
     extracted = _extract_raydium_transaction_base64(data)
@@ -1547,6 +1634,294 @@ def _raydium_execution_quote_summary(
         "estimated_output_raw": data.get("outputAmount"),
         "min_received": _ui_amount(data.get("otherAmountThreshold"), output_decimals),
         "min_received_raw": data.get("otherAmountThreshold"),
+        "slippage_bps": slippage_bps,
+        "variant_id": variant_id,
+    }
+
+
+def _orca_execution_error(code: str, message: str, **extra) -> dict:
+    return _swap_execution_error(code, message, **extra)
+
+
+def _orca_quote_error_response(e: HTTPException) -> dict:
+    return _swap_execution_error(
+        "SWAP_EXECUTION_QUOTE_FAILED",
+        "Could not refresh an Orca Whirlpool quote for swap execution.",
+        status_code=e.status_code,
+    )
+
+
+def _safe_orca_provider_scalar(value, *, fallback: str | None = None):
+    if value is None or isinstance(value, (dict, list, tuple)):
+        return fallback
+
+    text = str(value).strip()
+    if not text:
+        return fallback
+
+    lower = text.lower()
+    unsafe_markers = (
+        "http://",
+        "https://",
+        "api-key",
+        "api_key",
+        "access_token",
+        "key=",
+        "token=",
+        "auth=",
+        "signature=",
+        "password",
+        "secret",
+        "transaction_base64",
+        "transactionbase64",
+        "signed_transaction",
+        "signedtransaction",
+    )
+    if any(marker in lower for marker in unsafe_markers):
+        return fallback
+
+    if len(text) > 240:
+        text = text[:237] + "..."
+    return text
+
+
+def _safe_orca_provider_error_details(helper_error) -> dict:
+    if not isinstance(helper_error, dict):
+        return {}
+
+    details = {}
+    provider_message = _safe_orca_provider_scalar(helper_error.get("message") or helper_error.get("msg"))
+    provider_code = _safe_orca_provider_scalar(helper_error.get("code") or helper_error.get("id"))
+    provider_detail = _safe_orca_provider_scalar(helper_error.get("detail") or helper_error.get("details"))
+
+    if provider_message:
+        details["provider_message"] = provider_message
+    if provider_code:
+        details["provider_code"] = provider_code
+    if provider_detail:
+        details["provider_detail"] = provider_detail
+    return details
+
+
+def _configured_swap_prepare_rpc_url() -> tuple[str | None, str | None]:
+    for name in (
+        "SWAP_PREPARE_RPC_URL",
+        "SWAP_SUBMIT_RPC_URL",
+        "SOLANA_RPC_URL",
+        "SOLANA_MAINNET_RPC_URL",
+        "HELIUS_RPC_URL",
+    ):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value, name
+    return None, None
+
+
+def _fetch_fresh_orca_whirlpool_execution_quote(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount_raw: int,
+    slippage_bps: int,
+) -> dict:
+    payload = _build_orca_whirlpool_quote_payload(
+        input_mint=input_meta["mint"],
+        output_mint=output_meta["mint"],
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+    )
+
+    try:
+        return {
+            "ok": True,
+            "quote": _fetch_orca_whirlpool_quote(payload),
+            "payload": payload,
+        }
+    except HTTPException as e:
+        return _orca_quote_error_response(e)
+
+
+def _extract_orca_whirlpool_transaction_base64(payload: dict) -> dict:
+    transactions = payload.get("transactions")
+    if isinstance(transactions, list):
+        if len(transactions) > 1:
+            return _orca_execution_error(
+                "SWAP_EXECUTION_ORCA_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+                "Orca returned multiple transactions, which are not supported in V1.",
+            )
+        if not transactions:
+            return _orca_execution_error(
+                "SWAP_EXECUTION_ORCA_TRANSACTION_MISSING",
+                "Orca did not return a swap transaction.",
+            )
+        item = transactions[0]
+    else:
+        data = payload.get("data")
+        if isinstance(data, list):
+            if len(data) > 1:
+                return _orca_execution_error(
+                    "SWAP_EXECUTION_ORCA_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+                    "Orca returned multiple transactions, which are not supported in V1.",
+                )
+            if not data:
+                return _orca_execution_error(
+                    "SWAP_EXECUTION_ORCA_TRANSACTION_MISSING",
+                    "Orca did not return a swap transaction.",
+                )
+            item = data[0]
+        elif isinstance(data, dict):
+            item = data
+        else:
+            item = payload
+
+    transaction = None
+    if isinstance(item, dict):
+        transaction = (
+            item.get("transaction")
+            or item.get("transactionBase64")
+            or item.get("transaction_base64")
+        )
+
+    if not transaction:
+        transaction = (
+            payload.get("transaction")
+            or payload.get("transactionBase64")
+            or payload.get("transaction_base64")
+        )
+
+    if not transaction:
+        return _orca_execution_error(
+            "SWAP_EXECUTION_ORCA_TRANSACTION_MISSING",
+            "Orca did not return a swap transaction.",
+        )
+
+    return {
+        "ok": True,
+        "transaction_base64": transaction,
+    }
+
+
+def _fetch_orca_whirlpool_swap_transaction(
+    *,
+    quote_response: dict,
+    user_public_key: str,
+    tx_version: str = "V0",
+) -> dict:
+    helper_path = project_root() / "tools" / "orca_whirlpool_prepare.mjs"
+    if not helper_path.exists():
+        return _orca_execution_error(
+            "SWAP_EXECUTION_ORCA_HELPER_FAILED",
+            "Orca transaction preparation helper is not available yet.",
+        )
+
+    payload = {
+        "quote_response": quote_response,
+        "user_public_key": user_public_key,
+        "tx_version": tx_version,
+    }
+    rpc_url, _rpc_source = _configured_swap_prepare_rpc_url()
+    if rpc_url:
+        payload["rpc_url"] = rpc_url
+
+    try:
+        proc = subprocess.run(
+            [os.getenv("NODE_BINARY") or "node", str(helper_path)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=25,
+            cwd=project_root(),
+        )
+    except FileNotFoundError:
+        return _orca_execution_error(
+            "SWAP_EXECUTION_ORCA_HELPER_FAILED",
+            "Orca transaction preparation runtime is not available.",
+        )
+    except subprocess.TimeoutExpired:
+        return _orca_execution_error(
+            "SWAP_EXECUTION_ORCA_HELPER_FAILED",
+            "Orca transaction preparation helper timed out.",
+        )
+    except Exception:
+        return _orca_execution_error(
+            "SWAP_EXECUTION_ORCA_HELPER_FAILED",
+            "Orca transaction preparation helper failed.",
+        )
+
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        return _orca_execution_error(
+            "SWAP_EXECUTION_ORCA_HELPER_FAILED",
+            "Orca transaction preparation helper returned no JSON output.",
+        )
+
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return _orca_execution_error(
+            "SWAP_EXECUTION_ORCA_HELPER_FAILED",
+            "Orca transaction preparation helper returned invalid JSON.",
+        )
+
+    if proc.returncode != 0 or data.get("ok") is False:
+        helper_error = data.get("error") if isinstance(data, dict) else None
+        helper_code = helper_error.get("code") if isinstance(helper_error, dict) else None
+        if helper_code == "ORCA_MULTIPLE_TRANSACTIONS_UNSUPPORTED":
+            return _orca_execution_error(
+                "SWAP_EXECUTION_ORCA_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+                "Orca returned multiple transactions, which are not supported in V1.",
+                **_safe_orca_provider_error_details(helper_error),
+            )
+        if helper_code in (
+            "EMPTY_STDIN",
+            "INVALID_JSON",
+            "INVALID_REQUEST",
+            "INVALID_QUOTE_RESPONSE",
+            "INVALID_PUBLIC_KEY",
+            "INVALID_AMOUNT_RAW",
+            "INVALID_SLIPPAGE_BPS",
+            "UNSUPPORTED_TX_VERSION",
+        ):
+            return _orca_execution_error(
+                "SWAP_EXECUTION_ORCA_HELPER_FAILED",
+                "Orca transaction preparation helper rejected the request.",
+                **_safe_orca_provider_error_details(helper_error),
+            )
+        return _orca_execution_error(
+            "SWAP_EXECUTION_ORCA_PREPARE_FAILED",
+            "Orca transaction preparation was not successful.",
+            **_safe_orca_provider_error_details(helper_error),
+        )
+
+    extracted = _extract_orca_whirlpool_transaction_base64(data)
+    if extracted.get("ok") is not True:
+        return extracted
+
+    return {
+        "ok": True,
+        "transaction_base64": extracted["transaction_base64"],
+        "raw": data,
+    }
+
+
+def _orca_execution_quote_summary(
+    *,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    amount: float,
+    output_decimals: int,
+    slippage_bps: int,
+    variant_id: str,
+) -> dict:
+    return {
+        "from_token": from_token,
+        "to_token": to_token,
+        "amount": amount,
+        "estimated_output": _ui_amount(quote.get("out_amount_raw"), output_decimals),
+        "estimated_output_raw": quote.get("out_amount_raw"),
+        "min_received": _ui_amount(quote.get("min_out_amount_raw"), output_decimals),
+        "min_received_raw": quote.get("min_out_amount_raw"),
         "slippage_bps": slippage_bps,
         "variant_id": variant_id,
     }
@@ -1670,6 +2045,64 @@ def _prepare_raydium_swap_transaction(
         "transaction_base64": swap_tx.get("transaction_base64"),
         "transaction_format": "versioned",
         "quote_summary": _raydium_execution_quote_summary(
+            quote=fresh_quote["quote"],
+            from_token=from_token,
+            to_token=to_token,
+            amount=amount,
+            output_decimals=output_meta["decimals"],
+            slippage_bps=slippage_bps,
+            variant_id=variant_id,
+        ),
+        "warnings": ["quote_refreshed_before_execution"],
+    }
+
+
+def _prepare_orca_whirlpool_swap_transaction(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount: float,
+    amount_raw: int,
+    slippage_bps: int,
+    variant_id: str,
+    user_public_key: str,
+    from_token_query: str,
+    to_token_query: str,
+) -> dict:
+    if variant_id != "orca_whirlpool_quote":
+        return _swap_execution_error(
+            "SWAP_EXECUTION_ORCA_UNSUPPORTED_ROUTE",
+            "This Orca route cannot be prepared for execution.",
+        )
+
+    fresh_quote = _fetch_fresh_orca_whirlpool_execution_quote(
+        input_meta=input_meta,
+        output_meta=output_meta,
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+    )
+    if fresh_quote.get("ok") is not True:
+        return fresh_quote
+
+    swap_tx = _fetch_orca_whirlpool_swap_transaction(
+        quote_response=fresh_quote["quote"],
+        user_public_key=user_public_key,
+        tx_version="V0",
+    )
+    if swap_tx.get("ok") is not True:
+        return swap_tx
+
+    from_token = input_meta.get("quote_label") or input_meta.get("symbol") or from_token_query
+    to_token = output_meta.get("quote_label") or output_meta.get("symbol") or to_token_query
+
+    return {
+        "ok": True,
+        "provider": "orca-whirlpool",
+        "execution_surface_label": "Orca",
+        "execution_status": "prepared",
+        "transaction_base64": swap_tx.get("transaction_base64"),
+        "transaction_format": "versioned",
+        "quote_summary": _orca_execution_quote_summary(
             quote=fresh_quote["quote"],
             from_token=from_token,
             to_token=to_token,
@@ -3345,11 +3778,11 @@ def _normalize_raydium_quote_option(
         "provider": "raydium-trade-api",
         "execution_surface_label": "Raydium",
         "quote_status": "live",
-        "execution_status": "quote_only",
+        "execution_status": "executable_capable",
         "supports_current_pair": True,
         "quote_source_type": "venue_trade_api",
-        "is_comparison_only": True,
-        "is_clickable": False,
+        "is_comparison_only": False,
+        "is_clickable": True,
         "is_jupiter_only": False,
         "from_token": from_token,
         "to_token": to_token,
@@ -3369,7 +3802,7 @@ def _normalize_raydium_quote_option(
         "explicit_route_fees": _extract_raydium_route_fees(quote_data),
         "estimated_network_fee": None,
         "network_fee_scope": "not_estimated_in_preview",
-        "network_fee_detail": "Raydium is quote-only in this preview path.",
+        "network_fee_detail": "Raydium fee estimation is not available in quote preview.",
         "price_impact_pct": _safe_float(quote_data.get("priceImpactPct")),
         "slippage_bps": quote_data.get("slippageBps"),
         "route_label": "Raydium",
@@ -3380,7 +3813,7 @@ def _normalize_raydium_quote_option(
         "protections": {
             "slippage_bps": quote_data.get("slippageBps"),
         },
-        "explanation": "Raydium routed quote. Comparison-only for now.",
+        "explanation": "Raydium routed quote. Execution prepare is available after Phantom connects.",
         "raw_quote": quote,
         "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
     }
@@ -3514,11 +3947,11 @@ def _normalize_orca_whirlpool_quote_option(
         "provider": "orca-whirlpool",
         "execution_surface_label": "Orca",
         "quote_status": "live",
-        "execution_status": "quote_only",
+        "execution_status": "quote_only" if route_shape == "two-hop" else "executable_capable",
         "supports_current_pair": True,
         "quote_source_type": "venue_native_pool_sdk",
-        "is_comparison_only": True,
-        "is_clickable": False,
+        "is_comparison_only": route_shape == "two-hop",
+        "is_clickable": route_shape != "two-hop",
         "is_jupiter_only": False,
         "from_token": from_token,
         "to_token": to_token,
@@ -3538,7 +3971,7 @@ def _normalize_orca_whirlpool_quote_option(
         "explicit_route_fees": _extract_orca_whirlpool_route_fees(quote),
         "estimated_network_fee": None,
         "network_fee_scope": "not_estimated_in_preview",
-        "network_fee_detail": "Orca Whirlpool is quote-only in this preview path.",
+        "network_fee_detail": "Orca fee estimation is not available in quote preview.",
         "price_impact_pct": _safe_float(quote.get("price_impact")),
         "slippage_bps": quote.get("slippage_bps"),
         "route_label": "Orca Whirlpool",
@@ -3550,9 +3983,9 @@ def _normalize_orca_whirlpool_quote_option(
             "slippage_bps": quote.get("slippage_bps"),
         },
         "explanation": (
-            "Orca Whirlpool venue-restricted two-hop quote. Comparison-only for now."
+            "Orca Whirlpool venue-restricted two-hop quote. Execution prepare is not available for two-hop routes yet."
             if route_shape == "two-hop"
-            else "Orca Whirlpool single-pool SDK quote. Comparison-only for now."
+            else "Orca Whirlpool single-pool SDK quote. Execution prepare is available after Phantom connects."
         ),
         "raw_quote": quote,
         "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
@@ -4687,9 +5120,9 @@ def swap_quote(
         "exclude_recommended_dexes": "An alternate venue mix produced the best checked output for this request.",
         "direct_route_check": "The selected direct/simple route produced the best checked output for this request.",
         "broader_search": "A broader routing search produced the best checked output for this request.",
-        "raydium_quote": "Raydium produced the best checked quote for this request, but it is comparison-only in this preview path.",
+        "raydium_quote": "Raydium produced the best checked quote for this request and can be prepared for Phantom signing.",
         "meteora_dlmm_quote": "Meteora DLMM produced the best checked quote for this request, but it is comparison-only in this preview path.",
-        "orca_whirlpool_quote": "Orca Whirlpool produced the best checked quote for this request, but it is comparison-only in this preview path.",
+        "orca_whirlpool_quote": "Orca Whirlpool produced the best checked quote for this request and can be prepared for Phantom signing when the route is single-pool.",
         "phoenix_quote": "Phoenix CLOB produced the best checked quote for this request, but it is comparison-only in this preview path.",
         "phantom_quote": "Phantom routing API produced the best checked quote for this request, but it is comparison-only in this preview path.",
         "pumpswap_quote": "PumpSwap produced the best checked quote for this request, but it is comparison-only in this preview path.",
