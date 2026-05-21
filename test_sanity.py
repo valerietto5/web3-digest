@@ -1970,13 +1970,15 @@ class TestSanity(unittest.TestCase):
         self.assertIn('"jupiter-metis"', html)
         self.assertIn('"raydium-trade-api"', html)
         self.assertIn('"orca-whirlpool"', html)
+        self.assertIn('"pumpswap"', html)
         executable_providers_block = html[
             html.index("const SWAP_EXECUTABLE_PROVIDERS"):
             html.index("const SWAP_EXECUTABLE_VARIANTS")
         ]
-        self.assertNotIn('"pumpswap"', executable_providers_block)
+        self.assertIn('"pumpswap"', executable_providers_block)
         self.assertIn('"raydium_quote"', html)
         self.assertIn('"orca_whirlpool_quote"', html)
+        self.assertIn('"pumpswap_quote"', html)
         self.assertIn("SWAP_EXECUTABLE_PROVIDERS.has(provider)", html)
         self.assertIn("supportedVariants?.has(opt?.variant_id) === true", html)
         self.assertIn("opt?.execution_readiness?.execution_ready === true", html)
@@ -1990,6 +1992,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn('data-card-role="${escapeHtml(cardRole || opt.kind || "route")}"', html)
         self.assertIn("Swap via Raydium", html)
         self.assertIn("Swap via Orca", html)
+        self.assertIn("Swap via PumpSwap", html)
         self.assertIn("Comparison-only - no swap action available yet.", html)
 
     def test_swap_ui_direct_route_uses_direct_variant_for_prepare(self):
@@ -3183,7 +3186,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["route_shape"], "wallet-routing")
         self.assertTrue(option["explicit_route_fees"]["has_explicit_fees"])
 
-    def test_normalize_pumpswap_quote_option_marks_quote_only_non_clickable(self):
+    def test_normalize_pumpswap_quote_option_marks_single_pool_executable(self):
         quote = {
             "ok": True,
             "provider": "pumpswap",
@@ -3216,16 +3219,47 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["provider"], "pumpswap")
         self.assertEqual(option["execution_surface_label"], "PumpSwap")
         self.assertEqual(option["quote_status"], "live")
-        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertEqual(option["execution_status"], "executable_capable")
         self.assertTrue(option["supports_current_pair"])
         self.assertEqual(option["quote_source_type"], "venue_native_pool_sdk")
-        self.assertTrue(option["is_comparison_only"])
-        self.assertFalse(option["is_clickable"])
+        self.assertFalse(option["is_comparison_only"])
+        self.assertTrue(option["is_clickable"])
         self.assertEqual(option["route_shape"], "single-pool")
         self.assertEqual(option["estimated_output"], 45.0)
         self.assertIsNone(option["min_received"])
         self.assertFalse(option["explicit_route_fees"]["has_explicit_fees"])
         self.assertEqual(option["_sort_out_amount_raw"], 45000000)
+
+    def test_normalize_pumpswap_quote_option_keeps_unsupported_shape_quote_only(self):
+        quote = {
+            "ok": True,
+            "provider": "pumpswap",
+            "direction": "unsupported_direction",
+            "pool": {
+                "address": "GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J",
+            },
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump",
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "45000000",
+            "slippage_bps": 50,
+        }
+
+        option = _normalize_pumpswap_quote_option(
+            variant_id="pumpswap_quote",
+            label="Via PumpSwap",
+            kind="alternative",
+            quote=quote,
+            from_token="SOL",
+            to_token="FIGURE",
+            input_amount=1.0,
+            input_amount_raw=1000000000,
+            output_decimals=6,
+        )
+
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["is_comparison_only"])
+        self.assertFalse(option["is_clickable"])
 
     def test_normalize_meteora_dlmm_quote_option_marks_comparison_only(self):
         quote = {
@@ -4858,9 +4892,10 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(fetch_pumpswap.call_args.args[0]["pool_candidates"][0]["address"], "GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J")
         self.assertEqual(response["recommended_option"]["provider"], "pumpswap")
-        self.assertTrue(response["recommended_option"]["is_comparison_only"])
-        self.assertFalse(response["recommended_option"]["is_clickable"])
-        self.assertEqual(response["recommended_option"]["execution_status"], "quote_only")
+        self.assertFalse(response["recommended_option"]["is_comparison_only"])
+        self.assertTrue(response["recommended_option"]["is_clickable"])
+        self.assertEqual(response["recommended_option"]["execution_status"], "executable_capable")
+        self.assertTrue(response["recommended_option"]["execution_readiness"]["execution_ready"])
         self.assertAlmostEqual(response["recommended_option"]["estimated_output"], 45.0)
         self.assertAlmostEqual(response["recommended_option"]["estimated_output_usd"], 0.00081)
         self.assertEqual(response["recommended_executable_option"]["provider"], "jupiter-metis")
@@ -5773,16 +5808,16 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["raydium-trade-api"]["prepare"])
         self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["raydium-trade-api"]["submit"])
 
-    def test_get_swap_execution_provider_returns_pumpswap_provider_but_capability_disabled(self):
+    def test_get_swap_execution_provider_returns_pumpswap_provider_with_capability_enabled(self):
         provider = get_swap_execution_provider("pumpswap")
 
         self.assertIsNotNone(provider)
         self.assertEqual(provider["provider"], "pumpswap")
         self.assertEqual(provider["execution_surface_label"], "PumpSwap")
         self.assertTrue(callable(provider["prepare"]))
-        self.assertFalse(SWAP_EXECUTION_PROVIDER_CAPABILITIES["pumpswap"]["prepare"])
-        self.assertFalse(SWAP_EXECUTION_PROVIDER_CAPABILITIES["pumpswap"]["submit"])
-        self.assertEqual(SWAP_EXECUTION_PROVIDER_CAPABILITIES["pumpswap"]["status"], "execution_research")
+        self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["pumpswap"]["prepare"])
+        self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["pumpswap"]["submit"])
+        self.assertEqual(SWAP_EXECUTION_PROVIDER_CAPABILITIES["pumpswap"]["status"], "executable_v1")
 
     def test_swap_execute_prepare_accepts_jupiter_provider_alias(self):
         quote = self._mock_jupiter_execution_quote()
@@ -7213,13 +7248,13 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(jupiter["prepare"])
         self.assertTrue(jupiter["submit"])
 
-        for provider_id in {"raydium-trade-api", "orca-whirlpool"}:
+        for provider_id in {"raydium-trade-api", "orca-whirlpool", "pumpswap"}:
             capability = SWAP_EXECUTION_PROVIDER_CAPABILITIES[provider_id]
             self.assertTrue(capability["prepare"])
             self.assertTrue(capability["submit"])
             self.assertEqual(capability["status"], "executable_v1")
 
-        for provider_id in expected - {"jupiter-metis", "raydium-trade-api", "orca-whirlpool"}:
+        for provider_id in expected - {"jupiter-metis", "raydium-trade-api", "orca-whirlpool", "pumpswap"}:
             capability = SWAP_EXECUTION_PROVIDER_CAPABILITIES[provider_id]
             self.assertFalse(capability["prepare"])
             self.assertFalse(capability["submit"])
@@ -7267,8 +7302,25 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(result["prepare_capable"])
         self.assertTrue(result["submit_capable"])
 
+    def test_swap_execution_readiness_marks_pumpswap_prepare_available(self):
+        result = build_swap_execution_readiness(
+            self._readiness_jupiter_option(
+                provider="pumpswap",
+                variant_id="pumpswap_quote",
+            ),
+            from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            to_resolution={"mint": "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump", "decimals": 6},
+        )
+
+        self.assertTrue(result["execution_ready"])
+        self.assertEqual(result["execution_stage"], "prepare_available")
+        self.assertEqual(result["execution_provider"], "pumpswap")
+        self.assertEqual(result["provider_status"], "executable_v1")
+        self.assertTrue(result["prepare_capable"])
+        self.assertTrue(result["submit_capable"])
+
     def test_swap_execution_readiness_rejects_unsupported_non_jupiter_providers(self):
-        for provider_id in ("meteora-dlmm", "pumpswap", "phantom-routing-api", "phoenix-clob"):
+        for provider_id in ("meteora-dlmm", "phantom-routing-api", "phoenix-clob"):
             result = build_swap_execution_readiness(
                 self._readiness_jupiter_option(provider=provider_id, variant_id=f"{provider_id}_quote"),
                 from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
@@ -7278,8 +7330,8 @@ class TestSanity(unittest.TestCase):
             self.assertEqual(result["execution_stage"], "quote_only")
             self.assertIn("NON_JUPITER_ROUTE", result["reasons"])
 
-    def test_swap_execution_readiness_rejects_raydium_or_orca_unsupported_variant(self):
-        for provider_id in ("raydium-trade-api", "orca-whirlpool"):
+    def test_swap_execution_readiness_rejects_raydium_or_orca_or_pumpswap_unsupported_variant(self):
+        for provider_id in ("raydium-trade-api", "orca-whirlpool", "pumpswap"):
             result = build_swap_execution_readiness(
                 self._readiness_jupiter_option(provider=provider_id, variant_id="recommended_default"),
                 from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
@@ -7392,6 +7444,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Execution-ready via Jupiter", html)
         self.assertIn("Execution-ready via Raydium", html)
         self.assertIn("Execution-ready via Orca", html)
+        self.assertIn("Execution-ready via PumpSwap", html)
         self.assertIn("Comparison-only - no swap action available yet.", html)
         self.assertIn("function swapExecutionReadinessReasonLabel(reason)", html)
         self.assertIn("NON_JUPITER_ROUTE: \"Quote-only route.\"", html)
@@ -7415,7 +7468,6 @@ class TestSanity(unittest.TestCase):
         self.assertIn("opt?.is_clickable === true", gate)
         self.assertIn("opt?.is_comparison_only !== true", gate)
         self.assertIn('opt?.execution_status === "executable_capable"', gate)
-        self.assertNotIn("pumpswap", gate)
 
     def test_execution_readiness_audit_tool_defaults_and_pair_parsing(self):
         from tools import execution_readiness_audit as audit

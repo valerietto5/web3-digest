@@ -876,7 +876,8 @@ function getSwapThrownErrorInfo(err) {
 const SWAP_EXECUTABLE_PROVIDERS = new Set([
   "jupiter-metis",
   "raydium-trade-api",
-  "orca-whirlpool"
+  "orca-whirlpool",
+  "pumpswap"
 ]);
 
 const SWAP_EXECUTABLE_VARIANTS = {
@@ -887,13 +888,15 @@ const SWAP_EXECUTABLE_VARIANTS = {
     "direct_route_check"
   ]),
   "raydium-trade-api": new Set(["raydium_quote"]),
-  "orca-whirlpool": new Set(["orca_whirlpool_quote"])
+  "orca-whirlpool": new Set(["orca_whirlpool_quote"]),
+  "pumpswap": new Set(["pumpswap_quote"])
 };
 
 const SWAP_EXECUTION_READY_LABELS = {
   "jupiter-metis": "Execution-ready via Jupiter",
   "raydium-trade-api": "Execution-ready via Raydium",
-  "orca-whirlpool": "Execution-ready via Orca"
+  "orca-whirlpool": "Execution-ready via Orca",
+  "pumpswap": "Execution-ready via PumpSwap"
 };
 
 function isExecutableRouteOption(opt) {
@@ -915,6 +918,7 @@ function isExecutableRouteOption(opt) {
 function executableRouteButtonLabel(opt) {
   if (opt?.provider === "raydium-trade-api") return "Swap via Raydium";
   if (opt?.provider === "orca-whirlpool") return "Swap via Orca";
+  if (opt?.provider === "pumpswap") return "Swap via PumpSwap";
   return "Swap this route";
 }
 

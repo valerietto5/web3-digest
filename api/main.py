@@ -1128,9 +1128,9 @@ SWAP_EXECUTION_PROVIDER_CAPABILITIES = {
     },
     "pumpswap": {
         "quote": True,
-        "prepare": False,
-        "submit": False,
-        "status": "execution_research",
+        "prepare": True,
+        "submit": True,
+        "status": "executable_v1",
         "label": "PumpSwap",
     },
     "phantom-routing-api": {
@@ -4527,11 +4527,21 @@ def _normalize_pumpswap_quote_option(
     pool = quote.get("pool") or {}
     out_amount_raw = quote.get("out_amount_raw")
     min_out_amount_raw = quote.get("min_out_amount_raw")
+    direction = quote.get("direction")
+    route_shape = "single-pool"
+    is_prepare_supported = (
+        variant_id == "pumpswap_quote"
+        and direction in {"buy_base_with_quote", "sell_base_for_quote"}
+        and bool(pool.get("address"))
+        and bool(quote.get("input_mint"))
+        and bool(quote.get("output_mint"))
+        and out_amount_raw is not None
+    )
     route_step = {
         "label": "PumpSwap",
         "pool_address": pool.get("address"),
         "pool_name": pool.get("name"),
-        "direction": quote.get("direction"),
+        "direction": direction,
         "input_mint": quote.get("input_mint"),
         "output_mint": quote.get("output_mint"),
         "in_amount_raw": quote.get("in_amount_raw"),
@@ -4547,11 +4557,11 @@ def _normalize_pumpswap_quote_option(
         "provider": "pumpswap",
         "execution_surface_label": "PumpSwap",
         "quote_status": "live",
-        "execution_status": "quote_only",
+        "execution_status": "executable_capable" if is_prepare_supported else "quote_only",
         "supports_current_pair": True,
         "quote_source_type": "venue_native_pool_sdk",
-        "is_comparison_only": True,
-        "is_clickable": False,
+        "is_comparison_only": not is_prepare_supported,
+        "is_clickable": is_prepare_supported,
         "is_jupiter_only": False,
         "from_token": from_token,
         "to_token": to_token,
@@ -4571,18 +4581,26 @@ def _normalize_pumpswap_quote_option(
         "explicit_route_fees": _extract_pumpswap_route_fees(quote),
         "estimated_network_fee": None,
         "network_fee_scope": "not_estimated_in_preview",
-        "network_fee_detail": "PumpSwap is quote-only in this preview path.",
+        "network_fee_detail": (
+            "PumpSwap execution prepare is available after Phantom connects."
+            if is_prepare_supported
+            else "PumpSwap is quote-only in this preview path."
+        ),
         "price_impact_pct": None,
         "slippage_bps": quote.get("slippage_bps"),
         "route_label": "PumpSwap",
         "route_labels": ["PumpSwap"],
         "route_steps": [route_step],
         "route_step_count": 1,
-        "route_shape": "single-pool",
+        "route_shape": route_shape,
         "protections": {
             "slippage_bps": quote.get("slippage_bps"),
         },
-        "explanation": "PumpSwap single-pool SDK quote. Comparison-only for now.",
+        "explanation": (
+            "PumpSwap single-pool SDK quote. Execution prepare is available after Phantom connects."
+            if is_prepare_supported
+            else "PumpSwap single-pool SDK quote. Comparison-only for now."
+        ),
         "raw_quote": quote,
         "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
     }
