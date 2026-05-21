@@ -1095,7 +1095,7 @@ JUPITER_EXECUTION_PROVIDER_ALIASES = {
     "jupiter-metis": "jupiter-metis",
 }
 
-SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis", "raydium-trade-api", "orca-whirlpool"}
+SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis", "raydium-trade-api", "orca-whirlpool", "pumpswap"}
 
 SWAP_EXECUTION_PROVIDER_CAPABILITIES = {
     "jupiter-metis": {
@@ -1160,6 +1160,7 @@ SWAP_EXECUTION_PROVIDER_VARIANTS = {
     "jupiter-metis": JUPITER_EXECUTION_VARIANTS,
     "raydium-trade-api": {"raydium_quote"},
     "orca-whirlpool": {"orca_whirlpool_quote"},
+    "pumpswap": {"pumpswap_quote"},
 }
 
 
@@ -1260,6 +1261,12 @@ def get_swap_execution_provider(provider_id: str) -> dict | None:
             "provider": "orca-whirlpool",
             "execution_surface_label": "Orca",
             "prepare": _prepare_orca_whirlpool_swap_transaction,
+        }
+    if provider == "pumpswap":
+        return {
+            "provider": "pumpswap",
+            "execution_surface_label": "PumpSwap",
+            "prepare": _prepare_pumpswap_swap_transaction,
         }
     return None
 
@@ -1927,6 +1934,284 @@ def _orca_execution_quote_summary(
     }
 
 
+def _pumpswap_execution_error(code: str, message: str, **extra) -> dict:
+    return _swap_execution_error(code, message, **extra)
+
+
+def _pumpswap_quote_error_response(e: HTTPException) -> dict:
+    return _swap_execution_error(
+        "SWAP_EXECUTION_PUMPSWAP_PREPARE_FAILED",
+        "Could not refresh a PumpSwap quote for swap execution.",
+        status_code=e.status_code,
+    )
+
+
+def _safe_pumpswap_provider_scalar(value, *, fallback: str | None = None):
+    if value is None or isinstance(value, (dict, list, tuple)):
+        return fallback
+
+    text = str(value).strip()
+    if not text:
+        return fallback
+
+    lower = text.lower()
+    unsafe_markers = (
+        "http://",
+        "https://",
+        "api-key",
+        "api_key",
+        "access_token",
+        "key=",
+        "token=",
+        "auth=",
+        "signature=",
+        "password",
+        "secret",
+        "transaction_base64",
+        "transactionbase64",
+        "swaptransaction",
+        "signed_transaction",
+        "signedtransaction",
+    )
+    if any(marker in lower for marker in unsafe_markers):
+        return fallback
+
+    if len(text) > 240:
+        text = text[:237] + "..."
+    return text
+
+
+def _safe_pumpswap_provider_error_details(helper_error) -> dict:
+    if not isinstance(helper_error, dict):
+        return {}
+
+    details = {}
+    provider_message = _safe_pumpswap_provider_scalar(helper_error.get("message") or helper_error.get("msg"))
+    provider_code = _safe_pumpswap_provider_scalar(helper_error.get("code") or helper_error.get("id"))
+    provider_detail = _safe_pumpswap_provider_scalar(helper_error.get("detail") or helper_error.get("details"))
+
+    if provider_message:
+        details["provider_message"] = provider_message
+    if provider_code:
+        details["provider_code"] = provider_code
+    if provider_detail:
+        details["provider_detail"] = provider_detail
+    return details
+
+
+def _fetch_fresh_pumpswap_execution_quote(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount_raw: int,
+    slippage_bps: int,
+    user_public_key: str,
+) -> dict:
+    rpc_url, _rpc_source = _configured_swap_prepare_rpc_url()
+    payload = _build_pumpswap_quote_payload(
+        input_mint=input_meta["mint"],
+        output_mint=output_meta["mint"],
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+        rpc_url=rpc_url or SOLANA_MAINNET_RPC_URL,
+        user_public_key=user_public_key,
+    )
+
+    try:
+        return {
+            "ok": True,
+            "quote": _fetch_pumpswap_quote(payload),
+            "payload": payload,
+        }
+    except HTTPException as e:
+        return _pumpswap_quote_error_response(e)
+
+
+def _extract_pumpswap_transaction_base64(payload: dict) -> dict:
+    transactions = payload.get("transactions")
+    if isinstance(transactions, list):
+        if len(transactions) > 1:
+            return _pumpswap_execution_error(
+                "SWAP_EXECUTION_PUMPSWAP_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+                "PumpSwap returned multiple transactions, which are not supported in V1.",
+            )
+        if not transactions:
+            return _pumpswap_execution_error(
+                "SWAP_EXECUTION_PUMPSWAP_TRANSACTION_MISSING",
+                "PumpSwap did not return a swap transaction.",
+            )
+        item = transactions[0]
+    else:
+        data = payload.get("data")
+        if isinstance(data, list):
+            if len(data) > 1:
+                return _pumpswap_execution_error(
+                    "SWAP_EXECUTION_PUMPSWAP_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+                    "PumpSwap returned multiple transactions, which are not supported in V1.",
+                )
+            if not data:
+                return _pumpswap_execution_error(
+                    "SWAP_EXECUTION_PUMPSWAP_TRANSACTION_MISSING",
+                    "PumpSwap did not return a swap transaction.",
+                )
+            item = data[0]
+        elif isinstance(data, dict):
+            item = data
+        else:
+            item = payload
+
+    transaction = None
+    if isinstance(item, dict):
+        transaction = (
+            item.get("transaction")
+            or item.get("transactionBase64")
+            or item.get("transaction_base64")
+        )
+
+    if not transaction:
+        transaction = (
+            payload.get("transaction")
+            or payload.get("transactionBase64")
+            or payload.get("transaction_base64")
+        )
+
+    if not transaction:
+        return _pumpswap_execution_error(
+            "SWAP_EXECUTION_PUMPSWAP_TRANSACTION_MISSING",
+            "PumpSwap did not return a swap transaction.",
+        )
+
+    return {
+        "ok": True,
+        "transaction_base64": transaction,
+    }
+
+
+def _fetch_pumpswap_swap_transaction(
+    *,
+    quote_response: dict,
+    user_public_key: str,
+    tx_version: str = "V0",
+) -> dict:
+    helper_path = project_root() / "tools" / "pumpswap_prepare.mjs"
+    if not helper_path.exists():
+        return _pumpswap_execution_error(
+            "SWAP_EXECUTION_PUMPSWAP_HELPER_FAILED",
+            "PumpSwap transaction preparation helper is not available yet.",
+        )
+
+    payload = {
+        "quote_response": quote_response,
+        "user_public_key": user_public_key,
+        "tx_version": tx_version,
+    }
+    rpc_url, _rpc_source = _configured_swap_prepare_rpc_url()
+    if rpc_url:
+        payload["rpc_url"] = rpc_url
+
+    try:
+        proc = subprocess.run(
+            [os.getenv("NODE_BINARY") or "node", str(helper_path)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=25,
+            cwd=project_root(),
+        )
+    except FileNotFoundError:
+        return _pumpswap_execution_error(
+            "SWAP_EXECUTION_PUMPSWAP_HELPER_FAILED",
+            "PumpSwap transaction preparation runtime is not available.",
+        )
+    except subprocess.TimeoutExpired:
+        return _pumpswap_execution_error(
+            "SWAP_EXECUTION_PUMPSWAP_HELPER_FAILED",
+            "PumpSwap transaction preparation helper timed out.",
+        )
+    except Exception:
+        return _pumpswap_execution_error(
+            "SWAP_EXECUTION_PUMPSWAP_HELPER_FAILED",
+            "PumpSwap transaction preparation helper failed.",
+        )
+
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        return _pumpswap_execution_error(
+            "SWAP_EXECUTION_PUMPSWAP_HELPER_FAILED",
+            "PumpSwap transaction preparation helper returned no JSON output.",
+        )
+
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return _pumpswap_execution_error(
+            "SWAP_EXECUTION_PUMPSWAP_HELPER_FAILED",
+            "PumpSwap transaction preparation helper returned invalid JSON.",
+        )
+
+    if proc.returncode != 0 or data.get("ok") is False:
+        helper_error = data.get("error") if isinstance(data, dict) else None
+        helper_code = helper_error.get("code") if isinstance(helper_error, dict) else None
+        if helper_code == "PUMPSWAP_MULTIPLE_TRANSACTIONS_UNSUPPORTED":
+            return _pumpswap_execution_error(
+                "SWAP_EXECUTION_PUMPSWAP_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+                "PumpSwap returned multiple transactions, which are not supported in V1.",
+                **_safe_pumpswap_provider_error_details(helper_error),
+            )
+        if helper_code in (
+            "PUMPSWAP_PREPARE_NOT_IMPLEMENTED",
+            "EMPTY_STDIN",
+            "INVALID_JSON",
+            "INVALID_REQUEST",
+            "INVALID_QUOTE_RESPONSE",
+            "INVALID_PUBLIC_KEY",
+            "UNSUPPORTED_TX_VERSION",
+        ):
+            return _pumpswap_execution_error(
+                "SWAP_EXECUTION_PUMPSWAP_HELPER_FAILED",
+                "PumpSwap transaction preparation helper rejected the request.",
+                **_safe_pumpswap_provider_error_details(helper_error),
+            )
+        return _pumpswap_execution_error(
+            "SWAP_EXECUTION_PUMPSWAP_PREPARE_FAILED",
+            "PumpSwap transaction preparation was not successful.",
+            **_safe_pumpswap_provider_error_details(helper_error),
+        )
+
+    extracted = _extract_pumpswap_transaction_base64(data)
+    if extracted.get("ok") is not True:
+        return extracted
+
+    return {
+        "ok": True,
+        "transaction_base64": extracted["transaction_base64"],
+        "raw": data,
+    }
+
+
+def _pumpswap_execution_quote_summary(
+    *,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    amount: float,
+    output_decimals: int,
+    slippage_bps: int,
+    variant_id: str,
+) -> dict:
+    return {
+        "from_token": from_token,
+        "to_token": to_token,
+        "amount": amount,
+        "estimated_output": _ui_amount(quote.get("out_amount_raw"), output_decimals),
+        "estimated_output_raw": quote.get("out_amount_raw"),
+        "min_received": _ui_amount(quote.get("min_out_amount_raw"), output_decimals),
+        "min_received_raw": quote.get("min_out_amount_raw"),
+        "slippage_bps": slippage_bps,
+        "variant_id": variant_id,
+    }
+
+
 def _provider_not_implemented_error(provider_id: str) -> dict:
     return _swap_execution_error(
         "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED",
@@ -2103,6 +2388,65 @@ def _prepare_orca_whirlpool_swap_transaction(
         "transaction_base64": swap_tx.get("transaction_base64"),
         "transaction_format": "versioned",
         "quote_summary": _orca_execution_quote_summary(
+            quote=fresh_quote["quote"],
+            from_token=from_token,
+            to_token=to_token,
+            amount=amount,
+            output_decimals=output_meta["decimals"],
+            slippage_bps=slippage_bps,
+            variant_id=variant_id,
+        ),
+        "warnings": ["quote_refreshed_before_execution"],
+    }
+
+
+def _prepare_pumpswap_swap_transaction(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount: float,
+    amount_raw: int,
+    slippage_bps: int,
+    variant_id: str,
+    user_public_key: str,
+    from_token_query: str,
+    to_token_query: str,
+) -> dict:
+    if variant_id != "pumpswap_quote":
+        return _swap_execution_error(
+            "SWAP_EXECUTION_PUMPSWAP_UNSUPPORTED_ROUTE",
+            "This PumpSwap route cannot be prepared for execution.",
+        )
+
+    fresh_quote = _fetch_fresh_pumpswap_execution_quote(
+        input_meta=input_meta,
+        output_meta=output_meta,
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+        user_public_key=user_public_key,
+    )
+    if fresh_quote.get("ok") is not True:
+        return fresh_quote
+
+    swap_tx = _fetch_pumpswap_swap_transaction(
+        quote_response=fresh_quote["quote"],
+        user_public_key=user_public_key,
+        tx_version="V0",
+    )
+    if swap_tx.get("ok") is not True:
+        return swap_tx
+
+    from_token = input_meta.get("quote_label") or input_meta.get("symbol") or from_token_query
+    to_token = output_meta.get("quote_label") or output_meta.get("symbol") or to_token_query
+
+    return {
+        "ok": True,
+        "provider": "pumpswap",
+        "execution_surface_label": "PumpSwap",
+        "execution_status": "prepared",
+        "transaction_base64": swap_tx.get("transaction_base64"),
+        "transaction_format": "versioned",
+        "quote_summary": _pumpswap_execution_quote_summary(
             quote=fresh_quote["quote"],
             from_token=from_token,
             to_token=to_token,

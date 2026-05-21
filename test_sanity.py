@@ -25,6 +25,7 @@ from api.main import (
     _fetch_phantom_quote,
     _fetch_phoenix_quote,
     _fetch_pumpswap_quote,
+    _fetch_pumpswap_swap_transaction,
     _is_executable_quote_option,
     _normalize_meteora_dlmm_quote_option,
     _normalize_orca_whirlpool_quote_option,
@@ -1969,6 +1970,11 @@ class TestSanity(unittest.TestCase):
         self.assertIn('"jupiter-metis"', html)
         self.assertIn('"raydium-trade-api"', html)
         self.assertIn('"orca-whirlpool"', html)
+        executable_providers_block = html[
+            html.index("const SWAP_EXECUTABLE_PROVIDERS"):
+            html.index("const SWAP_EXECUTABLE_VARIANTS")
+        ]
+        self.assertNotIn('"pumpswap"', executable_providers_block)
         self.assertIn('"raydium_quote"', html)
         self.assertIn('"orca_whirlpool_quote"', html)
         self.assertIn("SWAP_EXECUTABLE_PROVIDERS.has(provider)", html)
@@ -5717,10 +5723,10 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED")
 
-    def test_swap_execute_prepare_rejects_non_jupiter_provider_in_v1(self):
+    def test_swap_execute_prepare_rejects_pumpswap_unsupported_variant_safely(self):
         result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="PumpSwap"))
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED")
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PUMPSWAP_UNSUPPORTED_ROUTE")
 
     def test_get_swap_execution_provider_returns_jupiter_provider(self):
         provider = get_swap_execution_provider("jupiter-metis")
@@ -5766,6 +5772,17 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(callable(provider["prepare"]))
         self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["raydium-trade-api"]["prepare"])
         self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["raydium-trade-api"]["submit"])
+
+    def test_get_swap_execution_provider_returns_pumpswap_provider_but_capability_disabled(self):
+        provider = get_swap_execution_provider("pumpswap")
+
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider["provider"], "pumpswap")
+        self.assertEqual(provider["execution_surface_label"], "PumpSwap")
+        self.assertTrue(callable(provider["prepare"]))
+        self.assertFalse(SWAP_EXECUTION_PROVIDER_CAPABILITIES["pumpswap"]["prepare"])
+        self.assertFalse(SWAP_EXECUTION_PROVIDER_CAPABILITIES["pumpswap"]["submit"])
+        self.assertEqual(SWAP_EXECUTION_PROVIDER_CAPABILITIES["pumpswap"]["status"], "execution_research")
 
     def test_swap_execute_prepare_accepts_jupiter_provider_alias(self):
         quote = self._mock_jupiter_execution_quote()
@@ -6927,6 +6944,233 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
 
+    def _mock_pumpswap_execution_quote(self):
+        return {
+            "ok": True,
+            "provider": "pumpswap",
+            "direction": "buy_base_with_quote",
+            "pool": {
+                "address": "GseMAnNDvntR5uFePZ51yZBXzNSn7GdFPkfHwfr6d77J",
+                "name": "canonical-pumpswap-pool",
+            },
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump",
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "45000000",
+            "min_out_amount_raw": "44775000",
+            "slippage_bps": 50,
+        }
+
+    def test_fetch_pumpswap_swap_transaction_rejects_missing_or_multiple_transactions(self):
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({"ok": True, "transactions": []}),
+            ),
+        ):
+            missing = _fetch_pumpswap_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({
+                    "ok": True,
+                    "transactions": [{"transaction": "tx1"}, {"transaction": "tx2"}],
+                }),
+            ),
+        ):
+            multiple = _fetch_pumpswap_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(missing["error"]["code"], "SWAP_EXECUTION_PUMPSWAP_TRANSACTION_MISSING")
+        self.assertEqual(
+            multiple["error"]["code"],
+            "SWAP_EXECUTION_PUMPSWAP_MULTIPLE_TRANSACTIONS_UNSUPPORTED",
+        )
+
+    def test_fetch_pumpswap_swap_transaction_maps_helper_failures(self):
+        with patch("pathlib.Path.exists", return_value=False):
+            missing_helper = _fetch_pumpswap_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({
+                    "ok": False,
+                    "error": {"code": "PUMPSWAP_PREPARE_NOT_IMPLEMENTED", "message": "not implemented"},
+                }, returncode=1),
+            ),
+        ):
+            helper_failed = _fetch_pumpswap_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({
+                    "ok": False,
+                    "error": {"code": "PUMPSWAP_PREPARE_FAILED", "message": "pool state invalid"},
+                }, returncode=1),
+            ),
+        ):
+            prepare_failed = _fetch_pumpswap_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertEqual(missing_helper["error"]["code"], "SWAP_EXECUTION_PUMPSWAP_HELPER_FAILED")
+        self.assertEqual(helper_failed["error"]["code"], "SWAP_EXECUTION_PUMPSWAP_HELPER_FAILED")
+        self.assertEqual(prepare_failed["error"]["code"], "SWAP_EXECUTION_PUMPSWAP_PREPARE_FAILED")
+        self.assertEqual(prepare_failed["error"]["provider_message"], "pool state invalid")
+
+    def test_fetch_pumpswap_swap_transaction_returns_normalized_transaction_when_mocked(self):
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured.update(json.loads(kwargs["input"]))
+            return self._fake_subprocess_result({
+                "ok": True,
+                "transaction_base64": "pumpswap-base64tx",
+            })
+
+        with (
+            patch.dict(os.environ, {"SWAP_PREPARE_RPC_URL": "https://rpc.example?api-key=SECRET"}, clear=True),
+            patch("pathlib.Path.exists", return_value=True),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = _fetch_pumpswap_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transaction_base64"], "pumpswap-base64tx")
+        self.assertEqual(captured["user_public_key"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
+        self.assertEqual(captured["tx_version"], "V0")
+        self.assertEqual(captured["rpc_url"], "https://rpc.example?api-key=SECRET")
+        self.assertNotIn("SECRET", json.dumps(result))
+        self.assertNotIn("api-key", json.dumps(result))
+        self.assertNotIn("rpc.example", json.dumps(result))
+
+    def test_fetch_pumpswap_swap_transaction_sanitizes_error_payloads(self):
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                return_value=self._fake_subprocess_result({
+                    "ok": False,
+                    "error": {
+                        "code": "PUMPSWAP_PREPARE_FAILED",
+                        "message": "transaction_base64=SECRET_TX",
+                        "detail": "https://pump.example?api-key=SECRET",
+                        "data": {
+                            "transaction_base64": "SECRET_TX",
+                            "url": "https://pump.example?api-key=SECRET",
+                        },
+                    },
+                }, returncode=1),
+            ),
+        ):
+            result = _fetch_pumpswap_swap_transaction(
+                quote_response={"ok": True},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        encoded = json.dumps(result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PUMPSWAP_PREPARE_FAILED")
+        self.assertNotIn("provider_message", result["error"])
+        self.assertNotIn("provider_detail", result["error"])
+        self.assertNotIn("SECRET_TX", encoded)
+        self.assertNotIn("transaction_base64", encoded)
+        self.assertNotIn("api-key", encoded)
+        self.assertNotIn("SECRET", encoded)
+        self.assertNotIn("pump.example", encoded)
+
+    def test_pumpswap_prepare_rebuilds_quote_and_returns_normalized_response_when_mocked(self):
+        quote = self._mock_pumpswap_execution_quote()
+        before = json.dumps(TOKEN_META, sort_keys=True)
+        with (
+            patch("api.main._fetch_pumpswap_quote", return_value=quote) as fetch_quote,
+            patch(
+                "api.main._fetch_pumpswap_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "transaction_base64": "pumpswap-base64tx",
+                    "raw": {"transaction_base64": "pumpswap-base64tx"},
+                },
+            ) as fetch_swap,
+        ):
+            result = swap_execute_prepare(
+                self._base_swap_execute_prepare_payload(
+                    provider="pumpswap",
+                    variant_id="pumpswap_quote",
+                    to_token="7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump",
+                )
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["provider"], "pumpswap")
+        self.assertEqual(result["execution_surface_label"], "PumpSwap")
+        self.assertEqual(result["execution_status"], "prepared")
+        self.assertEqual(result["transaction_base64"], "pumpswap-base64tx")
+        self.assertEqual(result["transaction_format"], "versioned")
+        self.assertEqual(result["quote_summary"]["estimated_output_raw"], "45000000")
+        self.assertEqual(result["quote_summary"]["variant_id"], "pumpswap_quote")
+        self.assertIn("quote_refreshed_before_execution", result["warnings"])
+        fetch_quote.assert_called_once()
+        self.assertEqual(fetch_quote.call_args.args[0]["amount_raw"], "1000000000")
+        fetch_swap.assert_called_once()
+        self.assertEqual(fetch_swap.call_args.kwargs["user_public_key"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
+        self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
+    def test_pumpswap_prepare_rejects_unsupported_variant(self):
+        result = prepare_swap_transaction_with_provider(
+            provider_id="pumpswap",
+            input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            output_meta={"mint": "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump", "decimals": 6},
+            amount=1.0,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            variant_id="recommended_default",
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            from_token_query="SOL",
+            to_token_query="FIGURE",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PUMPSWAP_UNSUPPORTED_ROUTE")
+
+    def test_pumpswap_prepare_helper_exists_and_is_prepare_only(self):
+        source = Path("tools/pumpswap_prepare.mjs").read_text()
+
+        self.assertIn("for await (const chunk of process.stdin)", source)
+        self.assertIn("writeJson", source)
+        self.assertIn("safeScalar", source)
+        self.assertIn("OnlinePumpAmmSdk", source)
+        self.assertIn("PUMP_AMM_SDK.buyQuoteInput", source)
+        self.assertIn("PUMP_AMM_SDK.sellBaseInput", source)
+        self.assertIn("new TransactionMessage", source)
+        self.assertIn("new VersionedTransaction", source)
+        self.assertIn("request.rpc_url || quote.rpc_url || process.env.SOLANA_RPC_URL || DEFAULT_RPC_URL", source)
+        self.assertIn('"transactionbase64"', source)
+        self.assertIn('"signedtransaction"', source)
+        self.assertNotIn("console.log", source)
+        self.assertNotIn("sendTransaction", source)
+        self.assertNotIn("signTransaction", source)
+        self.assertNotIn("/swap/execute/submit", source)
+
     def _readiness_jupiter_option(self, **overrides):
         option = {
             "provider": "jupiter-metis",
@@ -7171,6 +7415,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("opt?.is_clickable === true", gate)
         self.assertIn("opt?.is_comparison_only !== true", gate)
         self.assertIn('opt?.execution_status === "executable_capable"', gate)
+        self.assertNotIn("pumpswap", gate)
 
     def test_execution_readiness_audit_tool_defaults_and_pair_parsing(self):
         from tools import execution_readiness_audit as audit
