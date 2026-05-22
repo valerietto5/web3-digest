@@ -25,6 +25,7 @@ from api.main import (
     _fetch_phantom_quote,
     _fetch_phoenix_quote,
     _fetch_pumpswap_quote,
+    _fetch_fresh_pumpswap_execution_quote,
     _fetch_pumpswap_swap_transaction,
     _is_executable_quote_option,
     _normalize_meteora_dlmm_quote_option,
@@ -1691,13 +1692,19 @@ class TestSanity(unittest.TestCase):
     def test_swap_ui_reference_delta_renders_source_token_and_usd_labels(self):
         html = build_ui_html()
 
-        self.assertIn("Best executable output vs ", html)
-        self.assertIn("DexScreener reference", html)
-        self.assertIn("CoinGecko reference", html)
+        self.assertNotIn("Quote surface only for now. No execution yet.", html)
+        self.assertIn("Compare live swap routes and approve safely in Phantom.", html)
+        self.assertNotIn("Cached reference", html)
+        self.assertNotIn("Best executable output vs DexScreener reference", html)
+        self.assertIn("Best live quote", html)
+        self.assertIn("Market reference", html)
+        self.assertIn("Difference from reference", html)
+        self.assertNotIn("CoinGecko reference", html)
         self.assertNotIn("Jupiter reference", html)
-        self.assertIn("Source detail: Jupiter Price V3 market price", html)
-        self.assertIn("Source detail: DexScreener Solana market pair", html)
-        self.assertIn("fmtUsdCost(rawUsd)", html)
+        self.assertIn("Reference source: Jupiter Price V3 market price", html)
+        self.assertIn("Reference source: DexScreener market price", html)
+        self.assertIn("Used only to compare route quality", html)
+        self.assertIn("fmtUsdCost(Math.abs(rawUsd))", html)
         self.assertIn("fmtUsdCost(tradeCostUsd)", html)
         self.assertIn("estimated_output_usd", html)
         self.assertIn('const sign = n < 0 ? "-" : "";', html)
@@ -1936,7 +1943,9 @@ class TestSanity(unittest.TestCase):
         prepare_block = html[start:end]
 
         self.assertIn("const errorDetail = extractSwapPrepareErrorDetail(res.data);", prepare_block)
-        self.assertIn('errorDetail.code ? "Execution error: " + errorDetail.code : null', prepare_block)
+        self.assertIn('"Provider detail: " + errorDetail.providerDetail', prepare_block)
+        self.assertIn('"Provider detail: " + errorDetail.providerMessage', prepare_block)
+        self.assertIn('"Execution error: " + errorDetail.code', prepare_block)
 
     def test_swap_ui_prepare_failure_does_not_render_transaction_base64(self):
         html = build_ui_html()
@@ -2026,7 +2035,10 @@ class TestSanity(unittest.TestCase):
         self.assertIn("async function signAndSubmitPreparedSwap()", html)
         self.assertIn('$("btnSignPreparedSwap").addEventListener("click", signAndSubmitPreparedSwap);', html)
         self.assertIn('$("swapSignAcknowledgement").addEventListener("change", updateSwapSignButtonState);', html)
-        self.assertIn("Swap submitted", html)
+        self.assertIn("Swap submitted successfully", html)
+        self.assertIn("Provider: ${escapeHtml(providerLabel)}", html)
+        self.assertIn("Open in Solana Explorer", html)
+        self.assertIn("Token received — check your Phantom wallet.", html)
         self.assertIn("Swap failed.", html)
         self.assertIn("Swap was rejected in Phantom.", html)
         self.assertIn("Quote expired. Preview again.", html)
@@ -2038,7 +2050,9 @@ class TestSanity(unittest.TestCase):
         self.assertIn("function swapRuntimeErrorDetail(err)", html)
         self.assertIn("function swapRuntimeFailureMessage(phase, err)", html)
         self.assertIn("Reason: ", html)
+        self.assertIn("Provider detail: ", html)
         self.assertIn("transaction_base64|swapTransaction", html)
+        self.assertIn("api[-_]?key", html)
 
     def test_swap_ui_signing_runtime_failure_copy_exists(self):
         html = build_ui_html()
@@ -2049,6 +2063,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Transaction submission failed.", html)
         self.assertIn("Transaction submission was blocked by RPC.", html)
         self.assertIn("RPC is rate-limited. Try again later.", html)
+        self.assertIn("Swap cannot be submitted yet. Configure SWAP_SUBMIT_RPC_URL.", html)
         self.assertIn("Quote expired. Preview again.", html)
 
     def test_swap_ui_signing_failure_logs_phase_specific_errors(self):
@@ -2089,6 +2104,7 @@ class TestSanity(unittest.TestCase):
         sign_block = html[start:end]
 
         self.assertIn("if (!latestPreparedSwap || !latestPreparedSwap.transaction_base64)", sign_block)
+        self.assertIn("latestPreparedSwap?.submit_preflight?.can_submit === false", html)
         self.assertIn("const ack = $(\"swapSignAcknowledgement\");", sign_block)
         self.assertIn("if (!ack?.checked)", sign_block)
         self.assertIn("Confirm you understand this is a real mainnet swap before signing.", sign_block)
@@ -2139,6 +2155,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("SWAP_SUBMIT_RATE_LIMITED", html)
         self.assertIn("SWAP_SUBMIT_FAILED", html)
         self.assertIn("MAINNET_EXPLORER_BASE", html)
+        self.assertIn("renderSwapSubmittedSuccess(signature)", sign_block)
         self.assertNotIn("MAINNET_RPC_URL", html)
         self.assertNotIn("DEVNET_RPC_URL", sign_block)
         self.assertNotIn("DEVNET_EXPLORER_BASE", sign_block)
@@ -5822,6 +5839,7 @@ class TestSanity(unittest.TestCase):
     def test_swap_execute_prepare_accepts_jupiter_provider_alias(self):
         quote = self._mock_jupiter_execution_quote()
         with (
+            patch.dict(os.environ, {}, clear=True),
             patch("api.main._fetch_jupiter_quote", return_value=quote),
             patch(
                 "api.main._fetch_jupiter_swap_transaction",
@@ -5942,6 +5960,7 @@ class TestSanity(unittest.TestCase):
     def test_swap_execute_prepare_returns_prepared_transaction_summary(self):
         quote = self._mock_jupiter_execution_quote()
         with (
+            patch.dict(os.environ, {}, clear=True),
             patch("api.main._fetch_jupiter_quote", return_value=quote),
             patch(
                 "api.main._fetch_jupiter_swap_transaction",
@@ -5967,6 +5986,40 @@ class TestSanity(unittest.TestCase):
         self.assertAlmostEqual(result["quote_summary"]["min_received"], 84.575)
         self.assertEqual(result["quote_summary"]["variant_id"], "recommended_default")
         self.assertIn("quote_refreshed_before_execution", result["warnings"])
+        self.assertEqual(
+            result["submit_preflight"],
+            {
+                "can_submit": False,
+                "network": "solana",
+                "required_config": "SWAP_SUBMIT_RPC_URL",
+                "configured_source": None,
+            },
+        )
+
+    def test_swap_execute_prepare_marks_submit_preflight_configured_without_leaking_url(self):
+        quote = self._mock_jupiter_execution_quote()
+        with (
+            patch.dict(os.environ, {"SWAP_SUBMIT_RPC_URL": "https://rpc.example?api-key=SECRET"}, clear=True),
+            patch("api.main._fetch_jupiter_quote", return_value=quote),
+            patch(
+                "api.main._fetch_jupiter_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "swap_transaction": "base64tx",
+                    "last_valid_block_height": 789,
+                    "raw": {"swapTransaction": "base64tx"},
+                },
+            ),
+        ):
+            result = swap_execute_prepare(self._base_swap_execute_prepare_payload())
+
+        encoded = json.dumps(result)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["submit_preflight"]["can_submit"])
+        self.assertEqual(result["submit_preflight"]["configured_source"], "SWAP_SUBMIT_RPC_URL")
+        self.assertNotIn("rpc.example", encoded)
+        self.assertNotIn("api-key", encoded)
+        self.assertNotIn("SECRET", encoded)
 
     def test_swap_execute_prepare_does_not_mutate_token_meta(self):
         before = json.dumps(TOKEN_META, sort_keys=True)
@@ -7133,6 +7186,63 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("SECRET", encoded)
         self.assertNotIn("pump.example", encoded)
 
+    def test_fresh_pumpswap_execution_quote_rejects_failed_quote_response(self):
+        with patch(
+            "api.main._fetch_pumpswap_quote",
+            return_value={
+                "ok": False,
+                "error": {
+                    "code": "UNHANDLED_ERROR",
+                    "message": "Unhandled PumpSwap quote helper error.",
+                    "details": {"message": "Endpoint URL must start with http or https."},
+                },
+            },
+        ):
+            result = _fetch_fresh_pumpswap_execution_quote(
+                input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+                output_meta={"mint": "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump", "decimals": 6},
+                amount_raw=10000000,
+                slippage_bps=50,
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PUMPSWAP_PREPARE_FAILED")
+        self.assertEqual(result["error"]["provider_code"], "UNHANDLED_ERROR")
+        self.assertEqual(result["error"]["provider_message"], "Unhandled PumpSwap quote helper error.")
+        self.assertEqual(result["error"]["provider_detail"], "Endpoint URL must start with http or https.")
+
+    def test_fresh_pumpswap_execution_quote_does_not_pass_error_envelope_to_prepare_helper(self):
+        with patch(
+            "api.main._fetch_pumpswap_quote",
+            return_value={
+                "ok": False,
+                "error": {
+                    "code": "PUMPSWAP_UNSUPPORTED_ROUTE",
+                    "message": "transaction_base64=SECRET_TX",
+                    "details": {"message": "https://pump.example?api-key=SECRET"},
+                },
+            },
+        ):
+            result = _fetch_fresh_pumpswap_execution_quote(
+                input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+                output_meta={"mint": "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump", "decimals": 6},
+                amount_raw=10000000,
+                slippage_bps=50,
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        encoded = json.dumps(result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PUMPSWAP_PREPARE_FAILED")
+        self.assertNotIn("provider_message", result["error"])
+        self.assertNotIn("provider_detail", result["error"])
+        self.assertNotIn("SECRET_TX", encoded)
+        self.assertNotIn("transaction_base64", encoded)
+        self.assertNotIn("api-key", encoded)
+        self.assertNotIn("SECRET", encoded)
+        self.assertNotIn("pump.example", encoded)
+
     def test_pumpswap_prepare_rebuilds_quote_and_returns_normalized_response_when_mocked(self):
         quote = self._mock_pumpswap_execution_quote()
         before = json.dumps(TOKEN_META, sort_keys=True)
@@ -7193,6 +7303,10 @@ class TestSanity(unittest.TestCase):
         self.assertIn("for await (const chunk of process.stdin)", source)
         self.assertIn("writeJson", source)
         self.assertIn("safeScalar", source)
+        self.assertIn("function normalizePumpSwapDirection", source)
+        self.assertIn('direction === "buy_base_with_quote"', source)
+        self.assertIn('direction === "sell_base_for_quote"', source)
+        self.assertIn("normalizedDirection", source)
         self.assertIn("OnlinePumpAmmSdk", source)
         self.assertIn("PUMP_AMM_SDK.buyQuoteInput", source)
         self.assertIn("PUMP_AMM_SDK.sellBaseInput", source)

@@ -1999,6 +1999,31 @@ def _safe_pumpswap_provider_error_details(helper_error) -> dict:
     return details
 
 
+def _safe_pumpswap_quote_error_details(quote_response) -> dict:
+    if not isinstance(quote_response, dict):
+        return {}
+
+    error = quote_response.get("error")
+    if not isinstance(error, dict):
+        return {}
+
+    details = {}
+    provider_message = _safe_pumpswap_provider_scalar(error.get("message") or error.get("msg"))
+    provider_code = _safe_pumpswap_provider_scalar(error.get("code") or error.get("id"))
+    raw_details = error.get("details") or error.get("detail")
+    provider_detail = _safe_pumpswap_provider_scalar(raw_details)
+    if provider_detail is None and isinstance(raw_details, dict):
+        provider_detail = _safe_pumpswap_provider_scalar(raw_details.get("message") or raw_details.get("detail"))
+
+    if provider_message:
+        details["provider_message"] = provider_message
+    if provider_code:
+        details["provider_code"] = provider_code
+    if provider_detail:
+        details["provider_detail"] = provider_detail
+    return details
+
+
 def _fetch_fresh_pumpswap_execution_quote(
     *,
     input_meta: dict,
@@ -2018,9 +2043,21 @@ def _fetch_fresh_pumpswap_execution_quote(
     )
 
     try:
+        quote = _fetch_pumpswap_quote(payload)
+        if not isinstance(quote, dict) or quote.get("ok") is False:
+            return _pumpswap_execution_error(
+                "SWAP_EXECUTION_PUMPSWAP_PREPARE_FAILED",
+                "Could not refresh a PumpSwap quote for swap execution.",
+                **_safe_pumpswap_quote_error_details(quote),
+            )
+        if quote.get("direction") not in {"buy_base_with_quote", "sell_base_for_quote"}:
+            return _pumpswap_execution_error(
+                "SWAP_EXECUTION_PUMPSWAP_UNSUPPORTED_ROUTE",
+                "This PumpSwap route cannot be prepared for execution.",
+            )
         return {
             "ok": True,
-            "quote": _fetch_pumpswap_quote(payload),
+            "quote": quote,
             "payload": payload,
         }
     except HTTPException as e:
@@ -2220,6 +2257,16 @@ def _provider_not_implemented_error(provider_id: str) -> dict:
     )
 
 
+def _swap_submit_preflight_metadata() -> dict:
+    rpc_url, rpc_source = _configured_swap_submit_rpc_url()
+    return {
+        "can_submit": bool(rpc_url),
+        "network": "solana",
+        "required_config": "SWAP_SUBMIT_RPC_URL",
+        "configured_source": rpc_source if rpc_url else None,
+    }
+
+
 def _prepare_jupiter_swap_transaction(
     *,
     input_meta: dict,
@@ -2277,6 +2324,7 @@ def _prepare_jupiter_swap_transaction(
             variant_id=variant_id,
         ),
         "warnings": ["quote_refreshed_before_execution"],
+        "submit_preflight": _swap_submit_preflight_metadata(),
     }
 
 
@@ -2339,6 +2387,7 @@ def _prepare_raydium_swap_transaction(
             variant_id=variant_id,
         ),
         "warnings": ["quote_refreshed_before_execution"],
+        "submit_preflight": _swap_submit_preflight_metadata(),
     }
 
 
@@ -2397,6 +2446,7 @@ def _prepare_orca_whirlpool_swap_transaction(
             variant_id=variant_id,
         ),
         "warnings": ["quote_refreshed_before_execution"],
+        "submit_preflight": _swap_submit_preflight_metadata(),
     }
 
 
@@ -2456,6 +2506,7 @@ def _prepare_pumpswap_swap_transaction(
             variant_id=variant_id,
         ),
         "warnings": ["quote_refreshed_before_execution"],
+        "submit_preflight": _swap_submit_preflight_metadata(),
     }
 
 

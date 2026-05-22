@@ -129,14 +129,25 @@ function validateSlippage(value) {
   return { ok: true, value: slippageBps / 100 };
 }
 
+function normalizePumpSwapDirection(direction) {
+  if (direction === "buy_base_with_quote") {
+    return "buy_base_with_quote";
+  }
+  if (direction === "sell_base_for_quote") {
+    return "sell_base_for_quote";
+  }
+  return null;
+}
+
 function expectedPoolMints(quote) {
-  if (quote.direction === "buy_base_with_quote") {
+  const direction = normalizePumpSwapDirection(quote.direction);
+  if (direction === "buy_base_with_quote") {
     return {
       baseMint: quote.output_mint,
       quoteMint: quote.input_mint,
     };
   }
-  if (quote.direction === "sell_base_for_quote") {
+  if (direction === "sell_base_for_quote") {
     return {
       baseMint: quote.input_mint,
       quoteMint: quote.output_mint,
@@ -167,7 +178,8 @@ function validateRequest(request) {
     );
   }
 
-  if (!["buy_base_with_quote", "sell_base_for_quote"].includes(quote.direction)) {
+  const normalizedDirection = normalizePumpSwapDirection(quote.direction);
+  if (!normalizedDirection) {
     return structuredError("PUMPSWAP_UNSUPPORTED_ROUTE", "PumpSwap quote direction is not supported for prepare.");
   }
 
@@ -205,6 +217,7 @@ function validateRequest(request) {
     ok: true,
     value: {
       quote,
+      normalizedDirection,
       wallet,
       poolAddress,
       inputMint,
@@ -242,13 +255,13 @@ async function preparePumpSwap(request) {
   }
 
   let instructions;
-  if (request.quote.direction === "buy_base_with_quote") {
+  if (request.normalizedDirection === "buy_base_with_quote") {
     instructions = await PUMP_AMM_SDK.buyQuoteInput(
       swapState,
       request.amount.value,
       request.slippage.value,
     );
-  } else if (request.quote.direction === "sell_base_for_quote") {
+  } else if (request.normalizedDirection === "sell_base_for_quote") {
     instructions = await PUMP_AMM_SDK.sellBaseInput(
       swapState,
       request.amount.value,

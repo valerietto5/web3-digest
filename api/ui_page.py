@@ -157,7 +157,7 @@ def build_ui_html() -> str:
 
   <div class="card" id="swapCard">
     <h3 style="margin: 0 0 6px 0;">Swap <span class="pill warn">SOLANA-FIRST</span></h3>
-    <div class="muted">Quote surface only for now. No execution yet.</div>
+    <div class="muted">Compare live swap routes and approve safely in Phantom.</div>
 
     <div class="swap-input-grid">
       <div>
@@ -195,9 +195,9 @@ def build_ui_html() -> str:
 
     <div class="row" id="swapInlineBaselineRow" style="margin-top: 6px;">
       <div class="muted" id="swapSpendValueHint">You spend: —</div>
-      <div class="muted" id="swapIdealOutputHint">Ideal no-fee baseline: —</div>
-      <div class="muted" id="swapBaselineDeltaHint">Difference vs best checked route: —</div>
-      <div class="muted" id="swapBaselineNote" style="font-size:12px; opacity:0.78;">Ideal no-fee reference for comparison.</div>
+      <div class="muted" id="swapIdealOutputHint">Estimated receive: click Preview Quote to compare live routes.</div>
+      <div class="muted" id="swapBaselineDeltaHint">Difference from reference: —</div>
+      <div class="muted" id="swapBaselineNote" style="font-size:12px; opacity:0.78;">Reference pricing is used only to compare route quality — not an executable route.</div>
     </div>
 
     <div class="card" id="swapQuoteCard" style="margin-top:10px;">
@@ -561,9 +561,9 @@ function resetSwapInlineBaseline() {
   const note = $("swapBaselineNote");
 
   if (spend) spend.textContent = "You spend: —";
-  if (ideal) ideal.textContent = "Theoretical reference baseline: —";
-  if (delta) delta.textContent = "Executable output vs reference: —";
-  if (note) note.textContent = "Reference pricing for comparison. Not an executable quote.";
+  if (ideal) ideal.textContent = "Estimated receive: click Preview Quote to compare live routes.";
+  if (delta) delta.textContent = "Difference from reference: —";
+  if (note) note.textContent = "Reference pricing is used only to compare route quality — not an executable route.";
 }
 
 
@@ -602,45 +602,44 @@ function renderSwapInlineBaseline(baseline, delta = null) {
   const inputToken = baseline.input_token || "";
   const inputUsd =
     baseline.input_usd_value == null
-      ? "n/a"
+      ? null
       : "$" + fmtNum(Number(baseline.input_usd_value), 2);
 
   const idealOut =
     baseline.ideal_output_amount == null
-      ? "n/a"
+      ? null
       : fmtNum(Number(baseline.ideal_output_amount), 6);
 
   const outputToken = baseline.output_token || "";
   const outputUsd =
     baseline.output_usd_value == null
-      ? "n/a"
+      ? null
       : "$" + fmtNum(Number(baseline.output_usd_value), 2);
 
   if (spend) {
     spend.textContent =
-      "You spend: " + inputAmount + " " + inputToken + " ≈ " + inputUsd;
+      "You spend: " + inputAmount + " " + inputToken + (inputUsd ? " ≈ " + inputUsd : "");
   }
 
-  function referenceSourceLabel(source) {
-    if (source === "dexscreener_solana") return "DexScreener reference";
-    if (source === "jupiter_price_v3") return "CoinGecko reference";
-    if (source === "coingecko_simple_price") return "CoinGecko reference";
-    if (source === "sqlite_usd_snapshots") return "SQLite cached reference";
-    return "Cached reference";
+  function referenceSourceLabel(_source) {
+    return "Market reference";
   }
 
   if (ideal) {
-    const baselineLabel = referenceSourceLabel(baseline.pricing_source);
-
-    ideal.textContent =
-      baselineLabel +
-      ": ~" +
-      idealOut +
-      " " +
-      outputToken +
-      " (≈ " +
-      outputUsd +
-      ")";
+    if (delta && idealOut && delta.output_diff_abs != null) {
+      const bestOut = Number(baseline.ideal_output_amount) + Number(delta.output_diff_abs);
+      const bestUsd = Number.isFinite(Number(baseline.output_usd_price))
+        ? bestOut * Number(baseline.output_usd_price)
+        : null;
+      ideal.textContent =
+        "Best live quote: ~" +
+        fmtNum(bestOut, 6) +
+        " " +
+        outputToken +
+        (Number.isFinite(bestUsd) ? " ≈ " + fmtUsdCost(bestUsd) : "");
+    } else {
+      ideal.textContent = "Estimated receive: click Preview Quote to compare live routes.";
+    }
   }
 
   if (deltaLine) {
@@ -649,31 +648,31 @@ function renderSwapInlineBaseline(baseline, delta = null) {
       const rawUsd = Number(delta.output_diff_usd);
       const rawPct = Number(delta.output_diff_pct);
 
-      const sign = Number.isFinite(rawAbs) && rawAbs > 0 ? "+" : "";
-      const absTxt = Number.isFinite(rawAbs) ? sign + fmtNum(rawAbs, 6) : "n/a";
-      const usdSign = Number.isFinite(rawUsd) && rawUsd > 0 ? "+" : "";
+      const absTxt = Number.isFinite(rawAbs) ? fmtNum(Math.abs(rawAbs), 6) : "—";
       const usdTxt = Number.isFinite(rawUsd)
-        ? " ≈ " + usdSign + fmtUsdCost(rawUsd)
+        ? " ≈ " + fmtUsdCost(Math.abs(rawUsd))
         : "";
-      const pctTxt = Number.isFinite(rawPct) ? sign + fmtNum(rawPct, 4) + "%" : "n/a";
-      const sourceLabel = referenceSourceLabel(delta.pricing_source || baseline.pricing_source);
+      const directionText = Number.isFinite(rawAbs) && rawAbs >= 0 ? "more" : "less";
+      const pctTxt = Number.isFinite(rawPct) ? " (" + fmtNum(Math.abs(rawPct), 4) + "%)" : "";
 
       deltaLine.textContent =
-        "Best executable output vs " +
-        sourceLabel +
-        ": " +
+        "Market reference: ~" +
+        (idealOut || "—") +
+        " " +
+        outputToken +
+        (outputUsd ? " ≈ " + outputUsd : "") +
+        ". Difference from reference: ~" +
         absTxt +
         " " +
         outputToken +
+        " " +
+        directionText +
         usdTxt +
-        " (" +
-        pctTxt +
-        ")";
+        pctTxt;
     } else {
-      deltaLine.textContent =
-        "Best executable output vs " +
-        referenceSourceLabel(baseline.pricing_source) +
-        ": —";
+      deltaLine.textContent = idealOut
+        ? "Market reference: ~" + idealOut + " " + outputToken + (outputUsd ? " ≈ " + outputUsd : "")
+        : "Market reference: —";
     }
   }
 
@@ -684,20 +683,20 @@ function renderSwapInlineBaseline(baseline, delta = null) {
 
     if (source === "dexscreener_solana") {
       note.textContent = tsUtc
-        ? "Source detail: DexScreener Solana market pair at " + tsUtc + ". Not an executable quote."
-        : "Source detail: DexScreener Solana market pair. Not an executable quote.";
+        ? "Reference source: DexScreener market price at " + tsUtc + ". Used only to compare route quality — not an executable route."
+        : "Reference source: DexScreener market price. Used only to compare route quality — not an executable route.";
     } else if (source === "jupiter_price_v3") {
       note.textContent = tsUtc
-        ? "Source detail: Jupiter Price V3 market price at " + tsUtc + ". Not an executable quote."
-        : "Source detail: Jupiter Price V3 market price. Not an executable quote.";
+        ? "Reference source: Jupiter Price V3 market price at " + tsUtc + ". Used only to compare route quality — not an executable route."
+        : "Reference source: Jupiter Price V3 market price. Used only to compare route quality — not an executable route.";
     } else if (source === "coingecko_simple_price") {
       note.textContent = tsUtc
-        ? "Source detail: fresh CoinGecko market price at " + tsUtc + ". Not an executable quote."
-        : "Source detail: fresh CoinGecko market price. Not an executable quote.";
+        ? "Reference source: CoinGecko market price at " + tsUtc + ". Used only to compare route quality — not an executable route."
+        : "Reference source: CoinGecko market price. Used only to compare route quality — not an executable route.";
     } else if (source === "sqlite_usd_snapshots") {
       note.textContent = tsUtc
-        ? "Source: cached SQLite USD price snapshot at " + tsUtc + ". Not an executable quote."
-        : "Source: cached SQLite USD price snapshot. Not an executable quote.";
+        ? "Reference source: cached USD price snapshot at " + tsUtc + ". Used only to compare route quality — not an executable route."
+        : "Reference source: cached USD price snapshot. Used only to compare route quality — not an executable route.";
     }
   }
 }
@@ -1582,7 +1581,7 @@ function renderCompactAlternativeCard(opt, idx = 0) {
 function compactSwapPrepareErrorText(value) {
   const text = String(value || "").trim();
   if (!text) return "";
-  if (/transaction_base64|swapTransaction/i.test(text)) return "";
+  if (/transaction_base64|transactionBase64|signed_transaction|signedTransaction|swapTransaction|https?:\\/\\/|api[-_]?key|access_token|secret/i.test(text)) return "";
   if ((text.startsWith("{") || text.startsWith("[")) && text.length > 120) return "";
   if (text.length > 220) return text.slice(0, 217) + "...";
   return text;
@@ -1593,7 +1592,10 @@ function extractSwapPrepareErrorDetail(data) {
   return {
     code: compactSwapPrepareErrorText(error.code),
     message: compactSwapPrepareErrorText(error.message),
-    detail: compactSwapPrepareErrorText(error.detail)
+    detail: compactSwapPrepareErrorText(error.detail),
+    providerMessage: compactSwapPrepareErrorText(error.provider_message),
+    providerCode: compactSwapPrepareErrorText(error.provider_code),
+    providerDetail: compactSwapPrepareErrorText(error.provider_detail)
   };
 }
 
@@ -1712,12 +1714,25 @@ async function prepareSwapRoute(routeRequest) {
     setSwapExecutionStatus(
       "failed",
       swapPrepareErrorMessage(code, errorDetail.message || errorDetail.detail),
-      errorDetail.code ? "Execution error: " + errorDetail.code : null
+      errorDetail.providerDetail
+        ? "Provider detail: " + errorDetail.providerDetail
+        : errorDetail.providerMessage
+          ? "Provider detail: " + errorDetail.providerMessage
+          : errorDetail.code
+            ? "Execution error: " + errorDetail.code
+            : null
     );
     return;
   }
 
   latestPreparedSwap = res.data || null;
+  if (latestPreparedSwap?.submit_preflight?.can_submit === false) {
+    latestPreparedSwap = null;
+    setSwapPreparedActionVisible(false);
+    setSwapExecutionStatus("failed", "Swap cannot be submitted yet. Configure SWAP_SUBMIT_RPC_URL.");
+    return;
+  }
+
   const summary = latestPreparedSwap?.quote_summary || {};
   const receive = summary.estimated_output != null
     ? "Refreshed receive estimate: " + fmtNum(Number(summary.estimated_output), 6) + " " + (summary.to_token || "")
@@ -1757,7 +1772,7 @@ function mainnetExplorerLink(signature) {
 function compactSwapRuntimeErrorText(value) {
   const text = String(value || "").trim();
   if (!text) return "";
-  if (/transaction_base64|swapTransaction/i.test(text)) return "";
+  if (/transaction_base64|transactionBase64|signed_transaction|signedTransaction|swapTransaction|https?:\\/\\/|api[-_]?key|access_token|secret/i.test(text)) return "";
   if ((text.startsWith("{") || text.startsWith("[")) && text.length > 120) return "";
   if (text.length > 180) return text.slice(0, 177) + "...";
   return text;
@@ -1817,6 +1832,39 @@ function bytesToBase64(bytes) {
     binary += String.fromCharCode.apply(null, chunk);
   }
   return btoa(binary);
+}
+
+function renderSwapSubmittedSuccess(signature) {
+  const box = $("swapExecutionStatus");
+  if (!box) return;
+
+  const summary = latestPreparedSwap?.quote_summary || {};
+  const providerLabel = latestPreparedSwap?.execution_surface_label || summary.provider_label || "Selected route";
+  const fromToken = summary.from_token || "";
+  const toToken = summary.to_token || "";
+  const spent = summary.amount != null
+    ? fmtNum(Number(summary.amount), 6) + (fromToken ? " " + fromToken : "")
+    : "";
+  const expected = summary.estimated_output != null
+    ? fmtNum(Number(summary.estimated_output), 6) + (toToken ? " " + toToken : "")
+    : "";
+  const explorer = mainnetExplorerLink(signature);
+  const tokenText = toToken ? toToken + " received — check your Phantom wallet." : "Token received — check your Phantom wallet.";
+
+  const lines = [
+    `<div style="font-weight:600; color:#e5eefb;">Swap submitted successfully</div>`,
+    `<div>Provider: ${escapeHtml(providerLabel)}</div>`,
+    spent ? `<div>Spent: ${escapeHtml(spent)}</div>` : "",
+    expected ? `<div>Expected received: ${escapeHtml(expected)}</div>` : "",
+    `<div>Network: Solana mainnet</div>`,
+    `<div><a href="${escapeHtml(explorer)}" target="_blank">Open in Solana Explorer</a></div>`,
+    `<div style="margin-top:4px;">${escapeHtml(tokenText)}</div>`
+  ].filter(Boolean);
+
+  swapExecutionState = "submitted";
+  box.className = "muted ok";
+  box.innerHTML = lines.join("");
+  box.style.display = "block";
 }
 
 async function signAndSubmitPreparedSwap() {
@@ -1932,7 +1980,7 @@ async function signAndSubmitPreparedSwap() {
     }
 
     explorer = mainnetExplorerLink(signature);
-    setSwapExecutionStatus("submitted", "Swap submitted", "Open in Solana Explorer: " + explorer);
+    renderSwapSubmittedSuccess(signature);
   } catch (err) {
     console.error("swap submit error:", err);
     const reason = swapRuntimeErrorDetail(err);
