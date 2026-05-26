@@ -175,8 +175,6 @@ def _external_token_reference_price_row(meta: dict | None) -> dict | None:
 def _apply_external_token_reference_prices(reference_prices: dict, token_meta_by_label: dict) -> dict:
     prices = dict(reference_prices or {})
     for token_label, meta in (token_meta_by_label or {}).items():
-        if token_label in prices:
-            continue
         row = _external_token_reference_price_row(meta)
         if row:
             prices[token_label] = row

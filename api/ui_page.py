@@ -5,7 +5,7 @@ def build_ui_html() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Web3 Digest — Wallet Cockpit</title>
+  <title>Web3 Digest — Swap Terminal</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; }
     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
@@ -13,8 +13,17 @@ def build_ui_html() -> str:
     .muted { color: #666; }
     label { display: block; font-size: 12px; color: #333; margin-bottom: 4px; }
     input, select { padding: 8px; border-radius: 8px; border: 1px solid #ccc; min-width: 220px; }
-    .swap-input-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(130px, .55fr); gap: 12px; align-items: start; margin-top: 10px; }
+    .swap-input-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; margin-top: 10px; }
     .swap-input-grid input { width: 100%; min-width: 0; box-sizing: border-box; }
+    .swap-token-card { border: 1px solid #ddd; border-radius: 10px; padding: 10px; background: #fafafa; }
+    .swap-token-card-main { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(120px, 1fr); gap: 10px; align-items: start; }
+    .swap-token-card input { background: #fff; }
+    .swap-token-card .amount-side input { text-align: right; font-size: 18px; }
+    .swap-token-selector { display: flex; gap: 6px; align-items: center; border: 1px solid #ccc; border-radius: 8px; background: #fff; padding: 0 8px 0 0; }
+    .swap-token-selector input { border: 0; min-width: 0; flex: 1 1 auto; box-shadow: none; }
+    .swap-token-selector-arrow { color: #666; font-size: 12px; line-height: 1; flex: 0 0 auto; }
+    .swap-amount-actions { display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end; }
+    @media (max-width: 760px) { .swap-token-card-main { grid-template-columns: 1fr; } }
     .token-preview { margin-top: 4px; font-size: 12px; line-height: 1.35; min-height: 18px; }
     @media (max-width: 760px) { .swap-input-grid { grid-template-columns: 1fr; } }
     button { padding: 10px 12px; border-radius: 10px; border: 1px solid #333; background: #111; color: #fff; cursor: pointer; }
@@ -31,8 +40,11 @@ def build_ui_html() -> str:
   </style>
 </head>
 <body>
-  <h2>Web3 Digest — Wallet Cockpit (V1 runway)</h2>
-  <div class="muted">Simple UI served by FastAPI. Uses your own API endpoints under the hood.</div>
+  <h2>Web3 Digest — Swap Terminal</h2>
+  <div class="muted">Compare live Solana swap routes, then approve safely in Phantom.</div>
+
+  <details id="advancedDeveloperTools" class="card" style="margin-top:12px;">
+    <summary class="muted" style="cursor:pointer;">Advanced / Developer tools</summary>
 
   <div class="card">
     <div class="row">
@@ -154,29 +166,56 @@ def build_ui_html() -> str:
     <div id="sendSolStatus" class="card" style="display:none; margin-top:10px;"></div>
   </div>
 
+  </details>
+
 
   <div class="card" id="swapCard">
     <h3 style="margin: 0 0 6px 0;">Swap <span class="pill warn">SOLANA-FIRST</span></h3>
     <div class="muted">Compare live swap routes and approve safely in Phantom.</div>
+    <div class="muted" id="swapWalletStrip" style="margin-top:6px; font-size:12px;">Wallet-aware swap input: connect Phantom and load balances.</div>
+    <div class="muted" id="swapBalanceFreshnessHint" style="display:none; margin-top:6px; font-size:12px;"></div>
+    <button id="btnSwapRefreshBalances" type="button" class="secondary" style="display:none; margin-top:6px; padding:6px 8px;">Refresh balances</button>
 
     <div class="swap-input-grid">
-      <div>
-        <label>From token</label>
-        <input id="swapFromToken" list="swapTokenChoices" value="SOL" placeholder="SOL or token mint" autocomplete="off" />
-        <div class="muted token-preview">Saved token or Solana mint.</div>
-        <div class="muted token-preview" id="swapFromTokenPreview"></div>
+      <div class="swap-token-card" id="swapSellCard">
+        <div class="muted" style="font-weight:600; margin-bottom:8px;">You sell</div>
+        <div class="swap-token-card-main">
+          <div class="token-side">
+            <label>Token</label>
+            <div class="swap-token-selector" id="swapFromTokenSelector" title="Choose from wallet holdings or type a token mint">
+              <input id="swapFromToken" list="swapTokenChoices" value="SOL" placeholder="SOL or token mint" autocomplete="off" />
+              <span class="swap-token-selector-arrow" aria-hidden="true">▼</span>
+            </div>
+            <div id="swapHoldingsDropdown" class="card" style="display:none; margin-top:6px; max-height:180px; overflow:auto; font-size:12px;"></div>
+            <div class="muted token-preview" id="swapFromTokenPreview"></div>
+          </div>
+          <div class="amount-side">
+            <label>Amount</label>
+            <input id="swapAmount" placeholder="0.0" />
+            <div class="muted token-preview" id="swapFromBalanceHint">Available: load wallet balances.</div>
+            <div class="swap-amount-actions">
+              <button id="btnSwapAmountHalf" type="button" class="secondary" disabled style="padding:6px 8px;">50%</button>
+              <button id="btnSwapAmountMax" type="button" class="secondary" disabled style="padding:6px 8px;">MAX</button>
+            </div>
+            <div class="muted token-preview" id="swapAmountHelper">Use 50% or MAX after balances load.</div>
+          </div>
+        </div>
       </div>
 
-      <div>
-        <label>To token</label>
-        <input id="swapToToken" list="swapTokenChoices" value="USDC" placeholder="USDC or token mint" autocomplete="off" />
-        <div class="muted token-preview">Saved token or Solana mint.</div>
-        <div class="muted token-preview" id="swapToTokenPreview"></div>
-      </div>
-
-      <div>
-        <label>Amount</label>
-        <input id="swapAmount" placeholder="1.0" />
+      <div class="swap-token-card" id="swapBuyCard">
+        <div class="muted" style="font-weight:600; margin-bottom:8px;">You buy</div>
+        <div class="swap-token-card-main">
+          <div class="token-side">
+            <label>Token</label>
+            <input id="swapToToken" list="swapTokenChoices" value="USDC" placeholder="USDC or token mint" autocomplete="off" />
+            <div class="muted token-preview" id="swapToTokenPreview"></div>
+          </div>
+          <div class="amount-side">
+            <label>Estimated receive</label>
+            <div id="swapBuyEstimate" class="muted" style="text-align:right; font-size:18px; padding:8px 0;">Preview quote</div>
+            <div class="muted token-preview" style="text-align:right;">Estimated receive after preview.</div>
+          </div>
+        </div>
       </div>
     </div>
     <datalist id="swapTokenChoices">
@@ -196,7 +235,8 @@ def build_ui_html() -> str:
     <div class="row" id="swapInlineBaselineRow" style="margin-top: 6px;">
       <div class="muted" id="swapSpendValueHint">You spend: —</div>
       <div class="muted" id="swapIdealOutputHint">Estimated receive: click Preview Quote to compare live routes.</div>
-      <div class="muted" id="swapBaselineDeltaHint">Difference from reference: —</div>
+      <div class="muted" id="swapBaselineDeltaHint">Market reference: —</div>
+      <div class="muted" id="swapMarketCompareHint">Best quote vs market: —</div>
       <div class="muted" id="swapBaselineNote" style="font-size:12px; opacity:0.78;">Reference pricing is used only to compare route quality — not an executable route.</div>
     </div>
 
@@ -208,6 +248,7 @@ def build_ui_html() -> str:
       <div class="muted" id="swapCoverageDepth" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
       <div class="muted" id="swapExternalTokenNotice" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
       <div class="muted" id="swapExecutionStatus" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;">Ready to prepare a swap route.</div>
+      <div class="muted" id="swapQuoteFreshness" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;"></div>
       <div id="swapPreparedAction" style="display:none; margin-top:8px;">
         <div id="swapPreparedSummary" class="muted" style="font-size:12px; line-height:1.45;"></div>
         <label class="muted" style="display:flex; align-items:flex-start; gap:6px; margin-top:8px; font-size:12px;">
@@ -242,6 +283,10 @@ def build_ui_html() -> str:
     <div id="swapStatus" class="card" style="display:none; margin-top:10px;"></div>
 
     </div>
+
+  <details id="advancedPortfolioTools" class="card" style="margin-top:12px;">
+    <summary class="muted" style="cursor:pointer;">Advanced / Portfolio and debug tools</summary>
+
     <div class="card" id="summaryCard">
     <div class="row">
       <div><span class="pill" id="pillBalances">balances: ?</span></div>
@@ -293,6 +338,8 @@ def build_ui_html() -> str:
     <pre id="raw"></pre>
   </div>
 
+  </details>
+
 <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
 <script>
   const $ = (id) => document.getElementById(id);
@@ -304,6 +351,8 @@ def build_ui_html() -> str:
   const MAINNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
 
   const ACTIVITY_LIMIT = 8;
+  const SWAP_QUOTE_TTL_SECONDS = 20;
+  const SWAP_BALANCE_FRESH_MS = 5 * 60 * 1000;
   const activityItems = [];
   let swapTokenList = [
     { symbol: "SOL", display_name: "Solana", decimals: 9 },
@@ -315,9 +364,14 @@ def build_ui_html() -> str:
     to: null
   };
   let holderConcentrationMint = null;
+  let latestPortfolioReport = null;
+  let latestPortfolioAccount = "";
   let latestSwapQuoteResponse = null;
   let latestPreparedSwap = null;
   let swapExecutionState = "idle";
+  let swapQuoteExpiresAt = null;
+  let swapQuoteTimerId = null;
+  let swapBalancesStaleAfterSubmit = false;
 
   function nowTimeLabel() {
     return new Date().toLocaleTimeString();
@@ -363,6 +417,201 @@ def build_ui_html() -> str:
 
     box.innerHTML = html;
   }
+
+function normalizeSwapAssetKey(value) {
+  return String(value || "").trim().replace(/^spl:/i, "").toUpperCase();
+}
+
+function formatSwapSnapshotAge(value) {
+  if (!value) return "snapshot may be stale";
+  const ts = Date.parse(value);
+  if (!Number.isFinite(ts)) return "snapshot may be stale";
+  const ageMs = Date.now() - ts;
+  if (!Number.isFinite(ageMs) || ageMs < 0) return "updated just now";
+  const minutes = Math.floor(ageMs / 60000);
+  if (minutes < 1) return "updated just now";
+  if (minutes < 60) return "updated " + minutes + "m ago";
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return "updated " + hours + "h ago";
+  const days = Math.floor(hours / 24);
+  return "updated " + days + "d ago";
+}
+
+function isSwapBalanceSnapshotFresh(value) {
+  if (!value) return false;
+  const ts = Date.parse(value);
+  if (!Number.isFinite(ts)) return false;
+  const ageMs = Date.now() - ts;
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= SWAP_BALANCE_FRESH_MS;
+}
+
+function renderSwapBalanceFreshnessHint(holding=null) {
+  const hint = $("swapBalanceFreshnessHint");
+  const button = $("btnSwapRefreshBalances");
+  if (!hint) return;
+
+  const staleHolding = holding && !isSwapBalanceSnapshotFresh(holding.balance_ts);
+  if (swapBalancesStaleAfterSubmit) {
+    hint.textContent = "Balances may be stale after this swap — refresh balances.";
+    hint.style.display = "block";
+    if (button) button.style.display = "inline-block";
+    return;
+  }
+  if (staleHolding) {
+    hint.textContent = "Balances are from snapshots. Refresh before swapping.";
+    hint.style.display = "block";
+    if (button) button.style.display = "inline-block";
+    return;
+  }
+
+  hint.textContent = "";
+  hint.style.display = "none";
+  if (button) button.style.display = "none";
+}
+
+function portfolioHoldingRows() {
+  const positions = latestPortfolioReport?.positions || {};
+  return Object.entries(positions)
+    .map(([asset, position]) => {
+      const amount = Number(position?.amount);
+      const rawAsset = String(asset || "");
+      const splMint = rawAsset.toLowerCase().startsWith("spl:") ? rawAsset.slice(4) : "";
+      const label = String(position?.display || position?.symbol || rawAsset || "").replace(/^spl:/i, "").toUpperCase();
+      return {
+        asset: rawAsset,
+        mint: splMint,
+        token_input_value: splMint || rawAsset.replace(/^spl:/i, "").toUpperCase(),
+        token_value: rawAsset.replace(/^spl:/i, "").toUpperCase(),
+        label,
+        amount,
+        balance_ts: position?.balance_ts || "",
+        value: Number(position?.value)
+      };
+    })
+    .filter((row) => Number.isFinite(row.amount) && row.amount > 0)
+    .sort((a, b) => (Number.isFinite(b.value) ? b.value : 0) - (Number.isFinite(a.value) ? a.value : 0));
+}
+
+function selectedFromHolding() {
+  const query = normalizeSwapAssetKey($("swapFromToken")?.value);
+  const resolvedMint = normalizeSwapAssetKey(swapTokenResolveState.from?.mint);
+  if (!query && !resolvedMint) return null;
+
+  return portfolioHoldingRows().find((row) => {
+    const asset = normalizeSwapAssetKey(row.asset);
+    const label = normalizeSwapAssetKey(row.label);
+    const value = normalizeSwapAssetKey(row.token_value);
+    const inputValue = normalizeSwapAssetKey(row.token_input_value);
+    return asset === query || label === query || value === query || inputValue === query ||
+      (resolvedMint && (asset === resolvedMint || value === resolvedMint || inputValue === resolvedMint));
+  }) || null;
+}
+
+function renderSwapWalletStrip() {
+  const box = $("swapWalletStrip");
+  if (!box) return;
+
+  const wallet = phantomPubkey ? "Wallet: " + shortenMiddle(phantomPubkey, 6, 6) : "Wallet: not connected";
+  const account = latestPortfolioAccount ? "Account: " + latestPortfolioAccount : "Account: not loaded";
+  const held = portfolioHoldingRows().slice(0, 4).map((row) => row.label || row.token_value).filter(Boolean);
+  const assets = held.length ? "Assets: " + held.join(" / ") : "Assets: load balances";
+  box.textContent = wallet + " · " + account + " · " + assets;
+}
+
+function renderSwapFromBalance() {
+  const hint = $("swapFromBalanceHint");
+  const amountHelper = $("swapAmountHelper");
+  const half = $("btnSwapAmountHalf");
+  const max = $("btnSwapAmountMax");
+  const holding = selectedFromHolding();
+  const token = ($("swapFromToken")?.value || holding?.label || "").trim().toUpperCase();
+
+  if (holding) {
+    const label = holding.label || token || holding.token_value;
+    const available = fmtNum(holding.amount, 6);
+    const age = formatSwapSnapshotAge(holding.balance_ts);
+    const fresh = isSwapBalanceSnapshotFresh(holding.balance_ts) && !swapBalancesStaleAfterSubmit;
+    if (hint) {
+      hint.textContent = fresh
+        ? "Available: " + available + " " + label
+        : "Available snapshot: " + available + " " + label + " · " + age;
+    }
+    if (amountHelper) {
+      amountHelper.textContent = fresh
+        ? (label === "SOL"
+          ? "Keep extra SOL for network fees before approving in Phantom."
+          : "Use 50% or MAX from your loaded wallet balance.")
+        : "Refresh balances to use 50% or MAX.";
+    }
+    if (half) half.disabled = !fresh;
+    if (max) max.disabled = !fresh;
+    renderSwapBalanceFreshnessHint(holding);
+    return;
+  }
+
+  if (hint) {
+    hint.textContent = latestPortfolioReport
+      ? "Available: no loaded balance for " + (token || "this token") + "."
+      : "Available: connect wallet / refresh balances.";
+  }
+  if (amountHelper) amountHelper.textContent = "Use 50% or MAX after balances load.";
+  if (half) half.disabled = true;
+  if (max) max.disabled = true;
+  renderSwapBalanceFreshnessHint(null);
+}
+
+function renderSwapHoldingsDropdown() {
+  const box = $("swapHoldingsDropdown");
+  if (!box) return;
+
+  const rows = portfolioHoldingRows();
+  if (!rows.length) {
+    box.innerHTML = "<div class='muted'>Type or paste a token mint above.</div><div class='muted' style='margin-top:6px;'>No wallet balances loaded yet.</div>";
+    return;
+  }
+
+  box.innerHTML = `
+    <div class="muted" style="padding:4px 0 6px 0;">Type or paste a token mint above.</div>
+  ` + rows.map((row) => `
+    <button
+      type="button"
+      class="secondary"
+      style="display:block; width:100%; text-align:left; margin-top:4px; padding:6px 8px;"
+      data-swap-holding-token="${escapeHtml(row.token_value)}"
+      data-swap-holding-input="${escapeHtml(row.token_input_value)}"
+    >
+      ${escapeHtml(row.label || row.token_value)} · ${escapeHtml(fmtNum(row.amount, 6))}
+    </button>
+  `).join("");
+}
+
+function setSwapAmountFromHolding(fraction) {
+  const holding = selectedFromHolding();
+  if (!holding) {
+    const helper = $("swapAmountHelper");
+    if (helper) helper.textContent = "No loaded balance for the selected From token.";
+    return;
+  }
+  if (!isSwapBalanceSnapshotFresh(holding.balance_ts)) {
+    const helper = $("swapAmountHelper");
+    if (helper) helper.textContent = "Refresh balances to use 50% or MAX.";
+    renderSwapFromBalance();
+    return;
+  }
+
+  let amount = holding.amount * fraction;
+  $("swapAmount").value = amount > 0 ? String(Number(amount.toFixed(9))) : "";
+  clearSwapQuoteFreshness();
+  updateLiveSwapBaseline();
+  renderSwapFromBalance();
+}
+
+function openSwapHoldingsDropdown() {
+  const box = $("swapHoldingsDropdown");
+  if (!box) return;
+  renderSwapHoldingsDropdown();
+  box.style.display = "block";
+}
 
 
 
@@ -428,6 +677,52 @@ function setSwapExecutionStatus(state, text, detail = null) {
   box.style.display = "block";
 }
 
+function clearSwapQuoteFreshness() {
+  if (swapQuoteTimerId) {
+    clearInterval(swapQuoteTimerId);
+    swapQuoteTimerId = null;
+  }
+  swapQuoteExpiresAt = null;
+  const box = $("swapQuoteFreshness");
+  if (box) {
+    box.textContent = "";
+    box.style.display = "none";
+    box.className = "muted";
+  }
+}
+
+function isSwapQuoteExpired() {
+  return !!swapQuoteExpiresAt && Date.now() >= swapQuoteExpiresAt;
+}
+
+function updateSwapQuoteFreshness() {
+  const box = $("swapQuoteFreshness");
+  if (!box || !swapQuoteExpiresAt) return;
+
+  const remaining = Math.max(0, Math.ceil((swapQuoteExpiresAt - Date.now()) / 1000));
+  box.style.display = "block";
+  if (remaining > 0) {
+    box.className = "muted warn";
+    box.textContent = "Quote expires in " + remaining + "s";
+    return;
+  }
+
+  box.className = "muted err";
+  box.textContent = "Quote expired — preview again before swapping.";
+  if (swapQuoteTimerId) {
+    clearInterval(swapQuoteTimerId);
+    swapQuoteTimerId = null;
+  }
+  setSwapPreparedActionVisible(false);
+}
+
+function startSwapQuoteFreshnessTimer() {
+  clearSwapQuoteFreshness();
+  swapQuoteExpiresAt = Date.now() + SWAP_QUOTE_TTL_SECONDS * 1000;
+  updateSwapQuoteFreshness();
+  swapQuoteTimerId = setInterval(updateSwapQuoteFreshness, 1000);
+}
+
 function setSwapPreparedActionVisible(visible) {
   const box = $("swapPreparedAction");
   if (!box) return;
@@ -486,6 +781,7 @@ function renderPreparedSwapSummary(prepared) {
   }
 
   lines.push(`<div>Network: Solana mainnet</div>`);
+  lines.push(`<div style="margin-top:6px;">Phantom may require extra SOL for network fees or account setup beyond the entered amount.</div>`);
   lines.push(`<div style="margin-top:6px;">This is a real mainnet transaction. Review in Phantom before signing.</div>`);
 
   box.innerHTML = lines.join("");
@@ -558,12 +854,16 @@ function resetSwapInlineBaseline() {
   const spend = $("swapSpendValueHint");
   const ideal = $("swapIdealOutputHint");
   const delta = $("swapBaselineDeltaHint");
+  const compare = $("swapMarketCompareHint");
   const note = $("swapBaselineNote");
+  const buyEstimate = $("swapBuyEstimate");
 
   if (spend) spend.textContent = "You spend: —";
   if (ideal) ideal.textContent = "Estimated receive: click Preview Quote to compare live routes.";
-  if (delta) delta.textContent = "Difference from reference: —";
+  if (delta) delta.textContent = "Market reference: —";
+  if (compare) compare.textContent = "Best quote vs market: —";
   if (note) note.textContent = "Reference pricing is used only to compare route quality — not an executable route.";
+  if (buyEstimate) buyEstimate.textContent = "Preview quote";
 }
 
 
@@ -590,6 +890,7 @@ function renderSwapInlineBaseline(baseline, delta = null) {
   const spend = $("swapSpendValueHint");
   const ideal = $("swapIdealOutputHint");
   const deltaLine = $("swapBaselineDeltaHint");
+  const compareLine = $("swapMarketCompareHint");
   const note = $("swapBaselineNote");
 
   if (!baseline) {
@@ -603,7 +904,7 @@ function renderSwapInlineBaseline(baseline, delta = null) {
   const inputUsd =
     baseline.input_usd_value == null
       ? null
-      : "$" + fmtNum(Number(baseline.input_usd_value), 2);
+      : fmtUsdCost(Number(baseline.input_usd_value));
 
   const idealOut =
     baseline.ideal_output_amount == null
@@ -614,7 +915,7 @@ function renderSwapInlineBaseline(baseline, delta = null) {
   const outputUsd =
     baseline.output_usd_value == null
       ? null
-      : "$" + fmtNum(Number(baseline.output_usd_value), 2);
+      : fmtUsdCost(Number(baseline.output_usd_value));
 
   if (spend) {
     spend.textContent =
@@ -637,42 +938,35 @@ function renderSwapInlineBaseline(baseline, delta = null) {
         " " +
         outputToken +
         (Number.isFinite(bestUsd) ? " ≈ " + fmtUsdCost(bestUsd) : "");
+      const buyEstimate = $("swapBuyEstimate");
+      if (buyEstimate) {
+        buyEstimate.textContent = "~" + fmtNum(bestOut, 6) + " " + outputToken;
+      }
     } else {
       ideal.textContent = "Estimated receive: click Preview Quote to compare live routes.";
+      const buyEstimate = $("swapBuyEstimate");
+      if (buyEstimate) buyEstimate.textContent = "Preview quote";
     }
   }
 
   if (deltaLine) {
+    deltaLine.textContent = idealOut
+      ? "Market reference: ~" + idealOut + " " + outputToken + (outputUsd ? " ≈ " + outputUsd : "")
+      : "Market reference: —";
+  }
+
+  if (compareLine) {
     if (delta && (delta.output_diff_abs != null || delta.output_diff_pct != null)) {
-      const rawAbs = Number(delta.output_diff_abs);
-      const rawUsd = Number(delta.output_diff_usd);
       const rawPct = Number(delta.output_diff_pct);
-
-      const absTxt = Number.isFinite(rawAbs) ? fmtNum(Math.abs(rawAbs), 6) : "—";
-      const usdTxt = Number.isFinite(rawUsd)
-        ? " ≈ " + fmtUsdCost(Math.abs(rawUsd))
-        : "";
-      const directionText = Number.isFinite(rawAbs) && rawAbs >= 0 ? "more" : "less";
-      const pctTxt = Number.isFinite(rawPct) ? " (" + fmtNum(Math.abs(rawPct), 4) + "%)" : "";
-
-      deltaLine.textContent =
-        "Market reference: ~" +
-        (idealOut || "—") +
-        " " +
-        outputToken +
-        (outputUsd ? " ≈ " + outputUsd : "") +
-        ". Difference from reference: ~" +
-        absTxt +
-        " " +
-        outputToken +
-        " " +
-        directionText +
-        usdTxt +
-        pctTxt;
+      if (Number.isFinite(rawPct)) {
+        const direction = rawPct >= 0 ? "above" : "below";
+        compareLine.textContent =
+          "Best quote vs market: ~" + fmtNum(Math.abs(rawPct), 4) + "% " + direction + " reference";
+      } else {
+        compareLine.textContent = "Best quote vs market: unavailable";
+      }
     } else {
-      deltaLine.textContent = idealOut
-        ? "Market reference: ~" + idealOut + " " + outputToken + (outputUsd ? " ≈ " + outputUsd : "")
-        : "Market reference: —";
+      compareLine.textContent = "Best quote vs market: preview live routes to compare.";
     }
   }
 
@@ -705,6 +999,7 @@ function renderSwapInlineBaseline(baseline, delta = null) {
 
 function resetSwapQuoteDisplay() {
   latestSwapQuoteResponse = null;
+  clearSwapQuoteFreshness();
   $("swapRecommendation").textContent = "";
   $("swapCompareSummary").textContent = "";
   $("swapRecommendation").style.display = "none";
@@ -1001,7 +1296,8 @@ function swapOptionCardTitle(opt, opts = {}) {
 
   if (kind === "recommended" && opt?.is_comparison_only === true) return "Best quote";
   if (kind === "recommended") return "Recommended route";
-  if (kind === "direct") return "Direct / simple route";
+  if (kind === "direct" && opt?.is_comparison_only === true) return "Simple route check";
+  if (kind === "direct") return "Direct executable route";
 
   return opt?.label || opt?.execution_surface_label || "Route";
 }
@@ -1458,18 +1754,18 @@ function renderSwapOptionCard(opt, opts = {}) {
   isRecommendedCard
     ? `
       <div class="muted" style="margin-top:4px;">
-        <strong>Estimated total swap cost: ${escapeHtml(estimatedTotalSwapCostUsdText)}</strong>
+        <strong>Estimated swap cost vs market: ${escapeHtml(estimatedTotalSwapCostUsdText)}</strong>
       </div>
       <details style="margin-top:6px;">
         <summary class="muted" style="cursor:pointer;">Show cost breakdown</summary>
         <div class="muted" style="margin-top:6px;">
-          Execution cost: ${escapeHtml(executionCostUsdText)}
+          Market gap estimate: ${escapeHtml(executionCostUsdText)}
         </div>
         <div class="muted" style="margin-top:2px;">
           Network cost: ${escapeHtml(networkCostUsdText)}
         </div>
         <div class="muted" style="margin-top:2px;">
-          Route fees: ${escapeHtml(routeFeesUsdText)}
+          Route fee estimate: ${escapeHtml(routeFeesUsdText)}
         </div>
       </details>
     `
@@ -1478,7 +1774,7 @@ function renderSwapOptionCard(opt, opts = {}) {
         compactDirect && Number.isFinite(executionCostUsd)
           ? `
             <div class="muted" style="margin-top:4px;">
-              Execution cost: ${escapeHtml(executionCostUsdText)}
+              Quote vs best route: ${escapeHtml(executionCostUsdText)}
             </div>
           `
           : `
@@ -1492,7 +1788,7 @@ function renderSwapOptionCard(opt, opts = {}) {
           ? ""
           : `
             <div class="muted" style="margin-top:2px;">
-              Explicit route fees: ${escapeHtml(explicitFeesText)}
+              Route fee estimate: ${escapeHtml(explicitFeesText)}
             </div>
             <div class="muted" style="margin-top:2px;">
               Estimated network fee: ${escapeHtml(networkFeeText)}
@@ -1571,7 +1867,7 @@ function renderCompactAlternativeCard(opt, idx = 0) {
         Receive: ${escapeHtml(estOut)} ${escapeHtml(outToken)}${escapeHtml(receiveUsdText)}
       </div>
       <div class="muted" style="margin-top:2px;">
-        Execution cost: ${escapeHtml(executionCostText)}
+        Quote vs best route: ${escapeHtml(executionCostText)}
       </div>
       ${renderRouteShapeLine(opt, true)}
     </div>
@@ -1647,6 +1943,11 @@ function swapPrepareErrorMessage(code, fallbackMessage = "") {
 async function prepareSwapRoute(routeRequest) {
   latestPreparedSwap = null;
   setSwapPreparedActionVisible(false);
+
+  if (isSwapQuoteExpired()) {
+    setSwapExecutionStatus("failed", "Quote expired — preview again before swapping.");
+    return;
+  }
 
   const activeWalletPubkey =
     phantomProvider?.publicKey?.toString?.() || phantomPubkey || "";
@@ -1858,13 +2159,17 @@ function renderSwapSubmittedSuccess(signature) {
     expected ? `<div>Expected received: ${escapeHtml(expected)}</div>` : "",
     `<div>Network: Solana mainnet</div>`,
     `<div><a href="${escapeHtml(explorer)}" target="_blank">Open in Solana Explorer</a></div>`,
-    `<div style="margin-top:4px;">${escapeHtml(tokenText)}</div>`
+    `<div style="margin-top:4px;">${escapeHtml(tokenText)}</div>`,
+    `<div class="muted" style="margin-top:4px;">Balances may be stale after this swap — refresh balances.</div>`
   ].filter(Boolean);
 
   swapExecutionState = "submitted";
+  swapBalancesStaleAfterSubmit = true;
   box.className = "muted ok";
   box.innerHTML = lines.join("");
   box.style.display = "block";
+  renderSwapBalanceFreshnessHint(selectedFromHolding());
+  renderSwapFromBalance();
 }
 
 async function signAndSubmitPreparedSwap() {
@@ -2011,6 +2316,7 @@ async function previewSwap() {
   latestSwapQuoteResponse = null;
   latestPreparedSwap = null;
   setSwapPreparedActionVisible(false);
+  clearSwapQuoteFreshness();
   setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
 
   const fromToken = $("swapFromToken").value;
@@ -2081,6 +2387,7 @@ async function previewSwap() {
 
   const quote = res.data || {};
   latestSwapQuoteResponse = quote;
+  startSwapQuoteFreshnessTimer();
   renderSwapInlineBaseline(
     quote.inline_baseline,
     quote.inline_baseline_vs_recommended
@@ -2219,7 +2526,9 @@ async function previewSwap() {
         $("swapDirectBox").innerHTML =
           "<div class='muted'>Direct route is also the current recommendation.</div>";
       } else {
-        if (directMatchesAlternative) {
+        if (directRoute?.is_comparison_only === true && !isExecutableRouteOption(directRoute)) {
+          directNote = "Quote-only comparison for a simple route. No swap action is available for this provider yet.";
+        } else if (directMatchesAlternative) {
           directNote = "This temporary direct candidate also appears in the alternatives.";
         } else if (outputsAreComparable(directRoute, displayRec)) {
           directNote = "Temporary direct candidate with comparable output.";
@@ -2919,6 +3228,7 @@ function qs(params) {
     if (!token) {
       box.textContent = message || "";
       swapTokenResolveState[side] = null;
+      if (side === "from") renderSwapFromBalance();
       if (holderConcentrationMint) resetHolderConcentration();
       return;
     }
@@ -2932,11 +3242,12 @@ function qs(params) {
     } else if (external) {
       box.textContent = `${symbol} · External token · ${mint} · unverified`;
     } else {
-      box.textContent = `${symbol} · Saved token`;
+      box.textContent = "";
     }
 
     const previousExternalMint = selectedExternalTokenForHolderConcentration()?.mint || null;
     swapTokenResolveState[side] = token;
+    if (side === "from") renderSwapFromBalance();
     const nextExternalMint = selectedExternalTokenForHolderConcentration()?.mint || null;
     if (holderConcentrationMint && previousExternalMint !== nextExternalMint) {
       resetHolderConcentration();
@@ -3105,6 +3416,7 @@ function setWalletUi() {
     pill.textContent = "wallet: Phantom not detected";
     pill.className = "pill warn";
     addr.textContent = "address: —";
+    renderSwapWalletStrip();
     return;
   }
 
@@ -3112,12 +3424,14 @@ function setWalletUi() {
     pill.textContent = "wallet: not connected";
     pill.className = "pill warn";
     addr.textContent = "address: —";
+    renderSwapWalletStrip();
     return;
   }
 
   pill.textContent = "wallet: connected";
   pill.className = "pill ok";
   addr.textContent = "address: " + shortenMiddle(phantomPubkey, 8, 8);
+  renderSwapWalletStrip();
 }
 
 
@@ -3257,13 +3571,20 @@ async function signMessageWithPhantom() {
     $("raw").textContent = JSON.stringify(resp, null, 2);
 
     if (!report) {
+      latestPortfolioReport = null;
+      latestPortfolioAccount = "";
       setPill("pillBalances", "balances: ?", "warn");
       setPill("pillPrices", "prices: ?", "warn");
       setPill("pillStale", "stale: ?", "warn");
       $("totalValue").textContent = "—";
+      renderSwapWalletStrip();
+      renderSwapFromBalance();
+      renderSwapHoldingsDropdown();
       return;
     }
 
+    latestPortfolioReport = report;
+    latestPortfolioAccount = resp?.account || report.account || "";
     const stale = report.stale_prices || [];
     setPill("pillBalances", "balances: " + (report.balances_updated || "unknown"), stale.length ? "warn" : "ok");
     setPill("pillPrices", "prices: " + (report.prices_updated || "unknown"), stale.length ? "warn" : "ok");
@@ -3293,6 +3614,9 @@ async function signMessageWithPhantom() {
       `;
       tbody.appendChild(tr);
     }
+    renderSwapWalletStrip();
+    renderSwapFromBalance();
+    renderSwapHoldingsDropdown();
   }
 
 
@@ -3312,7 +3636,8 @@ function fmtUsdCost(x) {
   if (n === 0) return "$0.00";
   const sign = n < 0 ? "-" : "";
   const abs = Math.abs(n);
-  if (abs < 0.01) return sign + "$" + abs.toFixed(4);
+  if (abs < 0.01) return sign + "$" + abs.toFixed(6);
+  if (abs < 1) return sign + "$" + abs.toFixed(4);
   return sign + "$" + abs.toFixed(2);
 }
 
@@ -3384,6 +3709,7 @@ function fmtUsdCost(x) {
       return;
     }
     showStatus("ok", "Balances refreshed", r.data);
+    swapBalancesStaleAfterSubmit = false;
     await loadReportAndHistory();
   }
 
@@ -3415,6 +3741,7 @@ function fmtUsdCost(x) {
 
   $("btnLoad").addEventListener("click", loadReportAndHistory);
   $("btnRefreshBalances").addEventListener("click", refreshBalances);
+  $("btnSwapRefreshBalances").addEventListener("click", refreshBalances);
   $("btnRefreshPrices").addEventListener("click", refreshPrices);
 
   $("btnConnectPhantom").addEventListener("click", () => connectPhantom(false));
@@ -3427,12 +3754,34 @@ function fmtUsdCost(x) {
   $("btnSignPreparedSwap").addEventListener("click", signAndSubmitPreparedSwap);
   $("swapSignAcknowledgement").addEventListener("change", updateSwapSignButtonState);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
+  $("btnSwapAmountHalf").addEventListener("click", () => setSwapAmountFromHolding(0.5));
+  $("btnSwapAmountMax").addEventListener("click", () => setSwapAmountFromHolding(1));
+  $("swapFromTokenSelector").addEventListener("click", () => openSwapHoldingsDropdown());
+  $("swapHoldingsDropdown").addEventListener("click", (event) => {
+    const button = event.target?.closest?.("[data-swap-holding-token]");
+    if (!button) return;
+    $("swapFromToken").value = button.dataset.swapHoldingInput || button.dataset.swapHoldingToken || "";
+    $("swapHoldingsDropdown").style.display = "none";
+    resolveSwapTokenInput("from");
+    updateLiveSwapBaseline();
+    renderSwapFromBalance();
+  });
   $("swapCard").addEventListener("click", handleSwapExecuteClick);
-  $("swapAmount").addEventListener("input", updateLiveSwapBaseline);
-  $("swapFromToken").addEventListener("input", () => scheduleSwapTokenResolve("from"));
+  $("swapAmount").addEventListener("input", () => {
+    clearSwapQuoteFreshness();
+    updateLiveSwapBaseline();
+  });
+  $("swapFromToken").addEventListener("focus", () => {
+    openSwapHoldingsDropdown();
+  });
+  $("swapFromToken").addEventListener("input", () => {
+    renderSwapFromBalance();
+    scheduleSwapTokenResolve("from");
+  });
   $("swapToToken").addEventListener("input", () => scheduleSwapTokenResolve("to"));
   $("swapFromToken").addEventListener("change", () => {
     resolveSwapTokenInput("from");
+    renderSwapFromBalance();
     updateLiveSwapBaseline();
   });
   $("swapToToken").addEventListener("change", () => {

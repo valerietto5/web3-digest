@@ -14,6 +14,7 @@ from api.main import (
     METEORA_DLMM_BONK_MINT,
     TOKEN_META,
     SWAP_EXECUTION_PROVIDER_CAPABILITIES,
+    _apply_external_token_reference_prices,
     _build_promotion_audit_summary,
     _build_meteora_dlmm_quote_payload,
     _build_orca_whirlpool_quote_payload,
@@ -1669,6 +1670,26 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(prices["BONK"]["usd"], 0.000006)
         self.assertEqual(prices["BONK"]["pricing_source"], "dexscreener_solana")
 
+    def test_external_token_reference_prices_prefer_resolver_dexscreener_metadata(self):
+        prices = {"FIGURE": {"usd": 0.00002, "pricing_source": "coingecko_simple_price"}}
+        out = _apply_external_token_reference_prices(
+            prices,
+            {
+                "FIGURE": {
+                    "external": True,
+                    "mint": "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump",
+                    "price_usd": 0.000017,
+                    "resolver_source": "dexscreener",
+                    "pair_address": "pair-address",
+                    "liquidity_usd": 100000,
+                }
+            },
+        )
+
+        self.assertEqual(out["FIGURE"]["usd"], 0.000017)
+        self.assertEqual(out["FIGURE"]["pricing_source"], "dexscreener_solana")
+        self.assertEqual(out["FIGURE"]["pricing_source_detail"]["external_token_metadata"], True)
+
     def test_reference_baseline_delta_includes_token_and_usd_difference(self):
         baseline, delta = _build_reference_baseline_from_resolved_prices(
             from_token="SOL",
@@ -1698,14 +1719,17 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("Best executable output vs DexScreener reference", html)
         self.assertIn("Best live quote", html)
         self.assertIn("Market reference", html)
-        self.assertIn("Difference from reference", html)
+        self.assertIn("Best quote vs market", html)
+        self.assertNotIn(". Difference from reference:", html)
         self.assertNotIn("CoinGecko reference", html)
         self.assertNotIn("Jupiter reference", html)
         self.assertIn("Reference source: Jupiter Price V3 market price", html)
         self.assertIn("Reference source: DexScreener market price", html)
         self.assertIn("Used only to compare route quality", html)
-        self.assertIn("fmtUsdCost(Math.abs(rawUsd))", html)
+        self.assertIn("fmtUsdCost(Number(baseline.input_usd_value))", html)
         self.assertIn("fmtUsdCost(tradeCostUsd)", html)
+        self.assertIn("if (abs < 0.01) return sign + \"$\" + abs.toFixed(6);", html)
+        self.assertIn("if (abs < 1) return sign + \"$\" + abs.toFixed(4);", html)
         self.assertIn("estimated_output_usd", html)
         self.assertIn('const sign = n < 0 ? "-" : "";', html)
         self.assertIn('return sign + "$" + abs.toFixed(2);', html)
@@ -1715,14 +1739,20 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn('return "Best quote";', html)
         self.assertIn('if (kind === "recommended") return "Recommended route";', html)
-        self.assertIn('if (kind === "direct") return "Direct / simple route";', html)
+        self.assertIn('if (kind === "direct" && opt?.is_comparison_only === true) return "Simple route check";', html)
+        self.assertIn('if (kind === "direct") return "Direct executable route";', html)
         self.assertIn('font-weight:600;">${escapeHtml(routeLabel)}</div>', html)
         self.assertIn('title: "Best executable route"', html)
         self.assertNotIn("Recommended executable", html)
         self.assertNotIn("Recommended route</h4>", html)
         self.assertNotIn("Direct route check</h4>", html)
         self.assertIn("Direct route is also the current recommendation.", html)
-        self.assertIn("Execution cost: ${escapeHtml(executionCostUsdText)}", html)
+        self.assertIn("Estimated swap cost vs market", html)
+        self.assertIn("Market gap estimate", html)
+        self.assertIn("Quote vs best route", html)
+        self.assertIn("Route fee estimate", html)
+        self.assertNotIn("Execution cost: ${escapeHtml(executionCostUsdText)}", html)
+        self.assertNotIn("Execution cost: ${escapeHtml(executionCostText)}", html)
         self.assertIn("Route shape:", html)
         self.assertIn("Alternative ${idx + 1} — ${escapeHtml(routeLabel)}", html)
 
@@ -1738,12 +1768,25 @@ class TestSanity(unittest.TestCase):
         self.assertIn("live route options checked: ", html)
         self.assertIn("renderSwapCoverageDepth(quote);", html)
 
+    def test_swap_ui_includes_quote_freshness_timer_and_stale_prepare_block(self):
+        html = build_ui_html()
+
+        self.assertIn('id="swapQuoteFreshness"', html)
+        self.assertIn("SWAP_QUOTE_TTL_SECONDS = 20", html)
+        self.assertIn("Quote expires in ", html)
+        self.assertIn("Quote expired — preview again before swapping.", html)
+        self.assertIn("function startSwapQuoteFreshnessTimer()", html)
+        self.assertIn("function clearSwapQuoteFreshness()", html)
+        self.assertIn("if (isSwapQuoteExpired())", html)
+        self.assertIn("startSwapQuoteFreshnessTimer();", html)
+        self.assertIn("clearSwapQuoteFreshness();", html)
+
     def test_swap_ui_supports_external_token_resolve_preview(self):
         html = build_ui_html()
 
         self.assertIn('id="swapFromToken" list="swapTokenChoices"', html)
         self.assertIn('id="swapToToken" list="swapTokenChoices"', html)
-        self.assertIn("Saved token or Solana mint.", html)
+        self.assertNotIn("Saved token or Solana mint.", html)
         self.assertNotIn("Choose a saved token or paste a Solana mint.", html)
         self.assertIn('class="swap-input-grid"', html)
         self.assertIn(".swap-input-grid { display: grid;", html)
@@ -1753,7 +1796,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("function resolveSwapTokenInput(side)", html)
         self.assertIn('fetchMaybeJson("/tokens/resolve?" + qs({', html)
         self.assertIn("allow_external: true", html)
-        self.assertIn("${symbol} · Saved token", html)
+        self.assertNotIn("${symbol} · Saved token", html)
         self.assertNotIn("Registry · ${decimals} decimals", html)
         self.assertNotIn("Known token:", html)
         self.assertIn("${symbol} · External token · ${mint} · unverified", html)
@@ -1763,6 +1806,83 @@ class TestSanity(unittest.TestCase):
         self.assertIn("unverified", html)
         self.assertIn("Could not resolve token metadata.", html)
         self.assertIn("Token metadata found, but decimals are unresolved. Quote preview is not safe yet.", html)
+
+    def test_swap_ui_makes_swap_terminal_primary_and_collapses_old_tools(self):
+        html = build_ui_html()
+
+        self.assertIn("<title>Web3 Digest — Swap Terminal</title>", html)
+        self.assertIn("Web3 Digest — Swap Terminal", html)
+        self.assertIn('id="advancedDeveloperTools"', html)
+        self.assertIn("Advanced / Developer tools", html)
+        self.assertIn('id="advancedPortfolioTools"', html)
+        self.assertIn("Advanced / Portfolio and debug tools", html)
+        self.assertLess(html.index('id="swapCard"'), html.index('id="summaryCard"'))
+        self.assertLess(html.index("Advanced / Developer tools"), html.index('id="swapCard"'))
+
+    def test_swap_ui_includes_wallet_aware_swap_input_controls(self):
+        html = build_ui_html()
+
+        self.assertIn("You sell", html)
+        self.assertIn("You buy", html)
+        sell_start = html.index('id="swapSellCard"')
+        sell_end = html.index('id="swapBuyCard"', sell_start)
+        sell_block = html[sell_start:sell_end]
+        self.assertIn('id="swapFromToken"', sell_block)
+        self.assertIn('id="swapAmount"', sell_block)
+        self.assertIn('id="swapFromBalanceHint"', sell_block)
+        self.assertIn('id="btnSwapAmountHalf"', sell_block)
+        self.assertIn('id="btnSwapAmountMax"', sell_block)
+        self.assertIn('id="swapFromTokenSelector"', sell_block)
+        self.assertIn('class="swap-token-selector-arrow"', sell_block)
+        self.assertIn(".swap-token-selector { display: flex;", html)
+        self.assertIn(".swap-token-selector input { border: 0; min-width: 0; flex: 1 1 auto;", html)
+        self.assertNotIn('id="btnSwapHoldings"', html)
+        self.assertNotIn(">Holdings</button>", html)
+        self.assertIn('id="swapWalletStrip"', html)
+        self.assertIn("Wallet-aware swap input: connect Phantom and load balances.", html)
+        self.assertIn('id="swapFromBalanceHint"', html)
+        self.assertIn("Available: connect wallet / refresh balances.", html)
+        self.assertIn('id="btnSwapAmountHalf"', html)
+        self.assertIn(">50%</button>", html)
+        self.assertIn('id="btnSwapAmountMax"', html)
+        self.assertIn(">MAX</button>", html)
+        self.assertIn('id="swapHoldingsDropdown"', html)
+        self.assertIn("function selectedFromHolding()", html)
+        self.assertIn("function setSwapAmountFromHolding(fraction)", html)
+        self.assertIn("function openSwapHoldingsDropdown()", html)
+        self.assertIn('$("swapFromTokenSelector").addEventListener("click", () => openSwapHoldingsDropdown());', html)
+        self.assertIn("token_input_value", html)
+        self.assertIn("rawAsset.toLowerCase().startsWith(\"spl:\")", html)
+        self.assertIn('data-swap-holding-input="${escapeHtml(row.token_input_value)}"', html)
+        self.assertIn('$("swapHoldingsDropdown").style.display = "none";', html)
+        self.assertIn("Type or paste a token mint above.", html)
+        self.assertIn("No wallet balances loaded yet.", html)
+        self.assertIn("Keep extra SOL for network fees before approving in Phantom.", html)
+        self.assertIn("function formatSwapSnapshotAge(value)", html)
+        self.assertIn("const SWAP_BALANCE_FRESH_MS = 5 * 60 * 1000;", html)
+        self.assertIn("function isSwapBalanceSnapshotFresh(value)", html)
+        self.assertIn("Available snapshot: ", html)
+        self.assertIn("Refresh balances to use 50% or MAX.", html)
+        self.assertIn("Balances are from snapshots. Refresh before swapping.", html)
+        self.assertIn('id="btnSwapRefreshBalances"', html)
+        self.assertIn('$("btnSwapRefreshBalances").addEventListener("click", refreshBalances);', html)
+        self.assertIn("position?.balance_ts", html)
+        self.assertIn('" · " + age', html)
+
+    def test_swap_ui_amount_shortcuts_do_not_execute_swaps(self):
+        html = build_ui_html()
+        start = html.index("function setSwapAmountFromHolding(fraction)")
+        end = html.index("async function updateLiveSwapBaseline", start)
+        amount_block = html[start:end]
+
+        self.assertIn("holding.amount * fraction", amount_block)
+        self.assertNotIn("holding.amount - 0.005", amount_block)
+        self.assertIn("if (!isSwapBalanceSnapshotFresh(holding.balance_ts))", amount_block)
+        self.assertIn("Refresh balances to use 50% or MAX.", amount_block)
+        self.assertIn("updateLiveSwapBaseline();", amount_block)
+        self.assertNotIn("prepareSwapRoute", amount_block)
+        self.assertNotIn("signAndSubmitPreparedSwap", amount_block)
+        self.assertNotIn("/swap/execute/submit", amount_block)
 
     def test_swap_ui_renders_external_token_quote_notice(self):
         html = build_ui_html()
@@ -2039,6 +2159,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Provider: ${escapeHtml(providerLabel)}", html)
         self.assertIn("Open in Solana Explorer", html)
         self.assertIn("Token received — check your Phantom wallet.", html)
+        self.assertIn("Balances may be stale after this swap — refresh balances.", html)
         self.assertIn("Swap failed.", html)
         self.assertIn("Swap was rejected in Phantom.", html)
         self.assertIn("Quote expired. Preview again.", html)
@@ -2173,6 +2294,8 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Minimum receive:", html)
         self.assertIn("Slippage:", html)
         self.assertIn("Network: Solana mainnet", html)
+        self.assertIn("Phantom may require extra SOL for network fees or account setup beyond the entered amount.", html)
+        self.assertNotIn("Keep extra SOL for network fees before approving in Phantom.</div>`", html)
         self.assertIn("This is a real mainnet transaction. Review in Phantom before signing.", html)
 
         start = html.index("function renderPreparedSwapSummary(prepared)")
