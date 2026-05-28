@@ -16,6 +16,7 @@ import sys
 import subprocess
 import time
 import os
+import re
 import urllib.parse
 import urllib.request
 from fastapi import Request
@@ -1737,13 +1738,33 @@ def _fetch_fresh_orca_whirlpool_execution_quote(
     )
 
     try:
-        return {
-            "ok": True,
-            "quote": _fetch_orca_whirlpool_quote(payload),
-            "payload": payload,
-        }
+        quote = _fetch_orca_whirlpool_quote(payload)
     except HTTPException as e:
         return _orca_quote_error_response(e)
+
+    if not isinstance(quote, dict) or quote.get("ok") is not True:
+        error = quote.get("error") if isinstance(quote, dict) else None
+        safe_details = _safe_orca_provider_error_details(error)
+        safe_details["quote_response_keys"] = sorted([
+            str(key) for key in quote.keys()
+            if isinstance(key, str) and _safe_orca_provider_scalar(key)
+        ])[:24] if isinstance(quote, dict) else []
+        if isinstance(error, dict):
+            safe_details["quote_error_keys"] = sorted([
+                str(key) for key in error.keys()
+                if isinstance(key, str) and _safe_orca_provider_scalar(key)
+            ])[:24]
+        return _orca_execution_error(
+            "SWAP_EXECUTION_ORCA_PREPARE_FAILED",
+            "Orca refreshed quote was not successful.",
+            **safe_details,
+        )
+
+    return {
+        "ok": True,
+        "quote": quote,
+        "payload": payload,
+    }
 
 
 def _extract_orca_whirlpool_transaction_base64(payload: dict) -> dict:
@@ -2704,6 +2725,486 @@ def _fetch_solana_send_transaction(
         "ok": True,
         "signature": signature.strip(),
         "status": "submitted",
+    }
+
+
+MAX_SWAP_PREFLIGHT_TRANSACTION_BASE64_CHARS = 200_000
+SPL_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS_FALLBACK = 2_039_280
+SPL_TOKEN_ACCOUNT_RENT_EXEMPT_SIZE = 165
+SOLANA_SYSTEM_PROGRAM_ID = "11111111111111111111111111111111"
+SOLANA_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+SOLANA_WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
+_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def _base58_encode_bytes(raw: bytes) -> str:
+    if not raw:
+        return ""
+    value = int.from_bytes(raw, "big")
+    encoded = ""
+    while value:
+        value, remainder = divmod(value, 58)
+        encoded = _BASE58_ALPHABET[remainder] + encoded
+    leading_zeroes = len(raw) - len(raw.lstrip(b"\x00"))
+    return ("1" * leading_zeroes) + encoded
+
+
+def _read_solana_shortvec(raw: bytes, offset: int) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    for _ in range(3):
+        if offset >= len(raw):
+            raise ValueError("shortvec out of range")
+        byte = raw[offset]
+        offset += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, offset
+        shift += 7
+    raise ValueError("shortvec too long")
+
+
+def _skip_solana_shortvec_bytes(raw: bytes, offset: int) -> int:
+    length, offset = _read_solana_shortvec(raw, offset)
+    end = offset + length
+    if end > len(raw):
+        raise ValueError("shortvec bytes out of range")
+    return end
+
+
+def _read_solana_instruction_indexes(raw: bytes, offset: int) -> tuple[list[int], int]:
+    length, offset = _read_solana_shortvec(raw, offset)
+    end = offset + length
+    if end > len(raw):
+        raise ValueError("instruction accounts out of range")
+    return list(raw[offset:end]), end
+
+
+def _extract_pubkeys_from_solana_logs(*values) -> list[str]:
+    text = " ".join(str(value or "") for value in values)
+    candidates = re.findall(r"\b[1-9A-HJ-NP-Za-km-z]{32,44}\b", text)
+    safe = []
+    for candidate in candidates:
+        if candidate in safe:
+            continue
+        safe.append(candidate)
+        if len(safe) >= 4:
+            break
+    return safe
+
+
+def _fetch_solana_rent_exempt_lamports(rpc_url: str, account_size: int = SPL_TOKEN_ACCOUNT_RENT_EXEMPT_SIZE) -> dict:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getMinimumBalanceForRentExemption",
+        "params": [account_size],
+    }
+    try:
+        response = requests.post(
+            rpc_url,
+            json=payload,
+            timeout=15,
+            headers={"accept": "application/json", "content-type": "application/json"},
+        )
+        if not response.ok:
+            raise ValueError("rent RPC returned non-OK status")
+        data = response.json()
+    except Exception:
+        return {
+            "ok": False,
+            "lamports": SPL_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS_FALLBACK,
+            "source": "fallback_spl_token_account_rent_exempt_lamports",
+        }
+
+    lamports = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(lamports, int) or lamports <= 0:
+        return {
+            "ok": False,
+            "lamports": SPL_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS_FALLBACK,
+            "source": "fallback_spl_token_account_rent_exempt_lamports",
+        }
+
+    return {
+        "ok": True,
+        "lamports": lamports,
+        "source": "rpc_getMinimumBalanceForRentExemption_165",
+    }
+
+
+def _build_swap_setup_cost_estimate(transaction_diagnostics: dict | None, rpc_url: str) -> dict | None:
+    if not isinstance(transaction_diagnostics, dict):
+        return None
+    ata_details = transaction_diagnostics.get("ata_create_details")
+    if not isinstance(ata_details, list) or not ata_details:
+        return None
+
+    rent = _fetch_solana_rent_exempt_lamports(rpc_url, SPL_TOKEN_ACCOUNT_RENT_EXEMPT_SIZE)
+    rent_lamports = int(rent.get("lamports") or SPL_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS_FALLBACK)
+    source = rent.get("source") or "fallback_spl_token_account_rent_exempt_lamports"
+    components = []
+    for detail in ata_details:
+        if not isinstance(detail, dict):
+            continue
+        components.append({
+            "kind": "ata_create",
+            "instruction_index": detail.get("instruction_index"),
+            "mint": detail.get("mint"),
+            "ata_account": detail.get("ata_account"),
+            "owner": detail.get("owner"),
+            "payer": detail.get("payer"),
+            "lamports": rent_lamports,
+            "source": source,
+        })
+
+    total_lamports = sum(int(item.get("lamports") or 0) for item in components)
+    return {
+        "setup_cost_estimate_source": source,
+        "setup_cost_components": components,
+        "setup_cost_estimate_lamports": total_lamports,
+        "setup_cost_estimate_sol": total_lamports / 1_000_000_000,
+    }
+
+
+def _decode_solana_transaction_diagnostics(transaction_base64: str, *, expected_user_public_key: str = "") -> dict:
+    try:
+        raw = base64.b64decode((transaction_base64 or "").strip(), validate=True)
+    except (binascii.Error, ValueError):
+        return {"decode_ok": False}
+
+    try:
+        signature_count, offset = _read_solana_shortvec(raw, 0)
+        offset += signature_count * 64
+        if offset >= len(raw):
+            raise ValueError("missing message")
+
+        first_message_byte = raw[offset]
+        version = "legacy"
+        if first_message_byte & 0x80:
+            version = f"v{first_message_byte & 0x7F}"
+            offset += 1
+
+        if offset + 3 > len(raw):
+            raise ValueError("missing header")
+        offset += 3
+
+        account_count, offset = _read_solana_shortvec(raw, offset)
+        account_keys = []
+        for _ in range(account_count):
+            end = offset + 32
+            if end > len(raw):
+                raise ValueError("account key out of range")
+            account_keys.append(_base58_encode_bytes(raw[offset:end]))
+            offset = end
+
+        if offset + 32 > len(raw):
+            raise ValueError("missing recent blockhash")
+        offset += 32
+
+        instruction_count, offset = _read_solana_shortvec(raw, offset)
+        program_ids = []
+        ata_create_details = []
+        system_transfer_details = []
+        token_sync_native_details = []
+        token_close_account_details = []
+        for instruction_index in range(instruction_count):
+            if offset >= len(raw):
+                raise ValueError("instruction program out of range")
+            program_index = raw[offset]
+            offset += 1
+            account_indexes, offset = _read_solana_instruction_indexes(raw, offset)
+            instruction_data_length, offset = _read_solana_shortvec(raw, offset)
+            instruction_data_end = offset + instruction_data_length
+            if instruction_data_end > len(raw):
+                raise ValueError("instruction data out of range")
+            instruction_data = raw[offset:instruction_data_end]
+            offset = instruction_data_end
+            program_id = account_keys[program_index] if program_index < len(account_keys) else f"loaded_address_index:{program_index}"
+            program_ids.append(program_id)
+            account_pubkeys = [
+                account_keys[index] if index < len(account_keys) else f"loaded_address_index:{index}"
+                for index in account_indexes
+            ]
+            if program_id == SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID:
+                ata_create_details.append({
+                    "instruction_index": instruction_index,
+                    "program_id": program_id,
+                    "account_indexes": account_indexes,
+                    "account_pubkeys": account_pubkeys,
+                    "payer": account_pubkeys[0] if len(account_pubkeys) > 0 else None,
+                    "ata_account": account_pubkeys[1] if len(account_pubkeys) > 1 else None,
+                    "owner": account_pubkeys[2] if len(account_pubkeys) > 2 else None,
+                    "mint": account_pubkeys[3] if len(account_pubkeys) > 3 else None,
+                })
+            if program_id == SOLANA_SYSTEM_PROGRAM_ID and len(instruction_data) >= 12:
+                instruction_type = int.from_bytes(instruction_data[:4], "little")
+                if instruction_type == 2:
+                    system_transfer_details.append({
+                        "instruction_index": instruction_index,
+                        "program_id": program_id,
+                        "source": account_pubkeys[0] if len(account_pubkeys) > 0 else None,
+                        "destination": account_pubkeys[1] if len(account_pubkeys) > 1 else None,
+                        "lamports": int.from_bytes(instruction_data[4:12], "little"),
+                    })
+            if program_id == SOLANA_TOKEN_PROGRAM_ID and instruction_data:
+                instruction_type = instruction_data[0]
+                if instruction_type == 17:
+                    token_sync_native_details.append({
+                        "instruction_index": instruction_index,
+                        "program_id": program_id,
+                        "account": account_pubkeys[0] if account_pubkeys else None,
+                    })
+                elif instruction_type == 9:
+                    token_close_account_details.append({
+                        "instruction_index": instruction_index,
+                        "program_id": program_id,
+                        "account": account_pubkeys[0] if len(account_pubkeys) > 0 else None,
+                        "destination": account_pubkeys[1] if len(account_pubkeys) > 1 else None,
+                        "owner": account_pubkeys[2] if len(account_pubkeys) > 2 else None,
+                    })
+
+        unique_program_ids = []
+        for program_id in program_ids:
+            if program_id not in unique_program_ids:
+                unique_program_ids.append(program_id)
+
+        expected_user = (expected_user_public_key or "").strip()
+        fee_payer = account_keys[0] if account_keys else None
+        wsol_ata_account = None
+        for detail in ata_create_details:
+            if detail.get("mint") == SOLANA_WRAPPED_SOL_MINT:
+                wsol_ata_account = detail.get("ata_account")
+                break
+        system_transfers_to_wsol = [
+            detail for detail in system_transfer_details
+            if wsol_ata_account and detail.get("destination") == wsol_ata_account
+        ]
+        sync_native_for_wsol = [
+            detail for detail in token_sync_native_details
+            if wsol_ata_account and detail.get("account") == wsol_ata_account
+        ]
+        uses_wrapped_sol_mint = SOLANA_WRAPPED_SOL_MINT in account_keys
+        native_sol_wrap_complete = None
+        if uses_wrapped_sol_mint:
+            native_sol_wrap_complete = bool(system_transfers_to_wsol and sync_native_for_wsol)
+        unresolved_loaded_addresses = [
+            detail for detail in ata_create_details
+            if any(str(value).startswith("loaded_address_index:") for value in detail.get("account_pubkeys", []))
+        ]
+        instruction_details = [
+            *({"kind": "system_transfer", **detail} for detail in system_transfer_details),
+            *({"kind": "token_sync_native", **detail} for detail in token_sync_native_details),
+            *({"kind": "token_close_account", **detail} for detail in token_close_account_details),
+        ]
+        return {
+            "decode_ok": True,
+            "transaction_version": version,
+            "fee_payer": fee_payer,
+            "expected_user_public_key": expected_user or None,
+            "fee_payer_matches_expected_user": bool(expected_user and fee_payer == expected_user),
+            "expected_user_account_present": bool(expected_user and expected_user in account_keys),
+            "static_account_count": len(account_keys),
+            "instruction_count": len(program_ids),
+            "program_ids": unique_program_ids[:16],
+            "ata_create_count": program_ids.count(SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID),
+            "ata_create_details": ata_create_details,
+            "token_program_instruction_count": program_ids.count(SOLANA_TOKEN_PROGRAM_ID),
+            "system_program_instruction_count": program_ids.count(SOLANA_SYSTEM_PROGRAM_ID),
+            "uses_associated_token_program": SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID in program_ids,
+            "uses_token_program": SOLANA_TOKEN_PROGRAM_ID in program_ids,
+            "uses_system_program": SOLANA_SYSTEM_PROGRAM_ID in program_ids,
+            "uses_wrapped_sol_mint": uses_wrapped_sol_mint,
+            "wsol_ata_account": wsol_ata_account,
+            "has_system_transfer_to_wsol_account": bool(system_transfers_to_wsol),
+            "has_token_sync_native": bool(token_sync_native_details),
+            "has_token_close_account": bool(token_close_account_details),
+            "wsol_wrap_lamports_detected": sum(
+                int(detail.get("lamports") or 0) for detail in system_transfers_to_wsol
+            ) or None,
+            "native_sol_wrap_complete": native_sol_wrap_complete,
+            "system_transfer_details": system_transfer_details,
+            "token_sync_native_details": token_sync_native_details,
+            "token_close_account_details": token_close_account_details,
+            "instruction_details": instruction_details[:24],
+            "loaded_address_resolution_available": False,
+            "loaded_address_resolution_note": (
+                "v0 loaded addresses are not decoded by this lightweight parser yet"
+                if version != "legacy" and unresolved_loaded_addresses
+                else None
+            ),
+        }
+    except (IndexError, ValueError):
+        return {"decode_ok": False}
+
+
+def _safe_swap_preflight_log_line(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if re.search(
+        r"transaction_base64|transactionBase64|signed_transaction|signedTransaction|swapTransaction|https?://|api[-_]?key|access_token|secret",
+        text,
+        re.IGNORECASE,
+    ):
+        return ""
+    if len(text) > 180:
+        text = text[:177] + "..."
+    return text
+
+
+def _safe_swap_preflight_logs_preview(logs) -> list[str]:
+    if not isinstance(logs, list):
+        return []
+    safe = []
+    for item in logs:
+        line = _safe_swap_preflight_log_line(item)
+        if line:
+            safe.append(line)
+        if len(safe) >= 8:
+            break
+    return safe
+
+
+def _classify_swap_preflight_error(err, logs) -> str:
+    text = " ".join([str(err or ""), " ".join(str(x or "") for x in (logs or []))]).lower()
+    if any(term in text for term in ("insufficient funds", "insufficient lamports", "not enough", "account balance", "attempt to debit")):
+        return "insufficient_funds"
+    if any(term in text for term in ("rent", "account setup", "associated token", "initializeaccount", "create account", "wrapped sol", "wsol")):
+        return "account_setup"
+    return "simulation_failed"
+
+
+def _fetch_solana_simulate_transaction(
+    *,
+    transaction_base64: str,
+    rpc_url: str,
+    provider: str = "",
+    variant_id: str = "",
+    transaction_diagnostics: dict | None = None,
+    setup_cost_estimate: dict | None = None,
+) -> dict:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "simulateTransaction",
+        "params": [
+            transaction_base64,
+            {
+                "encoding": "base64",
+                "sigVerify": False,
+                "replaceRecentBlockhash": True,
+                "commitment": "processed",
+            },
+        ],
+    }
+
+    try:
+        response = requests.post(
+            rpc_url,
+            json=payload,
+            timeout=25,
+            headers={"accept": "application/json", "content-type": "application/json"},
+        )
+    except requests.RequestException:
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": False,
+            "error_category": "rpc_unavailable",
+            "message": "Could not preflight this route right now.",
+            "logs_preview": [],
+            "transaction_diagnostics": transaction_diagnostics or None,
+            **(setup_cost_estimate or {}),
+        }
+
+    if not response.ok:
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": False,
+            "error_category": "rpc_unavailable",
+            "message": "Could not preflight this route right now.",
+            "status_code": response.status_code,
+            "logs_preview": [],
+            "transaction_diagnostics": transaction_diagnostics or None,
+            **(setup_cost_estimate or {}),
+        }
+
+    try:
+        data = response.json()
+    except ValueError:
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": False,
+            "error_category": "rpc_unavailable",
+            "message": "Preflight returned invalid JSON.",
+            "logs_preview": [],
+            "transaction_diagnostics": transaction_diagnostics or None,
+            **(setup_cost_estimate or {}),
+        }
+
+    if not isinstance(data, dict):
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": False,
+            "error_category": "rpc_unavailable",
+            "message": "Preflight returned an unexpected response shape.",
+            "logs_preview": [],
+            "transaction_diagnostics": transaction_diagnostics or None,
+            **(setup_cost_estimate or {}),
+        }
+
+    if data.get("error"):
+        rpc_error = _safe_submit_rpc_error(data.get("error"))
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": True,
+            "error_category": _classify_swap_preflight_error(rpc_error, []),
+            "message": "Preflight simulation failed.",
+            "rpc_error": rpc_error,
+            "logs_preview": [],
+            "insufficient_account_candidates": _extract_pubkeys_from_solana_logs(rpc_error),
+            "transaction_diagnostics": transaction_diagnostics or None,
+            **(setup_cost_estimate or {}),
+        }
+
+    value = ((data.get("result") or {}).get("value") or {})
+    logs = value.get("logs") or []
+    err = value.get("err")
+    logs_preview = _safe_swap_preflight_logs_preview(logs)
+    if err:
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": True,
+            "error_category": _classify_swap_preflight_error(err, logs),
+            "message": "Preflight simulation indicates this transaction may fail.",
+            "logs_preview": logs_preview,
+            "insufficient_account_candidates": _extract_pubkeys_from_solana_logs(err, logs),
+            "transaction_diagnostics": transaction_diagnostics or None,
+            **(setup_cost_estimate or {}),
+        }
+
+    return {
+        "ok": True,
+        "provider": provider or None,
+        "variant_id": variant_id or None,
+        "simulation_supported": True,
+        "error_category": None,
+        "message": "Preflight simulation passed.",
+        "logs_preview": logs_preview,
+        "transaction_diagnostics": transaction_diagnostics or None,
+        **(setup_cost_estimate or {}),
     }
 
 
@@ -5064,6 +5565,90 @@ def swap_execute_prepare(payload: dict = Body(...)):
         user_public_key=user_public_key,
         from_token_query=from_token_query,
         to_token_query=to_token_query,
+    )
+
+
+@app.post("/swap/execute/preflight")
+def swap_execute_preflight(payload: dict = Body(...)):
+    network = (payload.get("network") or "solana").strip().lower()
+    provider = (payload.get("provider") or "").strip()
+    variant_id = (payload.get("variant_id") or "").strip()
+    transaction_base64 = (payload.get("transaction_base64") or "").strip()
+    user_public_key = (payload.get("user_public_key") or "").strip()
+
+    if network != "solana":
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": False,
+            "error_category": "unsupported",
+            "message": "Only Solana swap preflight is supported right now.",
+            "logs_preview": [],
+        }
+
+    if not transaction_base64:
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": False,
+            "error_category": "unsupported",
+            "message": "Prepared transaction is required for preflight.",
+            "logs_preview": [],
+        }
+
+    if len(transaction_base64) > MAX_SWAP_PREFLIGHT_TRANSACTION_BASE64_CHARS:
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": False,
+            "error_category": "unsupported",
+            "message": "Prepared transaction payload is too large.",
+            "logs_preview": [],
+        }
+
+    try:
+        base64.b64decode(transaction_base64, validate=True)
+    except (binascii.Error, ValueError):
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": False,
+            "error_category": "unsupported",
+            "message": "Prepared transaction must be valid base64.",
+            "logs_preview": [],
+        }
+
+    transaction_diagnostics = _decode_solana_transaction_diagnostics(
+        transaction_base64,
+        expected_user_public_key=user_public_key,
+    )
+
+    rpc_url, _rpc_source = _configured_swap_prepare_rpc_url()
+    if not rpc_url:
+        return {
+            "ok": False,
+            "provider": provider or None,
+            "variant_id": variant_id or None,
+            "simulation_supported": False,
+            "error_category": "rpc_unavailable",
+            "message": "Could not preflight this route right now.",
+            "logs_preview": [],
+            "transaction_diagnostics": transaction_diagnostics,
+        }
+
+    setup_cost_estimate = _build_swap_setup_cost_estimate(transaction_diagnostics, rpc_url)
+
+    return _fetch_solana_simulate_transaction(
+        transaction_base64=transaction_base64,
+        rpc_url=rpc_url,
+        provider=provider,
+        variant_id=variant_id,
+        transaction_diagnostics=transaction_diagnostics,
+        setup_cost_estimate=setup_cost_estimate,
     )
 
 

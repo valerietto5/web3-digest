@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import base64
 import json
 import os
 import subprocess
@@ -48,6 +49,9 @@ from api.main import (
     _try_fetch_phoenix_quote,
     _try_fetch_pumpswap_quote,
     _fetch_solana_send_transaction,
+    _fetch_solana_simulate_transaction,
+    _decode_solana_transaction_diagnostics,
+    _build_swap_setup_cost_estimate,
     _fetch_jupiter_swap_transaction,
     _fetch_orca_whirlpool_swap_transaction,
     _fetch_raydium_swap_transaction,
@@ -56,6 +60,7 @@ from api.main import (
     get_swap_execution_provider_capability,
     prepare_swap_transaction_with_provider,
     swap_execute_prepare,
+    swap_execute_preflight,
     swap_execute_submit,
     swap_quote,
     swap_tokens,
@@ -94,6 +99,91 @@ from db import (
     insert_balance_snapshot,
     get_latest_balances_with_ts,
 )
+
+_TEST_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def _test_base58_decode(value: str) -> bytes:
+    decoded = 0
+    for char in value:
+        decoded = decoded * 58 + _TEST_BASE58_ALPHABET.index(char)
+    raw = decoded.to_bytes((decoded.bit_length() + 7) // 8, "big") if decoded else b""
+    leading_zeroes = len(value) - len(value.lstrip("1"))
+    return (b"\x00" * leading_zeroes) + raw
+
+
+def _test_shortvec(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        elem = value & 0x7F
+        value >>= 7
+        if value:
+            elem |= 0x80
+        out.append(elem)
+        if not value:
+            return bytes(out)
+
+
+def _test_pubkey_bytes(value: str) -> bytes:
+    raw = _test_base58_decode(value)
+    if len(raw) != 32:
+        raise ValueError(f"test public key must decode to 32 bytes: {value}")
+    return raw
+
+
+def _test_compiled_instruction(
+    program_index: int,
+    account_indexes: list[int] | None = None,
+    data: bytes = b"",
+) -> bytes:
+    accounts = bytes(account_indexes or [])
+    return bytes([program_index]) + _test_shortvec(len(accounts)) + accounts + _test_shortvec(len(data)) + data
+
+
+def _test_system_transfer_data(lamports: int) -> bytes:
+    return (2).to_bytes(4, "little") + lamports.to_bytes(8, "little")
+
+
+def _test_versioned_swap_transaction_base64(
+    *,
+    payer: str,
+    include_native_sol_wrap: bool = False,
+    include_close_account: bool = False,
+) -> str:
+    account_keys = [
+        payer,
+        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "11111111111111111111111111111111",
+        "So11111111111111111111111111111111111111112",
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    ]
+    instructions = [
+        _test_compiled_instruction(1, [0, 5, 0, 4, 3, 2]),
+    ]
+    if include_native_sol_wrap:
+        instructions.extend([
+            _test_compiled_instruction(3, [0, 5], _test_system_transfer_data(18_999_040)),
+            _test_compiled_instruction(2, [5], bytes([17])),
+        ])
+    instructions.append(_test_compiled_instruction(2))
+    instructions.append(_test_compiled_instruction(3))
+    if include_close_account:
+        instructions.append(_test_compiled_instruction(2, [5, 0, 0], bytes([9])))
+
+    message = bytearray()
+    message.append(0x80)
+    message.extend(bytes([1, 0, 1]))
+    message.extend(_test_shortvec(len(account_keys)))
+    for account_key in account_keys:
+        message.extend(_test_pubkey_bytes(account_key))
+    message.extend(bytes(32))
+    message.extend(_test_shortvec(len(instructions)))
+    for instruction in instructions:
+        message.extend(instruction)
+    message.extend(_test_shortvec(0))
+    raw = _test_shortvec(1) + bytes(64) + bytes(message)
+    return base64.b64encode(raw).decode("ascii")
 
 class TestSanity(unittest.TestCase):
     def setUp(self):
@@ -1739,13 +1829,17 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn('return "Best quote";', html)
         self.assertIn('if (kind === "recommended") return "Recommended route";', html)
-        self.assertIn('if (kind === "direct" && opt?.is_comparison_only === true) return "Simple route check";', html)
-        self.assertIn('if (kind === "direct") return "Direct executable route";', html)
+        self.assertIn('if (kind === "direct") return "Direct route check";', html)
+        self.assertIn("function shouldShowSwapOptionCardTitle(opt, opts = {})", html)
+        self.assertIn('return !(kind === "recommended" || kind === "direct");', html)
+        self.assertIn('${shouldShowSwapOptionCardTitle(opt, opts) ? `<div><strong>${escapeHtml(title)}</strong></div>` : ""}', html)
         self.assertIn('font-weight:600;">${escapeHtml(routeLabel)}</div>', html)
-        self.assertIn('title: "Best executable route"', html)
+        self.assertIn("Recommended route</h4>", html)
+        self.assertIn("Direct route check</h4>", html)
+        self.assertIn("Alternatives</h4>", html)
+        self.assertNotIn('title: "Best executable route"', html)
+        self.assertNotIn("Best executable route", html)
         self.assertNotIn("Recommended executable", html)
-        self.assertNotIn("Recommended route</h4>", html)
-        self.assertNotIn("Direct route check</h4>", html)
         self.assertIn("Direct route is also the current recommendation.", html)
         self.assertIn("Estimated swap cost vs market", html)
         self.assertIn("Market gap estimate", html)
@@ -1755,6 +1849,27 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("Execution cost: ${escapeHtml(executionCostText)}", html)
         self.assertIn("Route shape:", html)
         self.assertIn("Alternative ${idx + 1} — ${escapeHtml(routeLabel)}", html)
+
+    def test_swap_ui_route_display_uses_stable_buckets_and_direct_priority(self):
+        html = build_ui_html()
+
+        self.assertIn("function isDirectSimpleRouteOption(opt)", html)
+        self.assertIn("function directRouteDisplayPriority(opt)", html)
+        self.assertIn("function chooseDisplayDirectRoute(candidates)", html)
+        self.assertIn("function uniqueRouteOptions(options)", html)
+        self.assertIn("if (isExecutableRouteOption(opt)) return 0;", html)
+        self.assertIn('opt?.execution_status === "executable_capable"', html)
+        self.assertIn('shape === "single-pool"', html)
+        self.assertIn("steps === 1", html)
+        self.assertIn("const displayDirectRoute = chooseDisplayDirectRoute(displayCandidates);", html)
+        self.assertIn("recommendedExecutable,", html)
+        self.assertIn("directRoute,", html)
+        self.assertIn("...otherOptions", html)
+        self.assertIn("if (sameOption(opt, displayRec)) return false;", html)
+        self.assertIn("sameOption(opt, displayDirectRoute)", html)
+        self.assertIn("Quote-only direct check. No swap action is available for this provider yet.", html)
+        self.assertIn("renderSwapOptionCard({...displayDirectRoute, kind: \"direct\"}", html)
+        self.assertNotIn("showExecutableRecommendation", html)
 
     def test_swap_ui_renders_route_coverage_depth_logic(self):
         html = build_ui_html()
@@ -1840,6 +1955,28 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn(">Holdings</button>", html)
         self.assertIn('id="swapWalletStrip"', html)
         self.assertIn("Wallet-aware swap input: connect Phantom and load balances.", html)
+        self.assertIn('id="swapWalletControls"', html)
+        self.assertIn('id="btnSwapConnectPhantom"', html)
+        self.assertIn('id="btnSwapDisconnectPhantom"', html)
+        self.assertIn('id="swapWalletConnectHint"', html)
+        self.assertIn("Connect Phantom to prepare and approve swaps.", html)
+        self.assertIn("function renderSwapWalletControls()", html)
+        self.assertIn('$("btnSwapConnectPhantom").addEventListener("click", () => connectPhantom(false));', html)
+        self.assertIn('$("btnSwapDisconnectPhantom").addEventListener("click", disconnectPhantom);', html)
+        wallet_strip_start = html.index("function renderSwapWalletStrip()")
+        wallet_strip_end = html.index("function renderSwapFromBalance()", wallet_strip_start)
+        wallet_strip_block = html[wallet_strip_start:wallet_strip_end]
+        self.assertIn('"Wallet: " + shortenMiddle(phantomPubkey, 6, 6)', wallet_strip_block)
+        self.assertIn('"Saved profile: " + latestPortfolioAccount', wallet_strip_block)
+        self.assertIn('"Assets: " + held.join(" / ")', wallet_strip_block)
+        self.assertNotIn('"Account: " + latestPortfolioAccount', wallet_strip_block)
+        wallet_controls_start = html.index("function renderSwapWalletControls()")
+        wallet_controls_end = html.index("function renderSwapFromBalance()", wallet_controls_start)
+        wallet_controls_block = html[wallet_controls_start:wallet_controls_end]
+        self.assertIn("connect.disabled = !providerAvailable;", wallet_controls_block)
+        self.assertIn("Connected: ", wallet_controls_block)
+        self.assertNotIn("signTransaction", wallet_controls_block)
+        self.assertNotIn("signAndSubmitPreparedSwap", wallet_controls_block)
         self.assertIn('id="swapFromBalanceHint"', html)
         self.assertIn("Available: connect wallet / refresh balances.", html)
         self.assertIn('id="btnSwapAmountHalf"', html)
@@ -1857,7 +1994,10 @@ class TestSanity(unittest.TestCase):
         self.assertIn('$("swapHoldingsDropdown").style.display = "none";', html)
         self.assertIn("Type or paste a token mint above.", html)
         self.assertIn("No wallet balances loaded yet.", html)
-        self.assertIn("Keep extra SOL for network fees before approving in Phantom.", html)
+        self.assertIn("MAX keeps SOL reserved for network fees/account setup.", html)
+        self.assertIn("const SWAP_SOL_FEE_ACCOUNT_SETUP_BUFFER_SOL = 0.001;", html)
+        self.assertIn("const SWAP_DEFAULT_NETWORK_FEE_SOL = 0.0001;", html)
+        self.assertNotIn("SWAP_ORCA_SOL_INPUT_SETUP_RESERVE_SOL", html)
         self.assertIn("function formatSwapSnapshotAge(value)", html)
         self.assertIn("const SWAP_BALANCE_FRESH_MS = 5 * 60 * 1000;", html)
         self.assertIn("function isSwapBalanceSnapshotFresh(value)", html)
@@ -1877,12 +2017,116 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn("holding.amount * fraction", amount_block)
         self.assertNotIn("holding.amount - 0.005", amount_block)
+        self.assertIn("defaultSwapSolReserveForMax()", amount_block)
+        self.assertIn("holding.amount - defaultSwapSolReserveForMax()", amount_block)
         self.assertIn("if (!isSwapBalanceSnapshotFresh(holding.balance_ts))", amount_block)
         self.assertIn("Refresh balances to use 50% or MAX.", amount_block)
         self.assertIn("updateLiveSwapBaseline();", amount_block)
         self.assertNotIn("prepareSwapRoute", amount_block)
         self.assertNotIn("signAndSubmitPreparedSwap", amount_block)
         self.assertNotIn("/swap/execute/submit", amount_block)
+
+    def test_swap_ui_preflights_sol_requirement_before_phantom(self):
+        html = build_ui_html()
+        start = html.index("async function signAndSubmitPreparedSwap()")
+        end = html.index("function handleSwapExecuteClick", start)
+        sign_block = html[start:end]
+
+        self.assertIn("function selectedSolHolding()", html)
+        self.assertIn("function preflightSolRequirementBeforePhantom()", html)
+        self.assertIn("function preparedSwapEstimatedNetworkFeeSol()", html)
+        self.assertIn("function preparedSwapProviderId()", html)
+        self.assertIn("function renderSolRequirementBlock(result)", html)
+        self.assertIn("selectedSolHolding()", html)
+        self.assertIn("isSwapBalanceSnapshotFresh(solHolding.balance_ts)", html)
+        self.assertIn('fromToken === "SOL" ? Number(summary.amount ?? $("swapAmount")?.value) : 0', html)
+        self.assertIn("const requiredSol = swapAmountSol + estimatedFeeSol + bufferSol;", html)
+        self.assertIn("const suggestedMaxSol = Math.max(0, availableSol - estimatedFeeSol - bufferSol);", html)
+        self.assertIn("Not enough SOL to approve this route before opening Phantom.", html)
+        self.assertIn("Provider: Orca", html)
+        self.assertIn("Available SOL: ", html)
+        self.assertIn("Swap amount: ", html)
+        self.assertIn("Estimated network fee: ", html)
+        self.assertIn("Fee/account setup buffer: ", html)
+        self.assertIn("Suggested max spend: ", html)
+        self.assertIn("const solRequirement = preflightSolRequirementBeforePhantom();", sign_block)
+        self.assertIn("renderSolRequirementBlock(solRequirement)", sign_block)
+        self.assertLess(
+            sign_block.index("preflightSolRequirementBeforePhantom()"),
+            sign_block.index("phantomProvider.signTransaction(tx)"),
+        )
+
+    def test_swap_ui_preflights_prepared_transaction_before_phantom(self):
+        html = build_ui_html()
+        start = html.index("async function signAndSubmitPreparedSwap()")
+        end = html.index("function handleSwapExecuteClick", start)
+        sign_block = html[start:end]
+
+        self.assertIn('fetchMaybeJson("/swap/execute/preflight"', html)
+        self.assertIn("function preflightPreparedSwapBeforePhantom()", html)
+        self.assertIn("function renderSwapPreflightFailureDetail(preflight)", html)
+        self.assertIn("function safeSwapPreflightLogPreview(logs)", html)
+        self.assertIn("transaction_base64: latestPreparedSwap?.transaction_base64 || \"\"", html)
+        self.assertIn("const preparedPreflight = await preflightPreparedSwapBeforePhantom();", sign_block)
+        self.assertIn("This Orca route would likely fail before Phantom approval.", html)
+        self.assertIn("This route appears to require additional SOL for account setup/rent.", html)
+        self.assertNotIn("Simulation indicates insufficient SOL or account setup/rent requirements.", html)
+        self.assertIn("Try a lower amount, add SOL, or choose another route.", html)
+        self.assertIn("Simulation category: ", html)
+        self.assertNotIn("Logs: ", html)
+        self.assertNotIn("Program AToken", html)
+        self.assertNotIn("Program Tokenkeg", html)
+        self.assertNotIn("requirements..", html)
+        self.assertIn("preparedPreflight.simulation_supported === true", sign_block)
+        self.assertLess(
+            sign_block.index("preflightPreparedSwapBeforePhantom()"),
+            sign_block.index("phantomProvider.signTransaction(tx)"),
+        )
+
+    def test_swap_ui_renders_preflight_diagnostics_in_debug_json(self):
+        html = build_ui_html()
+
+        self.assertIn("let latestSwapPreflightResponse = null;", html)
+        self.assertIn("LATEST PREFLIGHT DIAGNOSTICS JSON", html)
+        self.assertIn('id="swapVisiblePreflightDebugWrap"', html)
+        self.assertIn('id="swapVisiblePreflightDebug"', html)
+        self.assertIn("No preflight check yet.", html)
+        self.assertIn('id="swapPreflightDebug"', html)
+        self.assertIn("Latest preflight diagnostics", html)
+        self.assertIn("function sanitizeSwapPreflightDebug(value)", html)
+        self.assertIn("function renderSwapPreflightDebug(response)", html)
+        self.assertIn("latestSwapPreflightResponse = sanitizeSwapPreflightDebug(response || null);", html)
+        self.assertIn('const visibleBox = $("swapVisiblePreflightDebug");', html)
+        self.assertIn("visibleBox.textContent = debugJson;", html)
+        self.assertIn("const debugJson = JSON.stringify(latestSwapPreflightResponse, null, 2);", html)
+        self.assertIn("renderSwapPreflightDebug(enrichedResult);", html)
+        self.assertIn("renderSwapPreflightDebug(enrichedFallback);", html)
+        self.assertIn('console.debug("swap preflight", latestSwapPreflightResponse);', html)
+        self.assertIn("transaction_diagnostics", html)
+        self.assertIn("function enrichSwapPreflightWithSolDiagnostics(preflight)", html)
+        self.assertIn("setup_cost_estimate_lamports", html)
+        self.assertIn("client_sol_diagnostics", html)
+        self.assertIn("input_amount_lamports", html)
+        self.assertIn("available_sol_lamports", html)
+        self.assertIn("estimated_total_required_lamports", html)
+        self.assertIn("estimated_shortfall_lamports", html)
+        self.assertIn("suggested_max_input_lamports", html)
+        self.assertIn("estimated_non_input_sol_required_lamports", html)
+        self.assertIn("estimated_sol_shortfall_lamports", html)
+        self.assertIn("account_setup_failure_not_explained_by_sol_balance", html)
+        self.assertIn("add_sol_for_account_setup", html)
+        self.assertIn("enough_sol_for_setup_but_preflight_failed", html)
+        self.assertIn("const enrichedResult = enrichSwapPreflightWithSolDiagnostics(result);", html)
+
+        debug_start = html.index("function sanitizeSwapPreflightDebug(value)")
+        debug_end = html.index("function clearSwapQuoteFreshness()", debug_start)
+        debug_block = html[debug_start:debug_end]
+        self.assertIn('lowered.includes("transaction_base64")', debug_block)
+        self.assertIn('lowered.includes("signed_transaction")', debug_block)
+        self.assertIn('lowered.includes("rpc_url")', debug_block)
+        self.assertIn('lowered.includes("api_key")', debug_block)
+        self.assertIn('lowered.includes("apikey")', debug_block)
+        self.assertIn('lowered.includes("secret")', debug_block)
 
     def test_swap_ui_renders_external_token_quote_notice(self):
         html = build_ui_html()
@@ -6724,10 +6968,260 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["error"]["code"], "SWAP_SUBMIT_FAILED")
         self.assertNotIn("SECRET", result_json)
         self.assertNotIn("ALSOSECRET", result_json)
-        self.assertNotIn("api-key=SECRET", result_json)
-        self.assertNotIn("token=ALSOSECRET", result_json)
-        self.assertNotIn(secret_url, result_json)
-        self.assertIn("RPC request failed before a response was received.", result["error"]["detail"])
+
+    def test_swap_execute_preflight_requires_transaction_and_rpc_without_leaking_url(self):
+        missing = swap_execute_preflight({"network": "solana", "transaction_base64": ""})
+        self.assertFalse(missing["ok"])
+        self.assertEqual(missing["error_category"], "unsupported")
+        self.assertNotIn("transaction_base64", json.dumps(missing))
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = swap_execute_preflight({
+                "network": "solana",
+                "provider": "orca-whirlpool",
+                "variant_id": "orca_whirlpool_quote",
+                "transaction_base64": "AQID",
+            })
+
+        result_json = json.dumps(result)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["simulation_supported"])
+        self.assertEqual(result["error_category"], "rpc_unavailable")
+        self.assertNotIn("AQID", result_json)
+        self.assertNotIn("transaction_base64", result_json)
+        self.assertNotIn("api-key", result_json)
+
+    def test_decode_solana_transaction_diagnostics_exposes_safe_preflight_metadata(self):
+        payer = "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL"
+        transaction_base64 = _test_versioned_swap_transaction_base64(payer=payer)
+
+        diagnostics = _decode_solana_transaction_diagnostics(
+            transaction_base64,
+            expected_user_public_key=payer,
+        )
+
+        self.assertTrue(diagnostics["decode_ok"])
+        self.assertEqual(diagnostics["transaction_version"], "v0")
+        self.assertEqual(diagnostics["fee_payer"], payer)
+        self.assertTrue(diagnostics["fee_payer_matches_expected_user"])
+        self.assertTrue(diagnostics["expected_user_account_present"])
+        self.assertEqual(diagnostics["ata_create_count"], 1)
+        self.assertEqual(len(diagnostics["ata_create_details"]), 1)
+        self.assertEqual(diagnostics["ata_create_details"][0]["instruction_index"], 0)
+        self.assertEqual(diagnostics["ata_create_details"][0]["payer"], payer)
+        self.assertEqual(diagnostics["ata_create_details"][0]["ata_account"], "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        self.assertEqual(diagnostics["ata_create_details"][0]["owner"], payer)
+        self.assertEqual(diagnostics["ata_create_details"][0]["mint"], "So11111111111111111111111111111111111111112")
+        self.assertEqual(diagnostics["ata_create_details"][0]["account_indexes"], [0, 5, 0, 4, 3, 2])
+        self.assertEqual(diagnostics["token_program_instruction_count"], 1)
+        self.assertEqual(diagnostics["system_program_instruction_count"], 1)
+        self.assertTrue(diagnostics["uses_associated_token_program"])
+        self.assertTrue(diagnostics["uses_token_program"])
+        self.assertTrue(diagnostics["uses_wrapped_sol_mint"])
+        self.assertEqual(diagnostics["wsol_ata_account"], "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        self.assertFalse(diagnostics["has_system_transfer_to_wsol_account"])
+        self.assertFalse(diagnostics["has_token_sync_native"])
+        self.assertFalse(diagnostics["native_sol_wrap_complete"])
+        self.assertFalse(diagnostics["loaded_address_resolution_available"])
+        self.assertIn("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", diagnostics["program_ids"])
+        self.assertIn("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", diagnostics["program_ids"])
+
+    def test_decode_solana_transaction_diagnostics_detects_native_sol_wrap(self):
+        payer = "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL"
+        transaction_base64 = _test_versioned_swap_transaction_base64(
+            payer=payer,
+            include_native_sol_wrap=True,
+            include_close_account=True,
+        )
+
+        diagnostics = _decode_solana_transaction_diagnostics(
+            transaction_base64,
+            expected_user_public_key=payer,
+        )
+
+        self.assertTrue(diagnostics["uses_wrapped_sol_mint"])
+        self.assertTrue(diagnostics["has_system_transfer_to_wsol_account"])
+        self.assertTrue(diagnostics["has_token_sync_native"])
+        self.assertTrue(diagnostics["has_token_close_account"])
+        self.assertTrue(diagnostics["native_sol_wrap_complete"])
+        self.assertEqual(diagnostics["wsol_ata_account"], "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        self.assertEqual(diagnostics["wsol_wrap_lamports_detected"], 18_999_040)
+        self.assertEqual(diagnostics["system_transfer_details"][0]["destination"], diagnostics["wsol_ata_account"])
+        self.assertEqual(diagnostics["token_sync_native_details"][0]["account"], diagnostics["wsol_ata_account"])
+        self.assertEqual(diagnostics["token_close_account_details"][0]["account"], diagnostics["wsol_ata_account"])
+        self.assertIn("system_transfer", json.dumps(diagnostics["instruction_details"]))
+        self.assertIn("token_sync_native", json.dumps(diagnostics["instruction_details"]))
+
+    def test_swap_execute_preflight_simulates_without_returning_transaction(self):
+        payer = "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL"
+        transaction_base64 = _test_versioned_swap_transaction_base64(payer=payer)
+        with (
+            patch.dict(os.environ, {"SWAP_PREPARE_RPC_URL": "https://rpc.example?api-key=SECRET"}, clear=True),
+            patch("api.main._fetch_solana_rent_exempt_lamports", return_value={
+                "ok": True,
+                "lamports": 2039280,
+                "source": "rpc_getMinimumBalanceForRentExemption_165",
+            }),
+            patch("api.main._fetch_solana_simulate_transaction", return_value={
+                "ok": True,
+                "provider": "orca-whirlpool",
+                "variant_id": "orca_whirlpool_quote",
+                "simulation_supported": True,
+                "error_category": None,
+                "message": "Preflight simulation passed.",
+                "logs_preview": [],
+                "transaction_diagnostics": {"decode_ok": True},
+            }) as simulate,
+        ):
+            result = swap_execute_preflight({
+                "network": "solana",
+                "provider": "orca-whirlpool",
+                "variant_id": "orca_whirlpool_quote",
+                "transaction_base64": transaction_base64,
+                "user_public_key": payer,
+            })
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(simulate.call_args.kwargs["transaction_base64"], transaction_base64)
+        self.assertEqual(simulate.call_args.kwargs["rpc_url"], "https://rpc.example?api-key=SECRET")
+        self.assertEqual(simulate.call_args.kwargs["provider"], "orca-whirlpool")
+        self.assertEqual(simulate.call_args.kwargs["transaction_diagnostics"]["fee_payer"], payer)
+        self.assertEqual(simulate.call_args.kwargs["setup_cost_estimate"]["setup_cost_estimate_lamports"], 2039280)
+        result_json = json.dumps(result)
+        self.assertNotIn(transaction_base64, result_json)
+        self.assertNotIn("transaction_base64", result_json)
+        self.assertNotIn("SECRET", result_json)
+
+    def test_build_swap_setup_cost_estimate_uses_rpc_rent_for_ata_creates(self):
+        diagnostics = {
+            "ata_create_details": [{
+                "instruction_index": 0,
+                "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "ata_account": "ata111111111111111111111111111111111111111",
+                "owner": "owner11111111111111111111111111111111111111",
+                "payer": "payer11111111111111111111111111111111111111",
+            }]
+        }
+        with patch("api.main._fetch_solana_rent_exempt_lamports", return_value={
+            "ok": True,
+            "lamports": 2_039_280,
+            "source": "rpc_getMinimumBalanceForRentExemption_165",
+        }) as rent:
+            estimate = _build_swap_setup_cost_estimate(diagnostics, "https://rpc.example?api-key=SECRET")
+
+        rent.assert_called_once()
+        self.assertEqual(estimate["setup_cost_estimate_lamports"], 2_039_280)
+        self.assertEqual(estimate["setup_cost_estimate_sol"], 0.00203928)
+        self.assertEqual(estimate["setup_cost_estimate_source"], "rpc_getMinimumBalanceForRentExemption_165")
+        self.assertEqual(estimate["setup_cost_components"][0]["kind"], "ata_create")
+        self.assertEqual(estimate["setup_cost_components"][0]["mint"], "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        self.assertNotIn("SECRET", json.dumps(estimate))
+
+    def test_build_swap_setup_cost_estimate_labels_fallback_rent(self):
+        diagnostics = {"ata_create_details": [{"instruction_index": 0}]}
+        with patch("api.main._fetch_solana_rent_exempt_lamports", return_value={
+            "ok": False,
+            "lamports": 2_039_280,
+            "source": "fallback_spl_token_account_rent_exempt_lamports",
+        }):
+            estimate = _build_swap_setup_cost_estimate(diagnostics, "https://rpc.example?api-key=SECRET")
+
+        self.assertEqual(estimate["setup_cost_estimate_lamports"], 2_039_280)
+        self.assertEqual(estimate["setup_cost_estimate_source"], "fallback_spl_token_account_rent_exempt_lamports")
+        self.assertEqual(estimate["setup_cost_components"][0]["source"], "fallback_spl_token_account_rent_exempt_lamports")
+        self.assertNotIn("SECRET", json.dumps(estimate))
+
+    def test_fetch_solana_simulate_transaction_classifies_insufficient_funds_safely(self):
+        class Response:
+            status_code = 200
+            ok = True
+            text = ""
+
+            def json(self):
+                return {
+                    "result": {
+                        "value": {
+                            "err": {"InstructionError": [0, "Custom"]},
+                            "logs": [
+                                "Program log: insufficient funds for rent",
+                                "https://rpc.example?api-key=SECRET",
+                                "transaction_base64=AQID",
+                            ],
+                        }
+                    }
+                }
+
+        with patch("api.main.requests.post", return_value=Response()) as post:
+            result = _fetch_solana_simulate_transaction(
+                transaction_base64="AQID",
+                rpc_url="https://rpc.example?api-key=SECRET",
+                provider="orca-whirlpool",
+                variant_id="orca_whirlpool_quote",
+                transaction_diagnostics={"decode_ok": True, "fee_payer": "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL"},
+            )
+
+        request_payload = post.call_args.kwargs["json"]
+        self.assertEqual(request_payload["method"], "simulateTransaction")
+        self.assertFalse(request_payload["params"][1]["sigVerify"])
+        self.assertTrue(request_payload["params"][1]["replaceRecentBlockhash"])
+        self.assertEqual(request_payload["params"][1]["encoding"], "base64")
+
+        result_json = json.dumps(result)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["simulation_supported"])
+        self.assertEqual(result["error_category"], "insufficient_funds")
+        self.assertEqual(result["provider"], "orca-whirlpool")
+        self.assertIn("insufficient funds for rent", result["logs_preview"][0])
+        self.assertEqual(result["transaction_diagnostics"]["fee_payer"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
+        self.assertNotIn("AQID", result_json)
+        self.assertNotIn("transaction_base64", result_json)
+        self.assertNotIn("api-key", result_json)
+        self.assertNotIn("SECRET", result_json)
+
+    def test_swap_ui_passes_wallet_to_preflight_and_keeps_diagnostics_out_of_default_copy(self):
+        html = build_ui_html()
+        self.assertIn('user_public_key: phantomProvider?.publicKey?.toString?.() || phantomPubkey || ""', html)
+        self.assertIn("Technical diagnostics available in debug.", html)
+        self.assertIn("transaction_diagnostics?.decode_ok", html)
+        self.assertNotIn("Program AToken", html)
+        self.assertNotIn("Program Tokenkeg", html)
+
+    def test_swap_execute_preflight_response_can_include_account_candidates(self):
+        class Response:
+            status_code = 200
+            ok = True
+            text = ""
+
+            def json(self):
+                return {
+                    "result": {
+                        "value": {
+                            "err": {
+                                "InstructionError": [
+                                    0,
+                                    "Attempt to debit an account but found no record of a prior credit.",
+                                ]
+                            },
+                            "logs": [
+                                "Program log: account EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL has insufficient funds",
+                            ],
+                        }
+                    }
+                }
+
+        with patch("api.main.requests.post", return_value=Response()):
+            result = _fetch_solana_simulate_transaction(
+                transaction_base64="AQID",
+                rpc_url="https://rpc.example",
+                provider="orca-whirlpool",
+                variant_id="orca_whirlpool_quote",
+                transaction_diagnostics={"decode_ok": True},
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_category"], "insufficient_funds")
+        self.assertIn("insufficient_account_candidates", result)
+        self.assertIn("EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL", result["insufficient_account_candidates"])
 
     def test_fetch_jupiter_swap_transaction_calls_swap_endpoint(self):
         captured = {}
@@ -7072,6 +7566,8 @@ class TestSanity(unittest.TestCase):
         self.assertIn("writeJson", source)
         self.assertIn("safeScalar", source)
         self.assertIn("request.rpc_url || quote.rpc_url", source)
+        self.assertIn('setNativeMintWrappingStrategy("ata")', source)
+        self.assertNotIn('setNativeMintWrappingStrategy("none")', source)
         self.assertIn('"transactionbase64"', source)
         self.assertIn('"signedtransaction"', source)
         self.assertIn("transaction_base64", source)
@@ -7154,6 +7650,40 @@ class TestSanity(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
+    def test_orca_prepare_stops_failed_refreshed_quote_before_helper(self):
+        failed_quote = {
+            "ok": False,
+            "error": {
+                "code": "NO_USABLE_DISCOVERED_POOL",
+                "message": "No Orca pool produced a quote.",
+                "detail": "missing Orca pool address required for prepare",
+            },
+        }
+        with (
+            patch("api.main._fetch_orca_whirlpool_quote", return_value=failed_quote),
+            patch("api.main._fetch_orca_whirlpool_swap_transaction") as fetch_swap,
+        ):
+            result = swap_execute_prepare(
+                self._base_swap_execute_prepare_payload(
+                    provider="orca-whirlpool",
+                    variant_id="orca_whirlpool_quote",
+                    from_token="USDC",
+                    to_token="SOL",
+                )
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_ORCA_PREPARE_FAILED")
+        self.assertEqual(result["error"]["provider_code"], "NO_USABLE_DISCOVERED_POOL")
+        self.assertEqual(result["error"]["provider_message"], "No Orca pool produced a quote.")
+        self.assertIn("quote_response_keys", result["error"])
+        self.assertIn("quote_error_keys", result["error"])
+        fetch_swap.assert_not_called()
+        encoded = json.dumps(result)
+        self.assertNotIn("transaction_base64", encoded)
+        self.assertNotIn("api-key", encoded)
+        self.assertNotIn("SECRET", encoded)
 
     def _mock_pumpswap_execution_quote(self):
         return {

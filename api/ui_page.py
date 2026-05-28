@@ -173,6 +173,11 @@ def build_ui_html() -> str:
     <h3 style="margin: 0 0 6px 0;">Swap <span class="pill warn">SOLANA-FIRST</span></h3>
     <div class="muted">Compare live swap routes and approve safely in Phantom.</div>
     <div class="muted" id="swapWalletStrip" style="margin-top:6px; font-size:12px;">Wallet-aware swap input: connect Phantom and load balances.</div>
+    <div class="row" id="swapWalletControls" style="margin-top:8px; align-items:center;">
+      <button id="btnSwapConnectPhantom" type="button" class="secondary">Connect Phantom</button>
+      <button id="btnSwapDisconnectPhantom" type="button" class="secondary" style="display:none;">Disconnect</button>
+      <div class="muted" id="swapWalletConnectHint" style="font-size:12px;">Connect Phantom to prepare and approve swaps.</div>
+    </div>
     <div class="muted" id="swapBalanceFreshnessHint" style="display:none; margin-top:6px; font-size:12px;"></div>
     <button id="btnSwapRefreshBalances" type="button" class="secondary" style="display:none; margin-top:6px; padding:6px 8px;">Refresh balances</button>
 
@@ -248,6 +253,10 @@ def build_ui_html() -> str:
       <div class="muted" id="swapCoverageDepth" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
       <div class="muted" id="swapExternalTokenNotice" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
       <div class="muted" id="swapExecutionStatus" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;">Ready to prepare a swap route.</div>
+      <div class="card" id="swapVisiblePreflightDebugWrap" style="margin-top:8px; font-size:12px;">
+        <div class="muted" style="font-weight:600;">LATEST PREFLIGHT DIAGNOSTICS JSON</div>
+        <pre id="swapVisiblePreflightDebug" style="margin-top:8px;">No preflight check yet.</pre>
+      </div>
       <div class="muted" id="swapQuoteFreshness" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;"></div>
       <div id="swapPreparedAction" style="display:none; margin-top:8px;">
         <div id="swapPreparedSummary" class="muted" style="font-size:12px; line-height:1.45;"></div>
@@ -263,10 +272,12 @@ def build_ui_html() -> str:
     </div>
 
     <div class="card" id="swapRecommendedCard" style="margin-top:10px;">
+      <h4 style="margin: 0 0 6px 0;">Recommended route</h4>
       <div class="muted" id="swapRecommendedBox">No quote yet.</div>
     </div>
 
     <div class="card" id="swapDirectCard" style="margin-top:10px;">
+      <h4 style="margin: 0 0 6px 0;">Direct route check</h4>
       <div class="muted" id="swapDirectBox">No direct-route check yet.</div>
     </div>
 
@@ -278,6 +289,8 @@ def build_ui_html() -> str:
     <details id="swapDebugWrap" class="card" style="margin-top:10px; display:none;">
       <summary class="muted" style="cursor:pointer;">Raw quote debug JSON</summary>
       <pre id="swapQuotePreview" style="margin-top:8px;"></pre>
+      <div class="muted" style="margin-top:10px; font-size:12px;">Latest preflight diagnostics</div>
+      <pre id="swapPreflightDebug" style="margin-top:8px;">No preflight check yet.</pre>
     </details>
 
     <div id="swapStatus" class="card" style="display:none; margin-top:10px;"></div>
@@ -353,6 +366,8 @@ def build_ui_html() -> str:
   const ACTIVITY_LIMIT = 8;
   const SWAP_QUOTE_TTL_SECONDS = 20;
   const SWAP_BALANCE_FRESH_MS = 5 * 60 * 1000;
+  const SWAP_SOL_FEE_ACCOUNT_SETUP_BUFFER_SOL = 0.001;
+  const SWAP_DEFAULT_NETWORK_FEE_SOL = 0.0001;
   const activityItems = [];
   let swapTokenList = [
     { symbol: "SOL", display_name: "Solana", decimals: 9 },
@@ -368,6 +383,7 @@ def build_ui_html() -> str:
   let latestPortfolioAccount = "";
   let latestSwapQuoteResponse = null;
   let latestPreparedSwap = null;
+  let latestSwapPreflightResponse = null;
   let swapExecutionState = "idle";
   let swapQuoteExpiresAt = null;
   let swapQuoteTimerId = null;
@@ -507,15 +523,43 @@ function selectedFromHolding() {
   }) || null;
 }
 
+function selectedSolHolding() {
+  return portfolioHoldingRows().find((row) => normalizeSwapAssetKey(row.token_value) === "SOL" ||
+    normalizeSwapAssetKey(row.label) === "SOL" ||
+    normalizeSwapAssetKey(row.asset) === "SOL") || null;
+}
+
 function renderSwapWalletStrip() {
   const box = $("swapWalletStrip");
   if (!box) return;
 
   const wallet = phantomPubkey ? "Wallet: " + shortenMiddle(phantomPubkey, 6, 6) : "Wallet: not connected";
-  const account = latestPortfolioAccount ? "Account: " + latestPortfolioAccount : "Account: not loaded";
+  const account = latestPortfolioAccount ? "Saved profile: " + latestPortfolioAccount : "Saved profile: not loaded";
   const held = portfolioHoldingRows().slice(0, 4).map((row) => row.label || row.token_value).filter(Boolean);
   const assets = held.length ? "Assets: " + held.join(" / ") : "Assets: load balances";
   box.textContent = wallet + " · " + account + " · " + assets;
+}
+
+function renderSwapWalletControls() {
+  const connect = $("btnSwapConnectPhantom");
+  const disconnect = $("btnSwapDisconnectPhantom");
+  const hint = $("swapWalletConnectHint");
+  if (!connect || !disconnect || !hint) return;
+
+  const providerAvailable = Boolean(getPhantomProvider());
+  if (phantomPubkey) {
+    connect.style.display = "none";
+    disconnect.style.display = "inline-block";
+    hint.textContent = "Connected: " + shortenMiddle(phantomPubkey, 6, 6);
+    return;
+  }
+
+  connect.style.display = "inline-block";
+  disconnect.style.display = "none";
+  connect.disabled = !providerAvailable;
+  hint.textContent = providerAvailable
+    ? "Connect Phantom to prepare and approve swaps."
+    : "Install or enable Phantom to prepare and approve swaps.";
 }
 
 function renderSwapFromBalance() {
@@ -539,7 +583,7 @@ function renderSwapFromBalance() {
     if (amountHelper) {
       amountHelper.textContent = fresh
         ? (label === "SOL"
-          ? "Keep extra SOL for network fees before approving in Phantom."
+          ? "MAX keeps SOL reserved for network fees/account setup."
           : "Use 50% or MAX from your loaded wallet balance.")
         : "Refresh balances to use 50% or MAX.";
     }
@@ -600,10 +644,18 @@ function setSwapAmountFromHolding(fraction) {
   }
 
   let amount = holding.amount * fraction;
+  const label = normalizeSwapAssetKey(holding.label || holding.token_value);
+  if (fraction === 1 && label === "SOL") {
+    amount = Math.max(0, holding.amount - defaultSwapSolReserveForMax());
+  }
   $("swapAmount").value = amount > 0 ? String(Number(amount.toFixed(9))) : "";
   clearSwapQuoteFreshness();
   updateLiveSwapBaseline();
   renderSwapFromBalance();
+}
+
+function defaultSwapSolReserveForMax() {
+  return SWAP_DEFAULT_NETWORK_FEE_SOL + SWAP_SOL_FEE_ACCOUNT_SETUP_BUFFER_SOL;
 }
 
 function openSwapHoldingsDropdown() {
@@ -675,6 +727,52 @@ function setSwapExecutionStatus(state, text, detail = null) {
   box.className = "muted " + kind;
   box.textContent = detail ? text + " " + detail : text;
   box.style.display = "block";
+}
+
+function sanitizeSwapPreflightDebug(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeSwapPreflightDebug(item));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    const lowered = String(key || "").toLowerCase();
+    if (
+      lowered.includes("transaction_base64") ||
+      lowered.includes("signed_transaction") ||
+      lowered.includes("rpc_url") ||
+      lowered.includes("api_key") ||
+      lowered.includes("apikey") ||
+      lowered.includes("secret")
+    ) {
+      continue;
+    }
+    out[key] = sanitizeSwapPreflightDebug(item);
+  }
+  return out;
+}
+
+function renderSwapPreflightDebug(response) {
+  const wrap = $("swapDebugWrap");
+  const box = $("swapPreflightDebug");
+  const visibleBox = $("swapVisiblePreflightDebug");
+  if (!wrap || !box || !visibleBox) return;
+
+  latestSwapPreflightResponse = sanitizeSwapPreflightDebug(response || null);
+  if (!latestSwapPreflightResponse) {
+    box.textContent = "No preflight check yet.";
+    visibleBox.textContent = "No preflight check yet.";
+    return;
+  }
+
+  wrap.style.display = "block";
+  const debugJson = JSON.stringify(latestSwapPreflightResponse, null, 2);
+  box.textContent = debugJson;
+  visibleBox.textContent = debugJson;
+  console.debug("swap preflight", latestSwapPreflightResponse);
 }
 
 function clearSwapQuoteFreshness() {
@@ -789,6 +887,11 @@ function renderPreparedSwapSummary(prepared) {
 
 function resetSwapExecutionPrepare() {
   latestPreparedSwap = null;
+  latestSwapPreflightResponse = null;
+  const preflightDebug = $("swapPreflightDebug");
+  if (preflightDebug) preflightDebug.textContent = "No preflight check yet.";
+  const visiblePreflightDebug = $("swapVisiblePreflightDebug");
+  if (visiblePreflightDebug) visiblePreflightDebug.textContent = "No preflight check yet.";
   setSwapPreparedActionVisible(false);
   setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
 }
@@ -797,8 +900,11 @@ function clearSwapUi() {
   $("swapAmount").value = "";
   $("swapDebugWrap").style.display = "none";
   $("swapQuotePreview").textContent = "";
+  $("swapPreflightDebug").textContent = "No preflight check yet.";
+  $("swapVisiblePreflightDebug").textContent = "No preflight check yet.";
   $("swapStatus").style.display = "none";
   latestSwapQuoteResponse = null;
+  latestSwapPreflightResponse = null;
   setTokenResolvePreview("from", null, "");
   setTokenResolvePreview("to", null, "");
   resetHolderConcentration({ hideButton: true });
@@ -1296,10 +1402,14 @@ function swapOptionCardTitle(opt, opts = {}) {
 
   if (kind === "recommended" && opt?.is_comparison_only === true) return "Best quote";
   if (kind === "recommended") return "Recommended route";
-  if (kind === "direct" && opt?.is_comparison_only === true) return "Simple route check";
-  if (kind === "direct") return "Direct executable route";
+  if (kind === "direct") return "Direct route check";
 
   return opt?.label || opt?.execution_surface_label || "Route";
+}
+
+function shouldShowSwapOptionCardTitle(opt, opts = {}) {
+  const kind = String(opt?.kind || "");
+  return !(kind === "recommended" || kind === "direct");
 }
 
 function tokenListSymbolForMint(mint) {
@@ -1719,7 +1829,7 @@ function renderSwapOptionCard(opt, opts = {}) {
 
   return `
     <div class="card" style="margin-top:8px; position:relative;">
-      <div><strong>${escapeHtml(title)}</strong></div>
+      ${shouldShowSwapOptionCardTitle(opt, opts) ? `<div><strong>${escapeHtml(title)}</strong></div>` : ""}
       <div style="margin-top:3px; font-weight:600;">${escapeHtml(routeLabel)}</div>
       ${
         isComparisonOnly
@@ -2125,6 +2235,233 @@ function swapSubmitErrorMessage(code) {
   return "Transaction submission failed.";
 }
 
+function collectSwapRouteOptions(value, out = []) {
+  if (!value || typeof value !== "object") return out;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectSwapRouteOptions(item, out));
+    return out;
+  }
+  if (value.provider || value.provider_id || value.variant_id) out.push(value);
+  Object.entries(value).forEach(([key, child]) => {
+    if (key === "raw" || key === "quote_response") return;
+    if (child && typeof child === "object") collectSwapRouteOptions(child, out);
+  });
+  return out;
+}
+
+function currentPreparedRouteOption() {
+  const summary = latestPreparedSwap?.quote_summary || {};
+  const provider = String(latestPreparedSwap?.provider || summary.provider || "").toLowerCase();
+  const variant = String(summary.variant_id || "").toLowerCase();
+  const options = collectSwapRouteOptions(latestSwapQuoteResponse || {});
+  return options.find((opt) => {
+    const optProvider = String(opt?.provider || opt?.provider_id || "").toLowerCase();
+    const optVariant = String(opt?.variant_id || "").toLowerCase();
+    return (!provider || optProvider === provider) && (!variant || optVariant === variant);
+  }) || null;
+}
+
+function preparedSwapEstimatedNetworkFeeSol() {
+  const option = currentPreparedRouteOption();
+  const fee = option?.estimated_network_fee;
+  const feeSol = fee && typeof fee === "object" ? Number(fee.sol) : NaN;
+  return Number.isFinite(feeSol) && feeSol > 0 ? feeSol : SWAP_DEFAULT_NETWORK_FEE_SOL;
+}
+
+function preparedSwapProviderId() {
+  const summary = latestPreparedSwap?.quote_summary || {};
+  return String(latestPreparedSwap?.provider || summary.provider || "").toLowerCase();
+}
+
+function preflightSolRequirementBeforePhantom() {
+  const solHolding = selectedSolHolding();
+  if (!solHolding || !isSwapBalanceSnapshotFresh(solHolding.balance_ts) || swapBalancesStaleAfterSubmit) {
+    return { ok: true, skipped: "sol_balance_unknown_or_stale" };
+  }
+
+  const availableSol = Number(solHolding.amount);
+  if (!Number.isFinite(availableSol)) return { ok: true, skipped: "sol_balance_unavailable" };
+
+  const summary = latestPreparedSwap?.quote_summary || {};
+  const provider = preparedSwapProviderId();
+  const fromToken = normalizeSwapAssetKey(summary.from_token || $("swapFromToken")?.value);
+  const inputSol = fromToken === "SOL" ? Number(summary.amount ?? $("swapAmount")?.value) : 0;
+  const swapAmountSol = Number.isFinite(inputSol) && inputSol > 0 ? inputSol : 0;
+  const estimatedFeeSol = preparedSwapEstimatedNetworkFeeSol();
+  const bufferSol = SWAP_SOL_FEE_ACCOUNT_SETUP_BUFFER_SOL;
+  const requiredSol = swapAmountSol + estimatedFeeSol + bufferSol;
+  const suggestedMaxSol = Math.max(0, availableSol - estimatedFeeSol - bufferSol);
+
+  if (availableSol + 1e-12 >= requiredSol) {
+    return { ok: true, provider, availableSol, swapAmountSol, estimatedFeeSol, bufferSol, requiredSol, suggestedMaxSol };
+  }
+
+  return {
+    ok: false,
+    provider,
+    availableSol,
+    swapAmountSol,
+    estimatedFeeSol,
+    bufferSol,
+    requiredSol,
+    suggestedMaxSol,
+    reason: "SOL is required for network fees and account setup."
+  };
+}
+
+function enrichSwapPreflightWithSolDiagnostics(preflight) {
+  if (!preflight || typeof preflight !== "object") return preflight;
+  const summary = latestPreparedSwap?.quote_summary || {};
+  const fromToken = normalizeSwapAssetKey(summary.from_token || $("swapFromToken")?.value);
+
+  const setupLamports = Number(preflight.setup_cost_estimate_lamports || 0);
+  const feeLamports = Math.round(preparedSwapEstimatedNetworkFeeSol() * 1_000_000_000);
+  const categoryNeedsSolContext = preflight.error_category === "account_setup" || preflight.error_category === "insufficient_funds";
+  if (
+    fromToken !== "SOL" &&
+    (!Number.isFinite(setupLamports) || setupLamports <= 0) &&
+    (!Number.isFinite(feeLamports) || feeLamports <= 0) &&
+    !categoryNeedsSolContext
+  ) {
+    return preflight;
+  }
+
+  const solHolding = selectedSolHolding();
+  const solBalanceFresh = Boolean(solHolding && isSwapBalanceSnapshotFresh(solHolding.balance_ts) && !swapBalancesStaleAfterSubmit);
+  if (!solHolding || !solBalanceFresh) {
+    if (fromToken !== "SOL") {
+      preflight.client_sol_diagnostics = {
+        sol_balance_available_for_diagnostics: false,
+        fee_estimate_lamports: Number.isFinite(feeLamports) ? feeLamports : 0,
+        setup_cost_estimate_lamports: Number.isFinite(setupLamports) ? setupLamports : 0,
+        estimated_non_input_sol_required_lamports: Math.max(0, (Number.isFinite(setupLamports) ? setupLamports : 0) + (Number.isFinite(feeLamports) ? feeLamports : 0)),
+        suggested_action: "refresh_sol_balance_for_account_setup_check"
+      };
+    }
+    return preflight;
+  }
+
+  const availableSol = Number(solHolding.amount);
+  if (!Number.isFinite(availableSol)) return preflight;
+
+  const availableLamports = Math.round(availableSol * 1_000_000_000);
+  if (fromToken !== "SOL") {
+    const requiredLamports = Math.max(0, (Number.isFinite(setupLamports) ? setupLamports : 0) + (Number.isFinite(feeLamports) ? feeLamports : 0));
+    const shortfallLamports = Math.max(0, requiredLamports - availableLamports);
+    const unexplained = categoryNeedsSolContext && shortfallLamports === 0;
+    preflight.client_sol_diagnostics = {
+      available_sol_lamports: availableLamports,
+      fee_estimate_lamports: Number.isFinite(feeLamports) ? feeLamports : 0,
+      setup_cost_estimate_lamports: Number.isFinite(setupLamports) ? setupLamports : 0,
+      estimated_non_input_sol_required_lamports: requiredLamports,
+      estimated_sol_shortfall_lamports: shortfallLamports,
+      account_setup_failure_not_explained_by_sol_balance: unexplained,
+      suggested_action: shortfallLamports > 0 ? "add_sol_for_account_setup" : (unexplained ? "enough_sol_for_setup_but_preflight_failed" : "enough_sol_for_account_setup")
+    };
+    return preflight;
+  }
+
+  const inputSol = Number(summary.amount ?? $("swapAmount")?.value);
+  if (!Number.isFinite(inputSol)) return preflight;
+
+  const inputLamports = Math.round(inputSol * 1_000_000_000);
+  const requiredLamports = inputLamports + setupLamports + feeLamports;
+  const shortfallLamports = Math.max(0, requiredLamports - availableLamports);
+  const suggestedMaxLamports = Math.max(0, availableLamports - setupLamports - feeLamports);
+
+  preflight.client_sol_diagnostics = {
+    input_amount_lamports: inputLamports,
+    available_sol_lamports: availableLamports,
+    fee_estimate_lamports: feeLamports,
+    setup_cost_estimate_lamports: setupLamports,
+    estimated_total_required_lamports: requiredLamports,
+    estimated_shortfall_lamports: shortfallLamports,
+    suggested_max_input_lamports: suggestedMaxLamports,
+    suggested_max_input_sol: suggestedMaxLamports / 1_000_000_000
+  };
+  return preflight;
+}
+
+function renderSolRequirementBlock(result) {
+  const lines = [
+    result.provider === "orca-whirlpool" ? "Provider: Orca" : "Provider: Solana route",
+    "Available SOL: " + fmtNum(result.availableSol, 9),
+    "Swap amount: " + fmtNum(result.swapAmountSol, 9) + " SOL",
+    "Estimated network fee: " + fmtNum(result.estimatedFeeSol, 9) + " SOL",
+    "Fee/account setup buffer: " + fmtNum(result.bufferSol, 9) + " SOL",
+    "Suggested max spend: " + fmtNum(result.suggestedMaxSol, 9) + " SOL"
+  ].filter(Boolean);
+  if (result.reason) lines.push("Reason: " + result.reason);
+  return lines.join(". ");
+}
+
+function safeSwapPreflightLogPreview(logs) {
+  if (!Array.isArray(logs)) return "";
+  return logs
+    .map((line) => compactSwapRuntimeErrorText(line))
+    .filter(Boolean)
+    .slice(0, 4)
+    .join(" | ");
+}
+
+function renderSwapPreflightFailureDetail(preflight) {
+  const bits = [];
+  const provider = preflight?.provider === "orca-whirlpool" ? "Orca" : (preflight?.provider || "selected route");
+  bits.push("Provider: " + provider);
+  if (preflight?.variant_id) bits.push("Variant: " + preflight.variant_id);
+  if (preflight?.error_category) bits.push("Simulation category: " + preflight.error_category);
+  if (preflight?.error_category === "insufficient_funds" || preflight?.error_category === "account_setup") {
+    bits.push("This route appears to require additional SOL for account setup/rent.");
+  }
+  if (preflight?.transaction_diagnostics?.decode_ok) {
+    bits.push("Technical diagnostics available in debug.");
+  }
+  bits.push("Try a lower amount, add SOL, or choose another route.");
+  return bits.join(". ");
+}
+
+async function preflightPreparedSwapBeforePhantom() {
+  const summary = latestPreparedSwap?.quote_summary || {};
+  const payload = {
+    network: "solana",
+    provider: latestPreparedSwap?.provider || summary.provider || "",
+    variant_id: summary.variant_id || "",
+    user_public_key: phantomProvider?.publicKey?.toString?.() || phantomPubkey || "",
+    transaction_base64: latestPreparedSwap?.transaction_base64 || ""
+  };
+  const response = await fetchMaybeJson("/swap/execute/preflight", {
+    method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const fallback = {
+      ok: false,
+      provider: payload.provider,
+      variant_id: payload.variant_id,
+      simulation_supported: false,
+      error_category: "rpc_unavailable",
+      message: "Could not preflight this route right now.",
+      logs_preview: []
+    };
+    const enrichedFallback = enrichSwapPreflightWithSolDiagnostics(fallback);
+    renderSwapPreflightDebug(enrichedFallback);
+    return enrichedFallback;
+  }
+  const result = response.data || {
+    ok: false,
+    provider: payload.provider,
+    variant_id: payload.variant_id,
+    simulation_supported: false,
+    error_category: "simulation_failed",
+    message: "Preflight returned an unexpected response.",
+    logs_preview: []
+  };
+  const enrichedResult = enrichSwapPreflightWithSolDiagnostics(result);
+  renderSwapPreflightDebug(enrichedResult);
+  return enrichedResult;
+}
+
 function bytesToBase64(bytes) {
   let binary = "";
   const chunkSize = 0x8000;
@@ -2203,6 +2540,37 @@ async function signAndSubmitPreparedSwap() {
   if (!solanaWeb3?.VersionedTransaction?.deserialize) {
     setSwapExecutionStatus("failed", "Swap signing is not supported in this browser session.");
     return;
+  }
+
+  const solRequirement = preflightSolRequirementBeforePhantom();
+  if (solRequirement && solRequirement.ok === false) {
+    setSwapExecutionStatus(
+      "failed",
+      solRequirement.provider === "orca-whirlpool"
+        ? "This Orca route needs more SOL before Phantom can approve it."
+        : "Not enough SOL to approve this route before opening Phantom.",
+      renderSolRequirementBlock(solRequirement)
+    );
+    return;
+  }
+
+  const preparedPreflight = await preflightPreparedSwapBeforePhantom();
+  if (preparedPreflight && preparedPreflight.ok === false) {
+    const provider = preparedPreflight.provider || preparedSwapProviderId();
+    const mustBlock =
+      provider === "orca-whirlpool" ||
+      preparedPreflight.simulation_supported === true ||
+      preparedPreflight.error_category !== "rpc_unavailable";
+    if (mustBlock) {
+      setSwapExecutionStatus(
+        "failed",
+        provider === "orca-whirlpool"
+          ? "This Orca route would likely fail before Phantom approval."
+          : "This route would likely fail before Phantom approval.",
+        renderSwapPreflightFailureDetail(preparedPreflight)
+      );
+      return;
+    }
   }
 
   let tx;
@@ -2441,6 +2809,61 @@ async function previewSwap() {
     return diffPct <= 0.0001;
   }
 
+  function routeDisplayKey(opt) {
+    if (!opt) return "";
+    return [
+      opt?.provider || "",
+      opt?.execution_surface_label || "",
+      opt?.variant_id || "",
+      String(opt?.estimated_output_raw ?? opt?.estimated_output ?? "")
+    ].join("|");
+  }
+
+  function isDirectSimpleRouteOption(opt) {
+    if (!opt) return false;
+    const shape = String(opt?.route_shape || "").toLowerCase();
+    const steps = Number(opt?.route_step_count || 0);
+    return opt?.variant_id === "direct_route_check" ||
+      steps === 1 ||
+      shape === "direct" ||
+      shape === "single-pool" ||
+      shape === "single-path" ||
+      shape === "single-clob-market" ||
+      shape === "wallet-routing";
+  }
+
+  function directRouteDisplayPriority(opt) {
+    if (isExecutableRouteOption(opt)) return 0;
+    if (
+      opt?.execution_readiness?.execution_ready === true ||
+      opt?.execution_status === "executable_capable" ||
+      opt?.is_clickable === true
+    ) {
+      return 1;
+    }
+    return 2;
+  }
+
+  function chooseDisplayDirectRoute(candidates) {
+    return candidates
+      .filter(isDirectSimpleRouteOption)
+      .map((opt, idx) => ({ opt, idx, priority: directRouteDisplayPriority(opt) }))
+      .sort((a, b) => a.priority - b.priority || a.idx - b.idx)[0]?.opt || null;
+  }
+
+  function uniqueRouteOptions(options) {
+    const seen = new Set();
+    const out = [];
+    for (const opt of options) {
+      if (!opt) continue;
+      const key = routeDisplayKey(opt);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(opt);
+    }
+    return out;
+  }
+
   const recommendationText =
     (displayRec?.is_comparison_only === true ? "Best quote: " : "Recommended: ") +
     (surfaceRouteLabel(displayRec) || "unknown-route") +
@@ -2459,19 +2882,29 @@ async function previewSwap() {
       return detail.includes("restrict_intermediate_tokens") && detail.includes("free tier");
     });
 
+    const displayCandidates = uniqueRouteOptions([
+      directRoute,
+      recommendedExecutable,
+      ...otherOptions
+    ]);
+    const displayDirectRoute = chooseDisplayDirectRoute(displayCandidates);
     const directMatchesRecommended =
-      directRoute &&
-      sameOption(displayRec, directRoute);
+      displayDirectRoute &&
+      sameOption(displayRec, displayDirectRoute);
 
-    const defaultAlternativeOptions = otherOptions.filter((opt) => {
+    const defaultAlternativeOptions = uniqueRouteOptions([
+      recommendedExecutable,
+      directRoute,
+      ...otherOptions
+    ]).filter((opt) => {
       if (sameOption(opt, displayRec)) return false;
-      if (directRoute && !directMatchesRecommended && sameOption(opt, directRoute)) return false;
+      if (displayDirectRoute && !directMatchesRecommended && sameOption(opt, displayDirectRoute)) return false;
       return true;
     });
 
     let compareSummary = "Other options: " + defaultAlternativeOptions.length;
 
-    if (directRoute && !directMatchesRecommended) {
+    if (displayDirectRoute && !directMatchesRecommended) {
       compareSummary += " • Direct route available";
     }
 
@@ -2490,22 +2923,10 @@ async function previewSwap() {
           .join("")
       : "";
 
-    const showExecutableRecommendation =
-      executableRec && !sameOption(displayRec, executableRec);
-
-    $("swapRecommendedBox").innerHTML = renderSwapOptionCard(displayRec, {
+    $("swapRecommendedBox").innerHTML = renderSwapOptionCard({...displayRec, kind: "recommended"}, {
       showRecommendedAction: displayRec?.is_comparison_only !== true,
       cardRole: "recommended"
-    }) + (
-      showExecutableRecommendation
-        ? renderSwapOptionCard(executableRec, {
-            title: "Best executable route",
-            note: "Best executable-capable route available from this preview.",
-            showRecommendedAction: true,
-            cardRole: "recommended"
-          })
-        : ""
-    );
+    });
 
     $("swapAlternativesCard").style.display = "block";
     $("swapAlternativesBox").innerHTML = alternativesHtml ||
@@ -2514,11 +2935,11 @@ async function previewSwap() {
     let directNote = "";
     let directMatchesAlternative = false;
 
-    if (directRoute) {
+    if (displayDirectRoute) {
       directMatchesAlternative = defaultAlternativeOptions.some((opt) => {
         return (
-          opt?.route_label === directRoute?.route_label &&
-          String(opt?.estimated_output_raw) === String(directRoute?.estimated_output_raw)
+          opt?.route_label === displayDirectRoute?.route_label &&
+          String(opt?.estimated_output_raw) === String(displayDirectRoute?.estimated_output_raw)
         );
       });
 
@@ -2526,17 +2947,17 @@ async function previewSwap() {
         $("swapDirectBox").innerHTML =
           "<div class='muted'>Direct route is also the current recommendation.</div>";
       } else {
-        if (directRoute?.is_comparison_only === true && !isExecutableRouteOption(directRoute)) {
-          directNote = "Quote-only comparison for a simple route. No swap action is available for this provider yet.";
+        if (displayDirectRoute?.is_comparison_only === true && !isExecutableRouteOption(displayDirectRoute)) {
+          directNote = "Quote-only direct check. No swap action is available for this provider yet.";
         } else if (directMatchesAlternative) {
-          directNote = "This temporary direct candidate also appears in the alternatives.";
-        } else if (outputsAreComparable(directRoute, displayRec)) {
-          directNote = "Temporary direct candidate with comparable output.";
+          directNote = "This direct route also appears in the alternatives.";
+        } else if (outputsAreComparable(displayDirectRoute, displayRec)) {
+          directNote = "Direct route with comparable output.";
         } else {
-          directNote = "Temporary direct candidate, not the best output.";
+          directNote = "Direct route check, not necessarily the best output.";
         }
 
-        $("swapDirectBox").innerHTML = renderSwapOptionCard(directRoute, {
+        $("swapDirectBox").innerHTML = renderSwapOptionCard({...displayDirectRoute, kind: "direct"}, {
           note: directNote,
           compactDirect: true,
           showDirectAction: true,
@@ -3417,6 +3838,7 @@ function setWalletUi() {
     pill.className = "pill warn";
     addr.textContent = "address: —";
     renderSwapWalletStrip();
+    renderSwapWalletControls();
     return;
   }
 
@@ -3425,6 +3847,7 @@ function setWalletUi() {
     pill.className = "pill warn";
     addr.textContent = "address: —";
     renderSwapWalletStrip();
+    renderSwapWalletControls();
     return;
   }
 
@@ -3432,6 +3855,7 @@ function setWalletUi() {
   pill.className = "pill ok";
   addr.textContent = "address: " + shortenMiddle(phantomPubkey, 8, 8);
   renderSwapWalletStrip();
+  renderSwapWalletControls();
 }
 
 
@@ -3746,6 +4170,8 @@ function fmtUsdCost(x) {
 
   $("btnConnectPhantom").addEventListener("click", () => connectPhantom(false));
   $("btnDisconnectPhantom").addEventListener("click", disconnectPhantom);
+  $("btnSwapConnectPhantom").addEventListener("click", () => connectPhantom(false));
+  $("btnSwapDisconnectPhantom").addEventListener("click", disconnectPhantom);
   $("btnSignMessage").addEventListener("click", signMessageWithPhantom);
   $("btnValidateSend").addEventListener("click", validateSendSol);
   $("btnSendSol").addEventListener("click", sendSol);

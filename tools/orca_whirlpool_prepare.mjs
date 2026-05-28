@@ -202,7 +202,7 @@ function validateRequest(request) {
 
 async function prepareOrcaWhirlpoolSwap(request) {
   await setWhirlpoolsConfig("solanaMainnet");
-  setNativeMintWrappingStrategy("none");
+  setNativeMintWrappingStrategy("ata");
 
   const rpc = createSolanaRpc(mainnet(request.rpcUrl));
   const signer = createNoopSigner(request.wallet.value);

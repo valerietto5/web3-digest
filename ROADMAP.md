@@ -664,3 +664,27 @@ uvicorn api.main:app --reload --log-level debug
 
 Future dashboard / activity layer:
 Evaluate Helius getTransfersByAddress for parsed wallet transfer history, activity feed, and support-mode diagnostics.
+
+Resume Web3 Digest from commit d945454.
+
+Current milestone:
+External Token Flow V1 is working and committed:
+- paste Solana mint in /ui
+- resolve metadata via DexScreener
+- resolve decimals via Solana RPC
+- quote temporary external tokens without TOKEN_META mutation
+- Jupiter/Raydium/Meteora/Orca/Phantom coverage works
+- PumpSwap canonical pool discovery works for SOL <-> pump-style token pairs
+- token promotion audit tool works and reports readable universe diagnostics
+- latest commit: d945454 Polish token promotion audit reporting
+- tests: 130 OK
+- git status was clean
+
+Next session:
+1. Run git status/log/tests.
+2. Do live UI checks for SOL -> Fartcoin and SOL -> USDUC.
+3. Decide between:
+   A) productize external-token UI/promotion audit display,
+   B) update docs/roadmap/technical deep dive for External Token Flow V1,
+   C) plan Helius activity layer for future wallet dashboard/support diagnostics.
+Future idea: evaluate Helius getTransfersByAddress for parsed wallet transfer history, activity feed, and support-mode diagnostics.
