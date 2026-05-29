@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import base64
+import re
 from typing import Any
 
 import requests
@@ -8,12 +10,16 @@ import requests
 
 DEFAULT_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
 DEFAULT_TIMEOUT_SECONDS = 10
+_BASE58_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
 
 def _default_rpc_url() -> str:
     return (
-        os.getenv("SOLANA_RPC_URL")
+        os.getenv("SWAP_PREPARE_RPC_URL")
+        or os.getenv("SWAP_SUBMIT_RPC_URL")
+        or os.getenv("SOLANA_RPC_URL")
         or os.getenv("SOLANA_MAINNET_RPC_URL")
+        or os.getenv("HELIUS_RPC_URL")
         or DEFAULT_SOLANA_RPC_URL
     )
 
@@ -35,12 +41,50 @@ def _extract_decimals(result: dict[str, Any]) -> int | None:
     return None
 
 
+def _extract_raw_mint_decimals(result: dict[str, Any]) -> int | None:
+    value = result.get("value") if isinstance(result, dict) else None
+    if not isinstance(value, dict):
+        return None
+
+    account_data = value.get("data")
+    encoded = None
+    if isinstance(account_data, list) and account_data:
+        encoded = account_data[0]
+    elif isinstance(account_data, str):
+        encoded = account_data
+    if not isinstance(encoded, str) or not encoded:
+        return None
+
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception:
+        return None
+
+    # SPL Token mint layout stores decimals at byte offset 44.
+    if len(raw) <= 44:
+        return None
+    decimals = raw[44]
+    return int(decimals) if 0 <= decimals <= 255 else None
+
+
 def fetch_solana_mint_decimals(
     mint: str,
     rpc_url: str | None = None,
     *,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
+    mint = (mint or "").strip()
+    if not _BASE58_RE.fullmatch(mint):
+        return {
+            "ok": False,
+            "error": {
+                "code": "INVALID_SOLANA_MINT",
+                "message": "mint must look like a Solana public key.",
+                "provider": "solana_rpc",
+                "mint": mint,
+            },
+        }
+
     url = rpc_url or _default_rpc_url()
     payload = {
         "jsonrpc": "2.0",
@@ -65,7 +109,7 @@ def fetch_solana_mint_decimals(
                 "message": "Solana RPC mint decimals lookup failed.",
                 "provider": "solana_rpc",
                 "mint": mint,
-                "detail": str(exc),
+                "detail": exc.__class__.__name__,
             },
         }
 
@@ -91,7 +135,7 @@ def fetch_solana_mint_decimals(
                 "message": "Solana RPC mint decimals lookup returned invalid JSON.",
                 "provider": "solana_rpc",
                 "mint": mint,
-                "detail": str(exc),
+                "detail": exc.__class__.__name__,
             },
         }
 
@@ -121,6 +165,8 @@ def fetch_solana_mint_decimals(
 
     decimals = _extract_decimals(result)
     if decimals is None:
+        decimals = _extract_raw_mint_decimals(result)
+    if decimals is None:
         return {
             "ok": False,
             "error": {
@@ -139,7 +185,7 @@ def fetch_solana_mint_decimals(
     return {
         "ok": True,
         "decimals": decimals,
-        "source": "solana_rpc",
+        "source": "solana_rpc_mint_account",
         "mint": mint,
         "owner": owner,
     }

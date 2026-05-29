@@ -227,6 +227,32 @@ class TestSanity(unittest.TestCase):
         fetch_external.assert_not_called()
         fetch_decimals.assert_not_called()
 
+    def test_token_resolver_resolves_registry_mint_missing_decimals_via_rpc_without_mutating_registry(self):
+        snp500_mint = "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
+        before = json.dumps(TOKEN_META, sort_keys=True)
+        with patch(
+            "providers.token_resolver.fetch_solana_mint_decimals",
+            return_value={
+                "ok": True,
+                "decimals": 6,
+                "source": "solana_rpc_mint_account",
+                "mint": snp500_mint,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            },
+        ) as fetch_decimals:
+            result = resolve_token(snp500_mint)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["token"]["source"], "registry")
+        self.assertEqual(result["token"]["asset"], "snp500")
+        self.assertEqual(result["token"]["symbol"], "SNP500")
+        self.assertEqual(result["token"]["mint"], snp500_mint)
+        self.assertEqual(result["token"]["decimals"], 6)
+        self.assertEqual(result["token"]["decimals_source"], "solana_rpc_mint_account")
+        self.assertNotIn("decimals_unresolved", result["token"]["warnings"])
+        fetch_decimals.assert_called_once_with(snp500_mint)
+        self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
     def test_token_resolver_rejects_empty_query(self):
         result = resolve_token("  ")
 
@@ -378,9 +404,31 @@ class TestSanity(unittest.TestCase):
         result = token_resolve(query="USDC", allow_external=True)
 
         self.assertTrue(result["ok"])
+        self.assertTrue(result["can_quote"])
+        self.assertTrue(result["token"]["can_quote"])
         self.assertEqual(result["token"]["symbol"], "USDC")
         self.assertEqual(result["token"]["mint"], "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
         self.assertEqual(result["token"]["decimals"], 6)
+
+    def test_token_resolve_endpoint_marks_unresolved_decimals_not_quote_safe(self):
+        snp500_mint = "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
+        with patch(
+            "providers.token_resolver.fetch_solana_mint_decimals",
+            return_value={
+                "ok": False,
+                "error": {
+                    "code": "TOKEN_DECIMALS_NOT_FOUND",
+                    "message": "missing decimals",
+                },
+            },
+        ):
+            result = token_resolve(query=snp500_mint, allow_external=True)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["can_quote"])
+        self.assertFalse(result["token"]["can_quote"])
+        self.assertEqual(result["reason"], "decimals_unresolved")
+        self.assertIn("decimals_unresolved", result["token"]["warnings"])
 
     def test_token_resolve_endpoint_supports_allow_external_parameter(self):
         unknown_mint = "11111111111111111111111111111112"
@@ -413,14 +461,46 @@ class TestSanity(unittest.TestCase):
                 }
 
         with patch("providers.solana_token_metadata.requests.post", return_value=Response()) as post:
-            result = fetch_solana_mint_decimals("mint", rpc_url="https://example.invalid")
+            result = fetch_solana_mint_decimals("11111111111111111111111111111112", rpc_url="https://example.invalid")
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["decimals"], 8)
-        self.assertEqual(result["source"], "solana_rpc")
+        self.assertEqual(result["source"], "solana_rpc_mint_account")
         self.assertEqual(result["owner"], "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
         self.assertEqual(post.call_args.kwargs["json"]["method"], "getAccountInfo")
         self.assertEqual(post.call_args.kwargs["json"]["params"][1]["encoding"], "jsonParsed")
+
+    def test_solana_mint_decimals_rpc_helper_validates_mint_and_parses_raw_account(self):
+        invalid = fetch_solana_mint_decimals("not a mint", rpc_url="https://example.invalid")
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["error"]["code"], "INVALID_SOLANA_MINT")
+
+        raw = bytearray(82)
+        raw[44] = 6
+
+        class Response:
+            ok = True
+            status_code = 200
+
+            def json(self):
+                return {
+                    "result": {
+                        "value": {
+                            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                            "data": [base64.b64encode(bytes(raw)).decode("ascii"), "base64"],
+                        },
+                    },
+                }
+
+        with patch("providers.solana_token_metadata.requests.post", return_value=Response()):
+            result = fetch_solana_mint_decimals(
+                "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump",
+                rpc_url="https://example.invalid",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["decimals"], 6)
+        self.assertEqual(result["source"], "solana_rpc_mint_account")
 
     def test_solana_mint_decimals_rpc_helper_reports_not_found(self):
         class MissingResponse:
@@ -440,7 +520,7 @@ class TestSanity(unittest.TestCase):
         for response in (MissingResponse(), MissingDecimalsResponse()):
             with self.subTest(response=response.__class__.__name__):
                 with patch("providers.solana_token_metadata.requests.post", return_value=response):
-                    result = fetch_solana_mint_decimals("mint", rpc_url="https://example.invalid")
+                    result = fetch_solana_mint_decimals("11111111111111111111111111111112", rpc_url="https://example.invalid")
 
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["error"]["code"], "TOKEN_DECIMALS_NOT_FOUND")
@@ -480,7 +560,7 @@ class TestSanity(unittest.TestCase):
                     side_effect=side_effect,
                     return_value=return_value,
                 ):
-                    result = fetch_solana_mint_decimals("mint", rpc_url="https://example.invalid")
+                    result = fetch_solana_mint_decimals("11111111111111111111111111111112", rpc_url="https://example.invalid")
 
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["error"]["code"], "TOKEN_DECIMALS_LOOKUP_FAILED")
@@ -527,6 +607,37 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(meta["resolver_source"], "dexscreener")
         self.assertEqual(meta["symbol"], "JUP")
         self.assertEqual(meta["quote_label"], "JUP")
+        self.assertEqual(meta["mint"], mint)
+        self.assertEqual(meta["decimals"], 6)
+
+    def test_resolve_swap_token_for_quote_accepts_registry_mint_after_safe_decimal_lookup(self):
+        mint = "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
+        with patch(
+            "api.main.resolve_token",
+            return_value={
+                "ok": True,
+                "token": {
+                    "source": "registry",
+                    "symbol": "SNP500",
+                    "name": "SNP500",
+                    "display_name": "SNP500",
+                    "mint": mint,
+                    "decimals": 6,
+                    "decimals_source": "solana_rpc_mint_account",
+                    "verified": False,
+                    "default_enabled": False,
+                    "tags": ["meme"],
+                    "warnings": [],
+                },
+            },
+        ):
+            meta = _resolve_swap_token_for_quote(mint)
+
+        self.assertTrue(meta["external"])
+        self.assertEqual(meta["source"], "external_resolver")
+        self.assertEqual(meta["resolver_source"], "registry")
+        self.assertEqual(meta["symbol"], "SNP500")
+        self.assertEqual(meta["quote_label"], "SNP500")
         self.assertEqual(meta["mint"], mint)
         self.assertEqual(meta["decimals"], 6)
 
@@ -1911,10 +2022,30 @@ class TestSanity(unittest.TestCase):
         self.assertIn("function resolveSwapTokenInput(side)", html)
         self.assertIn('fetchMaybeJson("/tokens/resolve?" + qs({', html)
         self.assertIn("allow_external: true", html)
+        self.assertIn("SWAP_RECOGNIZED_TOKENS_STORAGE_KEY", html)
+        self.assertIn("web3Digest.swapRecognizedTokens.v1", html)
+        self.assertIn("let swapRecognizedTokenMap = {}", html)
+        self.assertIn("const swapSelectedRecognizedTokenMint = {", html)
+        self.assertIn("function rememberResolvedSwapToken(token)", html)
+        self.assertIn("function useResolvedSwapToken(side)", html)
+        self.assertIn("function resetResolvedSwapTokenSelection(side)", html)
+        self.assertIn('swapSelectedRecognizedTokenMint[side] = recognized.mint;', html)
+        self.assertIn('swapSelectedRecognizedTokenMint[side] = "";', html)
+        self.assertIn("Token added ✓", html)
+        self.assertIn("token-resolve-use-added", html)
+        self.assertIn("disabledAttr", html)
+        self.assertIn('resetResolvedSwapTokenSelection("from");', html)
+        self.assertIn('resetResolvedSwapTokenSelection("to");', html)
+        self.assertIn("localStorage.setItem(", html)
+        self.assertIn(".token-resolve-use {", html)
+        self.assertIn('"mini-btn token-resolve-use"', html)
+        self.assertIn("data-token-resolve-use", html)
+        self.assertIn("quote ready", html)
+        self.assertIn("String(item.mint || \"\").toUpperCase() === t", html)
         self.assertNotIn("${symbol} · Saved token", html)
         self.assertNotIn("Registry · ${decimals} decimals", html)
         self.assertNotIn("Known token:", html)
-        self.assertIn("${symbol} · External token · ${mint} · unverified", html)
+        self.assertNotIn("${symbol} · External token · ${mint} · unverified", html)
         self.assertNotIn("External · ${decimals} decimals", html)
         self.assertNotIn("External token: ${symbol} / ${name}", html)
         self.assertIn("External", html)
@@ -1987,6 +2118,16 @@ class TestSanity(unittest.TestCase):
         self.assertIn("function selectedFromHolding()", html)
         self.assertIn("function setSwapAmountFromHolding(fraction)", html)
         self.assertIn("function openSwapHoldingsDropdown()", html)
+        self.assertIn("function recognizedSwapTokenAssetKeys()", html)
+        self.assertIn("function recognizedSwapTokenForAsset(asset, position=null)", html)
+        self.assertIn("function swapPortfolioAssetRequestValue()", html)
+        self.assertIn('asset_key: String(token.asset_key || token.asset || ("spl:" + mint)).trim()', html)
+        self.assertIn("const recognized = recognizedSwapTokenForAsset(rawAsset, position);", html)
+        self.assertIn("splMint || recognizedMint", html)
+        self.assertIn("const baseAssets = typedAssets.length ? typedAssets : (currentAssets.length ? currentAssets : [\"sol\", \"usdc\"]);", html)
+        self.assertIn("for (const asset of recognizedSwapTokenAssetKeys())", html)
+        self.assertIn('const assets = swapPortfolioAssetRequestValue();', html)
+        self.assertIn('const force = "true";', html)
         self.assertIn('$("swapFromTokenSelector").addEventListener("click", () => openSwapHoldingsDropdown());', html)
         self.assertIn("token_input_value", html)
         self.assertIn("rawAsset.toLowerCase().startsWith(\"spl:\")", html)
@@ -2025,6 +2166,12 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("prepareSwapRoute", amount_block)
         self.assertNotIn("signAndSubmitPreparedSwap", amount_block)
         self.assertNotIn("/swap/execute/submit", amount_block)
+
+    def test_display_asset_maps_registry_asset_keys_to_symbols(self):
+        from api.main import display_asset
+
+        self.assertEqual(display_asset("snp500"), "SNP500")
+        self.assertEqual(display_asset("spl:3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"), "SNP500")
 
     def test_swap_ui_preflights_sol_requirement_before_phantom(self):
         html = build_ui_html()
@@ -3232,7 +3379,24 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(payload["pool_candidates"], [])
         self.assertTrue(payload["unsupported_pair"])
-        self.assertIn("SOL <-> token canonical pools only", payload["unsupported_pair_detail"])
+        self.assertEqual(payload["unsupported_pair_reason"], "pumpswap_direct_sol_pair_only")
+        self.assertIn("SOL <-> pump-token canonical pools only", payload["unsupported_pair_detail"])
+        self.assertIn("composed route", payload["unsupported_pair_detail"])
+
+    def test_build_pumpswap_quote_payload_supports_external_pump_token_to_sol(self):
+        payload = _build_pumpswap_quote_payload(
+            input_mint="3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump",
+            output_mint=METEORA_DLMM_SOL_MINT,
+            amount_raw=20_000_000_000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertEqual(payload["pool_candidates"], [])
+        self.assertTrue(payload["discover_canonical_pool"])
+        self.assertEqual(payload["discovery_mode"], "canonical_pumpswap_pool")
+        self.assertNotIn("unsupported_pair", payload)
 
     def test_try_fetch_pumpswap_quote_handles_unsupported_pair_without_fake_card(self):
         payload = _build_pumpswap_quote_payload(

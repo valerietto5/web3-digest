@@ -29,6 +29,8 @@ def build_ui_html() -> str:
     button { padding: 10px 12px; border-radius: 10px; border: 1px solid #333; background: #111; color: #fff; cursor: pointer; }
     button.secondary { background: #fff; color: #111; border-color: #aaa; }
     button:disabled { opacity: .6; cursor: not-allowed; }
+    .token-resolve-use { padding: 3px 7px; border-radius: 7px; font-size: 11px; margin-left: 6px; vertical-align: middle; }
+    .token-resolve-use-added { background: #fff; color: #333; border-color: #ccc; }
     table { border-collapse: collapse; width: 100%; margin-top: 10px; }
     th, td { border-bottom: 1px solid #eee; padding: 8px; text-align: left; font-size: 13px; }
     th { background: #fafafa; position: sticky; top: 0; }
@@ -368,15 +370,21 @@ def build_ui_html() -> str:
   const SWAP_BALANCE_FRESH_MS = 5 * 60 * 1000;
   const SWAP_SOL_FEE_ACCOUNT_SETUP_BUFFER_SOL = 0.001;
   const SWAP_DEFAULT_NETWORK_FEE_SOL = 0.0001;
+  const SWAP_RECOGNIZED_TOKENS_STORAGE_KEY = "web3Digest.swapRecognizedTokens.v1";
   const activityItems = [];
   let swapTokenList = [
     { symbol: "SOL", display_name: "Solana", decimals: 9 },
     { symbol: "USDC", display_name: "USD Coin", decimals: 6 }
   ];
+  let swapRecognizedTokenMap = {};
   const swapTokenResolveTimers = {};
   const swapTokenResolveState = {
     from: null,
     to: null
+  };
+  const swapSelectedRecognizedTokenMint = {
+    from: "",
+    to: ""
   };
   let holderConcentrationMint = null;
   let latestPortfolioReport = null;
@@ -492,12 +500,15 @@ function portfolioHoldingRows() {
       const amount = Number(position?.amount);
       const rawAsset = String(asset || "");
       const splMint = rawAsset.toLowerCase().startsWith("spl:") ? rawAsset.slice(4) : "";
-      const label = String(position?.display || position?.symbol || rawAsset || "").replace(/^spl:/i, "").toUpperCase();
+      const recognized = recognizedSwapTokenForAsset(rawAsset, position);
+      const recognizedMint = recognized?.mint || "";
+      const recognizedSymbol = recognized?.symbol || recognized?.display_name || "";
+      const label = String(recognizedSymbol || position?.display || position?.symbol || rawAsset || "").replace(/^spl:/i, "").toUpperCase();
       return {
         asset: rawAsset,
-        mint: splMint,
-        token_input_value: splMint || rawAsset.replace(/^spl:/i, "").toUpperCase(),
-        token_value: rawAsset.replace(/^spl:/i, "").toUpperCase(),
+        mint: splMint || recognizedMint,
+        token_input_value: splMint || recognizedMint || rawAsset.replace(/^spl:/i, "").toUpperCase(),
+        token_value: recognizedMint || rawAsset.replace(/^spl:/i, "").toUpperCase(),
         label,
         amount,
         balance_ts: position?.balance_ts || "",
@@ -513,14 +524,24 @@ function selectedFromHolding() {
   const resolvedMint = normalizeSwapAssetKey(swapTokenResolveState.from?.mint);
   if (!query && !resolvedMint) return null;
 
-  return portfolioHoldingRows().find((row) => {
+  const matches = portfolioHoldingRows().filter((row) => {
     const asset = normalizeSwapAssetKey(row.asset);
+    const mint = normalizeSwapAssetKey(row.mint);
     const label = normalizeSwapAssetKey(row.label);
     const value = normalizeSwapAssetKey(row.token_value);
     const inputValue = normalizeSwapAssetKey(row.token_input_value);
-    return asset === query || label === query || value === query || inputValue === query ||
-      (resolvedMint && (asset === resolvedMint || value === resolvedMint || inputValue === resolvedMint));
-  }) || null;
+    return asset === query || mint === query || label === query || value === query || inputValue === query ||
+      (resolvedMint && (asset === resolvedMint || mint === resolvedMint || value === resolvedMint || inputValue === resolvedMint));
+  });
+  matches.sort((left, right) => {
+    const leftExactMint = resolvedMint && normalizeSwapAssetKey(left.mint || left.token_value || left.token_input_value) === resolvedMint;
+    const rightExactMint = resolvedMint && normalizeSwapAssetKey(right.mint || right.token_value || right.token_input_value) === resolvedMint;
+    if (leftExactMint !== rightExactMint) return leftExactMint ? -1 : 1;
+    const leftTs = Date.parse(left.balance_ts || "");
+    const rightTs = Date.parse(right.balance_ts || "");
+    return (Number.isFinite(rightTs) ? rightTs : 0) - (Number.isFinite(leftTs) ? leftTs : 0);
+  });
+  return matches[0] || null;
 }
 
 function selectedSolHolding() {
@@ -3603,6 +3624,141 @@ function qs(params) {
     return ($(id)?.value || "").trim();
   }
 
+  function recognizedSwapTokenKey(token) {
+    const mint = String(token?.mint || "").trim();
+    return mint ? mint.toLowerCase() : "";
+  }
+
+  function normalizeRecognizedSwapToken(token) {
+    if (!token || typeof token !== "object") return null;
+    const mint = String(token.mint || "").trim();
+    const decimals = Number(token.decimals);
+    const symbol = String(token.symbol || token.display_name || "").trim();
+    if (!mint || !Number.isInteger(decimals) || decimals < 0 || !symbol) return null;
+    return {
+      symbol,
+      display_name: String(token.display_name || token.name || symbol).trim() || symbol,
+      name: String(token.name || token.display_name || symbol).trim() || symbol,
+      mint,
+      asset_key: String(token.asset_key || token.asset || ("spl:" + mint)).trim(),
+      decimals,
+      logo_uri: token.logo_uri || "",
+      source: token.source || token.resolver_source || "external_resolver",
+      decimals_source: token.decimals_source || "",
+      verified: Boolean(token.verified),
+      default_enabled: false,
+      can_quote: true
+    };
+  }
+
+  function recognizedSwapTokenAssetKey(token) {
+    const normalized = normalizeRecognizedSwapToken(token);
+    if (!normalized) return "";
+    return normalized.asset_key || ("spl:" + normalized.mint);
+  }
+
+  function recognizedSwapTokenAssetKeys() {
+    return Object.values(swapRecognizedTokenMap)
+      .map((token) => recognizedSwapTokenAssetKey(token))
+      .filter(Boolean);
+  }
+
+  function recognizedSwapTokenForAsset(asset, position=null) {
+    const assetKey = String(asset || "").trim().toLowerCase();
+    const positionMint = String(position?.mint || "").trim().toLowerCase();
+    return Object.values(swapRecognizedTokenMap).find((token) => {
+      const mint = String(token?.mint || "").trim().toLowerCase();
+      const tokenAsset = String(token?.asset_key || token?.asset || "").trim().toLowerCase();
+      return (mint && (assetKey === mint || assetKey === "spl:" + mint || positionMint === mint)) ||
+        (tokenAsset && assetKey === tokenAsset);
+    }) || null;
+  }
+
+  function swapPortfolioAssetRequestValue() {
+    const typedAssets = String($("assetsInput")?.value || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const currentAssets = Object.keys(latestPortfolioReport?.positions || {});
+    const baseAssets = typedAssets.length ? typedAssets : (currentAssets.length ? currentAssets : ["sol", "usdc"]);
+    const assets = new Set(baseAssets);
+    for (const asset of recognizedSwapTokenAssetKeys()) {
+      if (asset) assets.add(asset);
+    }
+    if (!assets.size) return "";
+    return Array.from(assets).join(",");
+  }
+
+  function loadRecognizedSwapTokens() {
+    swapRecognizedTokenMap = {};
+    try {
+      const raw = localStorage.getItem(SWAP_RECOGNIZED_TOKENS_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const tokens = Array.isArray(parsed) ? parsed : [];
+      for (const item of tokens) {
+        const token = normalizeRecognizedSwapToken(item);
+        const key = recognizedSwapTokenKey(token);
+        if (key) swapRecognizedTokenMap[key] = token;
+      }
+    } catch (err) {
+      swapRecognizedTokenMap = {};
+    }
+  }
+
+  function saveRecognizedSwapTokens() {
+    try {
+      localStorage.setItem(
+        SWAP_RECOGNIZED_TOKENS_STORAGE_KEY,
+        JSON.stringify(Object.values(swapRecognizedTokenMap).slice(0, 50))
+      );
+    } catch (err) {
+      // Session recognition still works without localStorage.
+    }
+  }
+
+  function mergeRecognizedSwapTokensIntoList() {
+    const byMint = new Map();
+    const merged = [];
+    for (const token of swapTokenList) {
+      const mint = String(token?.mint || "").toLowerCase();
+      if (mint) byMint.set(mint, token);
+      merged.push(token);
+    }
+    for (const token of Object.values(swapRecognizedTokenMap)) {
+      const mint = String(token?.mint || "").toLowerCase();
+      if (!mint || byMint.has(mint)) continue;
+      byMint.set(mint, token);
+      merged.push(token);
+    }
+    swapTokenList = merged;
+  }
+
+  function rememberResolvedSwapToken(token) {
+    const normalized = normalizeRecognizedSwapToken(token);
+    const key = recognizedSwapTokenKey(normalized);
+    if (!key) return null;
+    swapRecognizedTokenMap[key] = normalized;
+    saveRecognizedSwapTokens();
+    mergeRecognizedSwapTokensIntoList();
+    renderSwapTokenChoices();
+    return normalized;
+  }
+
+  function useResolvedSwapToken(side) {
+    const token = swapTokenResolveState[side];
+    const recognized = rememberResolvedSwapToken(token);
+    if (!recognized) return;
+    const input = $(side === "from" ? "swapFromToken" : "swapToToken");
+    if (input) input.value = recognized.mint;
+    swapSelectedRecognizedTokenMint[side] = recognized.mint;
+    setTokenResolvePreview(side, recognized);
+    updateLiveSwapBaseline();
+  }
+
+  function resetResolvedSwapTokenSelection(side) {
+    swapSelectedRecognizedTokenMint[side] = "";
+  }
+
   function renderSwapTokenChoices() {
     const list = $("swapTokenChoices");
     if (!list) return;
@@ -3657,11 +3813,22 @@ function qs(params) {
     const symbol = token.symbol || "Unknown";
     const mint = token.mint ? shortenMiddle(String(token.mint), 6, 6) : "unknown";
     const external = token.source !== "registry" || token.verified === false;
+    const selectedMint = String(swapSelectedRecognizedTokenMint[side] || "");
+    const isSelectedRecognizedToken = Boolean(token.mint && selectedMint === String(token.mint));
 
     if (!Number.isInteger(token.decimals)) {
       box.textContent = "Token metadata found, but decimals are unresolved. Quote preview is not safe yet.";
     } else if (external) {
-      box.textContent = `${symbol} · External token · ${mint} · unverified`;
+      rememberResolvedSwapToken(token);
+      const actionLabel = isSelectedRecognizedToken ? "Token added ✓" : "Use token";
+      const actionClass = isSelectedRecognizedToken
+        ? "mini-btn token-resolve-use token-resolve-use-added"
+        : "mini-btn token-resolve-use";
+      const disabledAttr = isSelectedRecognizedToken ? " disabled" : "";
+      box.innerHTML = `
+        <span>${escapeHtml(symbol)} — ${escapeHtml(mint)} · quote ready</span>
+        <button type="button" class="${actionClass}" data-token-resolve-use="${escapeHtml(side)}"${disabledAttr}>${actionLabel}</button>
+      `;
     } else {
       box.textContent = "";
     }
@@ -3743,6 +3910,7 @@ function qs(params) {
       const tokens = Array.isArray(res.data?.tokens) ? res.data.tokens : [];
       if (res.ok && res.data?.ok && tokens.length) {
         swapTokenList = tokens;
+        mergeRecognizedSwapTokensIntoList();
       }
     } catch (err) {
       // Keep the built-in SOL/USDC fallback if the registry endpoint is unavailable.
@@ -3782,7 +3950,10 @@ function qs(params) {
 
   function tokenDecimals(token) {
     const t = String(token || "").toUpperCase();
-    const found = swapTokenList.find((item) => String(item.symbol || "").toUpperCase() === t);
+    const found = swapTokenList.find((item) =>
+      String(item.symbol || "").toUpperCase() === t ||
+      String(item.mint || "").toUpperCase() === t
+    );
     if (found && found.decimals !== undefined && found.decimals !== null) {
       const n = Number(found.decimals);
       if (Number.isInteger(n) && n >= 0) return n;
@@ -4106,7 +4277,7 @@ function fmtUsdCost(x) {
   async function loadReportAndHistory() {
     const account = $("accountSelect").value;
     const currency = $("currencyInput").value || "usd";
-    const assets = $("assetsInput").value;
+    const assets = swapPortfolioAssetRequestValue();
     const showUnpriced = $("showUnpriced").value;
 
     const r1 = await fetchMaybeJson("/portfolio/latest?" + qs({
@@ -4126,7 +4297,7 @@ function fmtUsdCost(x) {
 
   async function refreshBalances() {
     const account = $("accountSelect").value;
-    const force = $("forceSelect").value;
+    const force = "true";
     const r = await fetchMaybeJson("/refresh/balances?" + qs({ account, force }), { method: "POST" });
     if (!r.ok) {
       showStatus("err", "POST /refresh/balances failed", r.data || r.text);
@@ -4193,6 +4364,11 @@ function fmtUsdCost(x) {
     renderSwapFromBalance();
   });
   $("swapCard").addEventListener("click", handleSwapExecuteClick);
+  $("swapCard").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-token-resolve-use]");
+    if (!button) return;
+    useResolvedSwapToken(button.dataset.tokenResolveUse || "from");
+  });
   $("swapAmount").addEventListener("input", () => {
     clearSwapQuoteFreshness();
     updateLiveSwapBaseline();
@@ -4201,10 +4377,14 @@ function fmtUsdCost(x) {
     openSwapHoldingsDropdown();
   });
   $("swapFromToken").addEventListener("input", () => {
+    resetResolvedSwapTokenSelection("from");
     renderSwapFromBalance();
     scheduleSwapTokenResolve("from");
   });
-  $("swapToToken").addEventListener("input", () => scheduleSwapTokenResolve("to"));
+  $("swapToToken").addEventListener("input", () => {
+    resetResolvedSwapTokenSelection("to");
+    scheduleSwapTokenResolve("to");
+  });
   $("swapFromToken").addEventListener("change", () => {
     resolveSwapTokenInput("from");
     renderSwapFromBalance();
@@ -4219,6 +4399,7 @@ function fmtUsdCost(x) {
   (async () => {
     resetSendStateUi();
     renderActivityLog();
+    loadRecognizedSwapTokens();
     await loadSwapTokens();
     resolveSwapTokenInput("from");
     resolveSwapTokenInput("to");

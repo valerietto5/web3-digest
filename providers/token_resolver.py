@@ -24,6 +24,7 @@ def _public_token(meta: dict[str, Any], *, source: str) -> dict[str, Any]:
 
     return {
         "source": source,
+        "asset": meta.get("asset"),
         "symbol": symbol,
         "name": meta.get("name") or display_name or symbol,
         "display_name": display_name or symbol,
@@ -275,6 +276,8 @@ def resolve_token(query: str, *, allow_external: bool = True) -> dict[str, Any]:
 
     registry_token = _resolve_registry_token(normalized)
     if registry_token:
+        if _is_probable_solana_mint(registry_token.get("mint") or "") and not isinstance(registry_token.get("decimals"), int):
+            registry_token = _with_decimals_lookup(registry_token)
         return {
             "ok": True,
             "token": registry_token,

@@ -592,6 +592,16 @@ def display_asset(asset: str) -> str:
     if asset in {"sol", "usdc", "btc", "eth"}:
         return asset.upper()
 
+    try:
+        import token_registry
+        for _mint, info in getattr(token_registry, "TOKENS", {}).items():
+            if not isinstance(info, dict):
+                continue
+            if (info.get("asset") or "").strip().lower() == asset.lower():
+                return info.get("symbol") or info.get("name") or asset.upper()
+    except Exception:
+        pass
+
     # SPL mint format: spl:<mint>
     if asset.startswith("spl:"):
         mint = asset.split(":", 1)[1]
@@ -755,7 +765,22 @@ def swap_tokens():
 
 @app.get("/tokens/resolve")
 def token_resolve(query: str = Query(""), allow_external: bool = Query(True)):
-    return resolve_token(query, allow_external=allow_external)
+    result = resolve_token(query, allow_external=allow_external)
+    if not isinstance(result, dict):
+        return result
+
+    token = result.get("token")
+    decimals = token.get("decimals") if isinstance(token, dict) else None
+    can_quote = isinstance(decimals, int) and decimals >= 0
+    result["can_quote"] = bool(result.get("ok") is True and can_quote)
+    if isinstance(token, dict):
+        token["can_quote"] = result["can_quote"]
+    if result.get("ok") is True and not can_quote:
+        result["reason"] = "decimals_unresolved"
+    elif result.get("ok") is not True:
+        error = result.get("error") if isinstance(result.get("error"), dict) else {}
+        result["reason"] = error.get("code") or "token_unresolved"
+    return result
 
 
 @app.get("/tokens/holder-concentration")
@@ -3892,8 +3917,10 @@ def _build_pumpswap_quote_payload(
     elif not supported_pair:
         payload["unsupported_pair"] = True
         payload["unsupported_pair_detail"] = (
-            "PumpSwap external discovery currently supports SOL <-> token canonical pools only."
+            "PumpSwap direct coverage currently supports SOL <-> pump-token canonical pools only; "
+            "non-SOL pairs require a composed route that is not implemented yet."
         )
+        payload["unsupported_pair_reason"] = "pumpswap_direct_sol_pair_only"
 
     if not user_public_key:
         payload["skip_reason"] = "wallet_public_key_required_for_pumpswap_quote"
