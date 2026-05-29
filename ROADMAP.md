@@ -4,19 +4,24 @@ This file is the active “where we’re going next” plan for Web3 Digest.
 
 It should stay clean enough to use as the main resume/start point at the beginning of each session.
 
-Updated checkpoint: after reaching the first multi-universe swap quote engine.
+Updated checkpoint: after guarded execution paths for Jupiter, Raydium, Orca, and PumpSwap, plus recognized external-token swaps.
+
+Latest implementation checkpoints reflected here:
+
+- `0f3f15a` — Fix Orca native SOL wrapping
+- `343a2ba` — Support recognized external token swaps
 
 ---
 
 ## Current phase
 
-**Execution Intelligence Engine Alpha**
+**Execution Intelligence Alpha**
 
 Web3 Digest is no longer being treated as “a wallet that can also do swaps.”
 
 It is now clearly a:
 
-**wallet-connected execution comparison engine for Solana swaps.**
+**executable Solana swap-intelligence alpha.**
 
 That means:
 
@@ -28,11 +33,11 @@ That means:
   - understand benchmark/reference gap
   - understand known route costs where available
   - choose better execution paths
-  - later execute selected routes through Phantom
+  - execute supported routes through Phantom
 
 The product wedge is:
 
-**connect Phantom, compare swap outcomes honestly, explain costs clearly, then execute safely.**
+**connect Phantom, compare swap outcomes honestly, explain costs clearly, then execute supported routes safely.**
 
 ---
 
@@ -54,7 +59,7 @@ Protect users from blind execution, hidden wallet-layer costs, and route opacity
 
 ### Direction
 
-Compare multiple execution universes first, then expand into execution, scalable token intake, broader venue support, stronger cost modeling, and later multichain execution intelligence.
+Compare multiple execution universes, execute supported routes through Phantom, expand scalable token intake, improve cost modeling, and later evaluate broader venue/multichain execution intelligence.
 
 ### Moat
 
@@ -72,20 +77,22 @@ We make execution understandable, trustworthy, and cost-transparent — and we l
 
 ## Current shipped local state
 
-The current local build has moved beyond the original Jupiter-only prototype.
+The current local build has moved beyond the original Jupiter-only prototype and beyond quote-only swap comparison.
 
 ### Core app foundation
 
 - FastAPI backend
 - browser UI at `/ui`
 - Phantom connect/signing foundation
-- swap quote surface
+- swap quote + guarded execution surface
 - inline benchmark/reference baseline
 - Recommended / Direct / Alternatives route structure
 - route cards with user-facing “Via X” labeling
 - quote-only vs clickable behavior fields
+- backend prepare/preflight/submit flow for supported providers
+- transaction diagnostics for setup/rent/wSOL failures
 - fail-soft diagnostics for unsupported venues
-- tests covering major registry and quote behavior
+- tests covering registry, quote, prepare, preflight, execution gating, and external-token behavior
 
 ### Current quote universes
 
@@ -93,24 +100,25 @@ The quote engine now compares multiple recognizable execution universes.
 
 #### Jupiter
 
-- primary quote universe
-- currently the main executable-capable path
-- used for primary reference/recommendation behavior
-- future first execution target
+- quote + executable through Phantom
+- used for primary reference/recommendation behavior where it wins
+- USDC -> SOL preflight passed and opened Phantom during reverse-route testing
 
 #### Raydium
 
 - real quote path
-- comparison-only
-- non-clickable for now
-- no fake execution CTA
+- executable through Phantom where supported
+- live SOL -> BONK and SOL -> USDC swaps succeeded on Solana mainnet
 
 #### Orca
 
 - explicit pool candidate model
 - only shows real successful quotes
 - unsupported pairs fail softly
-- no fake quote cards
+- executable through Phantom where supported
+- native SOL wrapping fixed by using `setNativeMintWrappingStrategy("ata")`
+- SOL -> USDC executed successfully on Solana mainnet
+- high/MAX SOL amounts block before Phantom when setup/rent/fee shortfall exists
 
 #### Meteora
 
@@ -128,9 +136,9 @@ The quote engine now compares multiple recognizable execution universes.
 
 #### PumpSwap
 
-- curated-only
-- currently used only for the FIGURE docs/test token path
-- not treated as a generic Pump.fun token solution yet
+- direct SOL <-> pump-token quote + execution where a canonical pool is discovered
+- PumpSwap direct coverage is not a composed route engine yet
+- SNP500 -> SOL executed successfully on Solana mainnet
 
 ---
 
@@ -164,6 +172,16 @@ Added as a curated Solana meme token.
 
 PumpSwap-only curated test token used to validate Pump.fun-style quoting.
 
+### Pasted external Solana mints
+
+Pasted mint recognition is live for Alpha testing.
+
+Recent validated mint:
+
+- SNP500: `3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump`
+
+The app can resolve metadata/decimals without mutating `TOKEN_META`, store temporary recognized tokens in the browser session/localStorage, refresh recognized-token balances, and quote recognized external tokens after decimals are known.
+
 ---
 
 ## Locked product rules
@@ -182,7 +200,9 @@ A route card should only have an execution CTA if the app can actually execute t
 
 ### Quote-only means quote-only
 
-Raydium, Orca, Meteora, Phantom, and PumpSwap remain non-clickable unless a real execution path is implemented.
+Meteora and Phantom remain non-clickable unless a real execution path is implemented.
+
+Jupiter, Raydium, Orca, and PumpSwap are clickable only through guarded readiness/capability/variant checks.
 
 ### Ranking remains honest
 
@@ -216,13 +236,13 @@ Current status:
 | Token coverage | Small but useful curated set |
 | Cost transparency | Present but needs clearer UX wording |
 | Recommendation display | Working but needs real-world review |
-| Execution | Not live yet |
+| Execution | Working alpha for Jupiter, Raydium, Orca, PumpSwap direct |
 | Final UI | Not ready yet |
 | Public beta | Not ready yet |
 
 Current conclusion:
 
-**The product thesis is proven. The next work is stabilization, clarity, execution, and scalability.**
+**The product thesis is proven. The next work is live testing, clarity, external-token safety, route expansion, and production hardening.**
 
 ---
 
@@ -279,39 +299,36 @@ For each route, can the user understand:
 
 ---
 
-## Phase 2 — Jupiter Execution Through Phantom
+## Phase 2 — Guarded Execution Through Phantom
 
 ### Goal
 
-Make the recommended Jupiter route executable through Phantom.
+Keep the shipped execution paths honest, safe, and debuggable.
 
-This is the step where Web3 Digest becomes more than an analysis tool.
+This is the phase where Web3 Digest has already become more than an analysis tool.
 
 ### Scope
 
-- Jupiter execution first
-- keep all other universes quote-only
+- Jupiter, Raydium, Orca, and PumpSwap direct paths are executable where supported
+- Meteora and Phantom remain comparison-only
 - Phantom remains the signing boundary
 - user approves in wallet
 - app sends/broadcasts the transaction
-- app shows confirmation or translated error
+- app preflights before Phantom and shows confirmation or translated error
 
 ### Work
 
-- connect selected Jupiter quote to swap transaction build path
-- create pre-execution confirmation state
-- build/sign/send through Phantom
-- preserve user approval in wallet
-- add preflight checks
-- add error translation
-- show transaction result
-- keep Raydium/Orca/Meteora/Phantom/PumpSwap non-clickable until real execution paths exist
+- keep live-testing small swaps
+- harden prepared-transaction preflight diagnostics
+- keep SOL setup/rent/fee checks conservative and explainable
+- improve stale-balance / post-swap refresh UX
+- preserve user approval in Phantom
+- show transaction result and explorer links clearly
+- keep Meteora/Phantom non-clickable until real execution paths exist
 
 ### Product rule
 
-Only Jupiter gets execution first.
-
-Do not make every quote card executable at once.
+Do not make a route executable unless prepare, preflight, Phantom signing, and backend submit are all real for that provider/variant.
 
 ---
 
@@ -325,6 +342,8 @@ Manual token additions are useful for a small curated demo set, but they do not 
 
 ### Step 3A — Paste mint
 
+Status: **shipped as Alpha**.
+
 Let the user paste a Solana token mint.
 
 The app should try to resolve:
@@ -333,16 +352,21 @@ The app should try to resolve:
 - token name
 - decimals
 - price/reference data if available
-- Jupiter quote
-- Raydium quote
-- Phantom quote where supported
+- Jupiter quote/execution where supported
+- Raydium quote/execution where supported
+- Orca quote/execution where supported
+- PumpSwap direct SOL <-> pump-token quote/execution where supported
+- Phantom quote benchmark where supported
 - other venues only when honest support exists
 
-Curated venues remain curated:
+Important shipped behavior:
 
-- Orca only if a real pool candidate exists
-- Meteora only if a real DLMM pool candidate exists
-- PumpSwap only if a real curated pool exists
+- decimals are resolved through Solana RPC mint account data
+- `/tokens/resolve` exposes `can_quote`
+- temporary recognized tokens live in browser session/localStorage
+- `TOKEN_META` is not mutated automatically
+- recognized external-token balances are included in refresh requests
+- PumpSwap remains direct SOL <-> pump-token only, not a composed-route engine
 
 ### Step 3B — Token search
 
@@ -383,15 +407,15 @@ Build a system that can resolve and test tokens dynamically.
 
 Avoid becoming only a Jupiter execution wrapper.
 
-After Jupiter execution works, evaluate and gradually add additional execution paths only where technically honest and worth it.
+After the current executable paths stabilize, evaluate and gradually add additional execution paths only where technically honest and worth it.
 
 ### Possible order
 
-1. Raydium execution path
-2. Orca execution path
-3. Meteora DLMM execution path
-4. PumpSwap execution or handoff path if strategically useful
-5. Phantom comparison/handoff path if measurable and honest
+1. Meteora DLMM execution path
+2. composed PumpSwap token -> SOL -> USDC style routes
+3. broader external-token route discovery
+4. Phantom comparison/handoff path if measurable and honest
+5. additional Solana venues only when prepare/preflight/submit are real
 
 ### Product rule
 
@@ -424,9 +448,9 @@ This is where the product should become cleaner, mobile-aware, and ready for sma
 ### Private alpha ready when
 
 - comparison surface is understandable
-- Jupiter execution works
+- Jupiter/Raydium/Orca/PumpSwap execution paths remain stable in small live tests
 - quote-only routes are clearly labeled
-- token intake has at least paste-by-mint support or a strong curated set
+- token intake has paste-by-mint support and clear unresolved-decimals behavior
 - error handling is reasonable
 - another person can test it without needing constant explanation
 
@@ -503,7 +527,7 @@ The route-choice structure remains:
 
 Best current executable route, or best quote clearly marked if non-executable.
 
-Near-term: Jupiter owns the executable recommendation path.
+Executable recommendations can come from any currently supported executable provider: Jupiter, Raydium, Orca, or PumpSwap direct SOL <-> pump-token paths.
 
 ### Direct
 
@@ -570,72 +594,56 @@ The lead priority remains:
 
 ## Next immediate sessions
 
-### Session 1 — route testing and comparison review
+### Session 1 — external-token polish and safety
 
-Start server and test:
+Fix or test:
 
-- SOL → USDC
-- SOL → BONK
-- SOL → WIF
-- SOL → POPCAT
-- SOL → CHAD
-- SOL → SPX6900
-- SOL → FIGURE
-
-Inspect:
-
-- which venues produce cards
-- which venues fail softly
-- whether the recommended route makes sense
-- whether the direct route makes sense
-- whether alternatives are readable
-- whether cost lines are understandable
-- whether quote-only/non-clickable status is clear
+- duplicate SNP500 in the asset list
+- 50% / MAX still showing stale-refresh copy after a fresh recognized-token balance
+- external-token reference/valuation warnings when price source is cached, stale, or unverified
+- random DexScreener mint testing
+- suspicious/scam mint warning behavior
 
 Goal:
 
-**confirm the current engine and cards reflect the mission.**
+**make pasted-mint swaps feel safe and understandable without pretending long-tail prices are fully trusted.**
 
 ---
 
-### Session 2 — decision UX cleanup
+### Session 2 — live execution regression pass
 
-Improve:
+Small-amount checks only:
 
-- route-card wording
-- estimated cost wording
-- quote-only labels
-- unsupported venue diagnostics
-- recommendation explanation
-- direct-route explanation
-- visible vs expanded details
+- Jupiter
+- Raydium
+- Orca
+- PumpSwap direct SOL <-> pump-token
+- reverse SOL routes where safe
 
 Goal:
 
-**make the route cards clear enough to build execution on top.**
+**confirm prepare/preflight/Phantom/submit still behave after the external-token work.**
 
 ---
 
-### Session 3 — prepare Jupiter execution plan
+### Session 3 — route and provider expansion planning
 
-Plan the first executable flow:
+Evaluate:
 
-- selected Jupiter quote
-- confirmation state
-- Phantom signing
-- transaction sending
-- result state
-- error handling
+- Meteora execution feasibility
+- composed routes such as PumpSwap token -> SOL -> USDC
+- token search/discovery architecture
+- Bubblemaps / holder concentration tiny UX live testing
 
 Goal:
 
-**enter the Jupiter execution sprint with a clear technical plan.**
+**choose the next provider/product chunk without weakening the safety model.**
 
 ---
 
 ## Next major milestone
 
-**Swap Transparency Alpha**
+**Executable Swap Intelligence Alpha**
 
 A credible local alpha where a user can:
 
@@ -645,7 +653,7 @@ A credible local alpha where a user can:
 4. compare real quote universes
 5. understand which route is recommended and why
 6. understand known costs and unknowns
-7. execute the recommended Jupiter route through Phantom
+7. execute supported Jupiter/Raydium/Orca/PumpSwap routes through Phantom
 8. trust that unsupported routes are not being faked
 
 ---
@@ -654,37 +662,14 @@ A credible local alpha where a user can:
 
 Start next session from:
 
-**route testing and comparison review.**
+**external-token polish and live-regression checks.**
 
 First action:
 
 ```bash
 source .venv/bin/activate
 uvicorn api.main:app --reload --log-level debug
+```
 
 Future dashboard / activity layer:
-Evaluate Helius getTransfersByAddress for parsed wallet transfer history, activity feed, and support-mode diagnostics.
-
-Resume Web3 Digest from commit d945454.
-
-Current milestone:
-External Token Flow V1 is working and committed:
-- paste Solana mint in /ui
-- resolve metadata via DexScreener
-- resolve decimals via Solana RPC
-- quote temporary external tokens without TOKEN_META mutation
-- Jupiter/Raydium/Meteora/Orca/Phantom coverage works
-- PumpSwap canonical pool discovery works for SOL <-> pump-style token pairs
-- token promotion audit tool works and reports readable universe diagnostics
-- latest commit: d945454 Polish token promotion audit reporting
-- tests: 130 OK
-- git status was clean
-
-Next session:
-1. Run git status/log/tests.
-2. Do live UI checks for SOL -> Fartcoin and SOL -> USDUC.
-3. Decide between:
-   A) productize external-token UI/promotion audit display,
-   B) update docs/roadmap/technical deep dive for External Token Flow V1,
-   C) plan Helius activity layer for future wallet dashboard/support diagnostics.
-Future idea: evaluate Helius getTransfersByAddress for parsed wallet transfer history, activity feed, and support-mode diagnostics.
+Evaluate Helius parsed transfer history for wallet activity feed and support-mode diagnostics, after the swap wedge is stable.

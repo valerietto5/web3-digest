@@ -22,7 +22,7 @@ Instead, it sits **on top of trusted wallets like Phantom** and focuses on a dif
 
 The product direction is simple:
 
-**Connect Phantom. Compare swap execution honestly. Execute safely later. Expand the connected dashboard experience after the swap wedge is strong.**
+**Connect Phantom. Compare swap execution honestly. Execute selected routes safely through Phantom. Expand the connected dashboard experience after the swap wedge is strong.**
 
 ---
 
@@ -49,7 +49,7 @@ Web3 Digest handles:
 - route-shape visibility
 - support-style diagnostics
 - cost visibility where available
-- later, selected swap execution through Phantom
+- selected swap execution through Phantom for supported providers
 - later, a stronger connected holdings/dashboard experience
 
 This is a product built **with Phantom in mind, not against it**.
@@ -97,6 +97,8 @@ Web3 Digest exists to make swaps feel **understandable instead of opaque**.
 
 The project has moved beyond a read-only portfolio prototype and beyond a single-router quote demo.
 
+Current phase: **Executable Solana swap-intelligence alpha**.
+
 Today it includes:
 
 - CLI wallet/reporting foundation
@@ -109,6 +111,8 @@ Today it includes:
 - Solana swap quote preview surface
 - multi-universe quote comparison engine
 - Recommended / Direct / Alternatives route structure
+- guarded execution through Phantom for supported providers
+- prepared-transaction preflight diagnostics before Phantom opens
 - live reference baseline updates while typing
 - recommended-route cost summary in USD
 - estimated network fee display where available
@@ -124,15 +128,17 @@ The current Alpha can compare real successful quotes across several recognizable
 
 ### Jupiter
 
-Primary quote universe and future first execution target.
+Quote + executable through Phantom where supported.
 
 ### Raydium
 
-Real quote path, currently comparison-only and non-clickable.
+Quote + executable through Phantom where supported.
 
 ### Orca
 
-Explicit pool candidate model. Only real successful pool quotes render as cards.
+Explicit pool candidate model. Quote + executable through Phantom where supported.
+
+Native SOL input is supported through Orca's ATA wrapping strategy. The app preflights prepared transactions and blocks before Phantom when setup/rent/fee SOL is insufficient.
 
 ### Meteora
 
@@ -144,7 +150,9 @@ Wallet-routing quote research surface. Comparison-only and curated for supported
 
 ### PumpSwap
 
-Curated-only. Currently used for the FIGURE docs/test token path, not as a generic Pump.fun solution.
+Quote + executable for direct SOL <-> pump-token paths where a real canonical PumpSwap pool is discovered.
+
+Composed paths such as pump-token -> SOL -> USDC are not implemented yet.
 
 ---
 
@@ -159,6 +167,8 @@ Current curated swap testing routes include:
 - SOL → CHAD
 - SOL → SPX6900
 - SOL → FIGURE
+- pasted Solana mints with safely resolved decimals, including SNP500:
+  `3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump`
 
 The current rule is simple:
 
@@ -187,6 +197,7 @@ Only real successful quotes render as visible route cards. Unsupported venues fa
 - request devnet airdrop from inside the UI
 - send SOL on devnet with transaction state handling
 - preview swap quotes inside the UI
+- prepare, preflight, sign in Phantom, and submit supported swap routes
 - review:
   - theoretical reference baseline
   - recommended route
@@ -201,6 +212,23 @@ Only real successful quotes render as visible route cards. Unsupported venues fa
   - explicit route fees when available
   - estimated network fee where available
   - support-style error states and notes
+
+### Live execution checkpoints
+
+The Alpha has executed real Solana mainnet swaps through Phantom for:
+
+- Jupiter
+- Raydium
+- Orca
+- PumpSwap
+
+Phantom remains the signer/custody layer. Web3 Digest prepares, preflights, and submits only after the user approves in Phantom.
+
+Recent verified paths include:
+
+- Orca SOL -> USDC after fixing native SOL wrapping
+- USDC -> SNP500 through Jupiter using temporary external-token metadata
+- SNP500 -> SOL through PumpSwap direct SOL <-> pump-token routing
 
 ---
 
@@ -258,13 +286,14 @@ The current swap surface is useful, but it is still Alpha.
 
 ### Honest notes about the current build
 
-- swap comparison is currently quote-preview first
-- Jupiter is the first planned executable route
-- non-Jupiter universes are currently quote-only / comparison-only
+- swap comparison is still the primary product surface
+- Jupiter, Raydium, Orca, and PumpSwap have guarded execution paths where supported
+- Meteora and Phantom remain quote/comparison-only
 - route fees are shown separately when explicitly available in the quote
 - estimated network fee is shown separately from the benchmark comparison
 - network-fee estimation still needs hardening before production-grade execution
-- token coverage is currently curated and narrow
+- token coverage combines curated tokens with temporary recognized pasted mints
+- external-token reference/valuation can be misleading when cached, stale, or unverified
 - the UI structure is improving but is not final visual polish
 
 That means the product wedge is real, but parts of the implementation still need hardening.
@@ -307,11 +336,18 @@ The current swap surface is being shaped so that it can later become actionable 
 - expand and execute should remain separate behaviors
 - future primary actions should be **buttons**, not whole-card taps
 
-### Expected future actionability order
+### Current actionability rule
 
-1. **Recommended Jupiter route becomes actionable first**
-2. **Direct route becomes actionable second if technically executable**
-3. **Alternatives become richer/selectable later only when execution paths are honest**
+Routes are clickable only when the provider has a real prepare + submit path, the quote variant is supported, and route readiness says it is execution-ready.
+
+Executable providers today:
+
+- Jupiter
+- Raydium
+- Orca
+- PumpSwap direct SOL <-> pump-token paths
+
+Meteora and Phantom remain comparison-only.
 
 This keeps the surface mobile-safer and easier to understand.
 
@@ -346,12 +382,13 @@ The roadmap is expected to expand into more honest quote and execution surfaces 
 - more transparent
 - more aligned with the execution-intelligence promise
 
-Near-term execution order:
+Near-term order:
 
-1. stabilize the current comparison/decision UX
-2. make the recommended Jupiter route executable through Phantom
-3. build scalable token intake
-4. evaluate additional executable universes
+1. keep validating live execution paths with small swaps
+2. polish stale-balance and external-token valuation UX
+3. test more pasted mints and suspicious/scam-token warnings
+4. improve token search/discovery
+5. evaluate future composed routes and Meteora execution separately
 
 ---
 
@@ -390,7 +427,7 @@ So the right path is:
   - persistence logic
   - swap ranking / comparison logic
   - quote universe integrations
-  - Jupiter quote + instruction plumbing
+  - provider prepare/preflight/submit plumbing
 
 - **SQLite**
   - balances
@@ -479,25 +516,24 @@ Important areas include:
 - fail-soft unsupported venues
 - curated meme-token coverage
 
-### V2 — Jupiter execution
+### V2 — guarded swap execution alpha
 
-Planned:
+- Jupiter execution through Phantom
+- Raydium execution through Phantom
+- Orca execution through Phantom
+- PumpSwap execution for direct SOL <-> pump-token paths
+- backend prepare/preflight/submit flow
+- Phantom remains the signing boundary
+- transaction result handling and explorer links
 
-- make Recommended Jupiter route executable
-- preserve Phantom signing boundary
-- add confirmation state
-- add transaction result handling
-- keep other universes quote-only until execution paths are real
-
-### V2.5 — scalable token intake
-
-Planned:
+### V2.5 — scalable token intake alpha
 
 - paste token mint
 - resolve token metadata
-- dynamically test quote universe support
-- later token search
-- later trending/liquidity discovery
+- resolve decimals safely through Solana RPC mint account
+- quote temporary recognized external tokens without mutating `TOKEN_META`
+- session/localStorage recognized-token UX
+- later token search and stronger discovery
 
 ### V3 — broader execution intelligence
 
@@ -514,16 +550,13 @@ Planned:
 
 ## What is not shipped yet
 
-- real swap execution flow from the swap cards
-- Jupiter route execution through Phantom
-- executable Raydium routes
-- executable Orca routes
 - executable Meteora routes
-- executable PumpSwap routes
+- Phantom execution/handoff route
 - full route-fee decomposition for every quote universe
 - final-grade transaction-specific network-fee estimation
-- scalable token intake by pasted mint
 - token search / discovery
+- composed routes such as PumpSwap token -> SOL -> USDC
+- final suspicious/scam mint warning UX
 - final two-panel swap input design
 - production-grade swap infra hardening
 - production-grade polished UI

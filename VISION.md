@@ -31,7 +31,7 @@ That means:
   - route-shape explanation
   - direct-route inspection
   - support-style diagnostics
-  - later, selected swap execution through Phantom
+  - selected swap execution through Phantom for supported routes
   - later, a stronger connected dashboard / holdings experience
 
 This is a product built **with** Phantom in mind, not **against** it.
@@ -79,7 +79,7 @@ This includes:
 - separate visibility for route fees and network fee when available
 - honest product notes when data or routing coverage is limited
 - quote-only versus executable status
-- a clean path from quote intelligence into future Jupiter execution
+- a clean path from quote intelligence into guarded Phantom execution
 
 The swap surface is the wedge.
 
@@ -121,7 +121,7 @@ The product should clearly distinguish between:
 
 - **theoretical/reference pricing**
 - **real quoted output**
-- **real executable output once execution is added**
+- **real executable output for supported providers**
 
 These are different layers and should remain separated in both product logic and user experience.
 
@@ -197,6 +197,8 @@ Current and near-term quote surfaces include:
 - Phantom quote research
 - PumpSwap curated paths
 
+Current executable Alpha paths include Jupiter, Raydium, Orca, and PumpSwap direct SOL <-> pump-token routes. Meteora and Phantom remain comparison-only until their execution paths are honest.
+
 The long-term goal is not to become a prettier wrapper around one router.
 
 It is to become a better **execution-intelligence layer** that helps users compare meaningful execution surfaces honestly.
@@ -263,11 +265,11 @@ The user wants to:
 
 These behaviors should remain separate.
 
-### Current intended actionability order
+### Current actionability rule
 
-1. **Recommended Jupiter route becomes actionable first**
-2. **Direct route becomes actionable second if technically executable**
-3. **Alternatives become richer/selectable later only when execution paths are honest**
+Executable action should appear only when the provider and quote variant have a real prepare/preflight/submit path and the user still approves in Phantom.
+
+The current Alpha has guarded execution paths for Jupiter, Raydium, Orca, and PumpSwap direct SOL <-> pump-token routes. Other surfaces remain quote-only until they can be executed honestly.
 
 ### Interaction rule
 
@@ -304,16 +306,16 @@ Most importantly:
 
 ## Routing and execution direction
 
-The first execution target should be **Jupiter through Phantom**.
+The first execution milestone has moved from planned to shipped Alpha.
 
 That means:
 
-- keep Jupiter as the first executable path
 - keep Phantom as the signing boundary
-- keep other universes quote-only until execution paths are real
+- keep prepare/preflight/submit provider-specific and testable
+- keep Meteora and Phantom comparison-only until execution paths are real
 - do not add execution buttons for routes the app cannot actually execute
 
-After Jupiter execution works, Web3 Digest can evaluate additional executable universes such as Raydium, Orca, Meteora, or other honest paths.
+The current executable set is Jupiter, Raydium, Orca, and PumpSwap direct SOL <-> pump-token paths. Future work should evaluate Meteora, composed routes, and broader venue support only when the technical path is honest.
 
 The long-term goal is broader execution intelligence, not a one-router wrapper.
 
@@ -326,10 +328,11 @@ The current curated token list is useful for proving the product thesis, but man
 The next scalable direction should be:
 
 1. support pasted token mints
-2. resolve token metadata dynamically
-3. test which quote universes support the pair
-4. later add token search
-5. later add trending/liquidity discovery
+2. resolve token metadata and decimals dynamically
+3. test which quote/execution universes support the pair
+4. refresh recognized-token balances safely
+5. later add token search
+6. later add trending/liquidity discovery
 
 The product should not become manual token data entry.
 

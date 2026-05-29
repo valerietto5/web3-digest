@@ -21,12 +21,13 @@ Instead:
   - benchmark/reference comparison
   - cost visibility
   - quote inspection
+  - supported route prepare/preflight/submit
   - wallet-connected portfolio/dashboard flows
-  - later selected swap execution through Phantom
+  - selected swap execution through Phantom
 
 The current product wedge is:
 
-**connect Phantom, compare swap outcomes honestly, explain costs clearly, then execute safely.**
+**connect Phantom, compare swap outcomes honestly, explain costs clearly, then execute supported routes safely.**
 
 ---
 
@@ -46,6 +47,10 @@ The app has a real working foundation:
 - swap token list endpoint at `/swap/tokens`
 - swap inline baseline endpoint at `/swap/inline-baseline`
 - swap quote endpoint at `/swap/quote`
+- swap prepare endpoint at `/swap/execute/prepare`
+- swap preflight endpoint at `/swap/execute/preflight`
+- swap submit endpoint at `/swap/execute/submit`
+- token resolve endpoint at `/tokens/resolve`
 - swap instructions endpoint at `/swap/instructions`
 
 This means the project is no longer just a CLI/backend experiment.
@@ -149,13 +154,13 @@ The app supports a real browser-side **Send SOL on devnet** flow.
 
 This proves the app can support a real wallet-connected transaction path.
 
-That experience is important groundwork for future Jupiter swap execution.
+That experience was important groundwork for the current guarded swap execution flow.
 
 ---
 
-## 6) Swap transparency surface
+## 6) Swap transparency and execution surface
 
-The swap product wedge is live in quote-preview form.
+The swap product wedge is live as an executable Alpha for supported routes.
 
 ### Shipped
 
@@ -166,6 +171,9 @@ The swap product wedge is live in quote-preview form.
 - Clear action
 - live inline baseline update while typing
 - backend quote preview flow through `/swap/quote`
+- backend prepare/preflight/submit flow for supported providers
+- Phantom signing for selected prepared transactions
+- explorer link and submitted-state UI after success
 - quote comparison surface
 - recommended route card
 - direct-route comparison card
@@ -176,7 +184,7 @@ The swap product wedge is live in quote-preview form.
 
 ### Current behavior
 
-The swap surface can compare real quotes across multiple quote universes.
+The swap surface can compare real quotes across multiple quote universes and execute supported routes through Phantom.
 
 Only successful quote results render as visible route cards.
 
@@ -224,21 +232,24 @@ It now has a first version of a multi-universe Solana swap quote engine.
 
 #### Jupiter
 
-- primary quote universe
-- main executable-capable path
-- future first swap-execution target
+- quote + executable through Phantom where supported
+- USDC -> SOL preflight passed and opened Phantom during reverse-route testing
 
 #### Raydium
 
 - real quote path
-- comparison-only
-- non-clickable for now
+- executable through Phantom where supported
+- live SOL -> BONK and SOL -> USDC swaps succeeded on Solana mainnet
 
 #### Orca
 
 - explicit pool candidate model
 - only renders successful real quotes
 - unsupported pairs fail softly
+- executable through Phantom where supported
+- native SOL wrapping fixed with `setNativeMintWrappingStrategy("ata")`
+- SOL -> USDC executed successfully on Solana mainnet
+- diagnostics detect wSOL transfer/sync/close behavior
 
 #### Meteora
 
@@ -256,9 +267,9 @@ It now has a first version of a multi-universe Solana swap quote engine.
 
 #### PumpSwap
 
-- curated-only
-- currently used only for the FIGURE docs/test token path
-- not treated as a generic Pump.fun solution yet
+- direct SOL <-> pump-token quote + execution where a canonical pool is discovered
+- FIGURE and SNP500-style pump-token paths validated
+- not a composed route engine yet; token -> SOL -> USDC composition is not shipped
 
 ### Why this matters
 
@@ -301,6 +312,19 @@ Added as a curated Solana meme token.
 #### SOL → FIGURE
 
 PumpSwap-only curated test token used to validate Pump.fun-style quoting.
+
+#### Pasted external Solana mints
+
+The app can recognize pasted Solana mints, resolve metadata and decimals safely, and quote temporary recognized tokens without mutating `TOKEN_META`.
+
+Recent validated mint:
+
+- SNP500: `3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump`
+
+Validated live paths:
+
+- USDC -> SNP500 through Jupiter on Solana mainnet
+- SNP500 -> SOL through PumpSwap on Solana mainnet
 
 ### Current rule
 
@@ -420,9 +444,9 @@ The app includes the swap-instructions backend path.
 - authenticated request support through `x-api-key` when configured
 - instruction normalization for frontend/backend fee estimation flow
 
-This means the app has moved beyond quote-only backend plumbing and into instruction-aware infrastructure.
+This means the app has moved beyond quote-only backend plumbing and into instruction-aware and execution-aware infrastructure.
 
-The full swap execution flow is not shipped yet.
+The full production-grade swap engine is not shipped yet, but guarded Alpha execution is real.
 
 ---
 
@@ -437,6 +461,15 @@ Swap network-fee estimation exists in the current UI/backend flow.
 - show estimated network fee in the recommended route cost breakdown
 - fallback fee behavior when the preferred fee-estimation path is unavailable
 - honest handling of unavailable or limited fee-estimation paths
+- prepared-transaction preflight simulation before Phantom opens
+- setup/rent diagnostics for Associated Token Account creation
+- non-SOL input diagnostics for SOL fee/rent requirements
+- native SOL wrapping diagnostics:
+  - `has_system_transfer_to_wsol_account`
+  - `has_token_sync_native`
+  - `has_token_close_account`
+  - `native_sol_wrap_complete`
+  - `wsol_wrap_lamports_detected`
 
 ### Current implementation note
 
@@ -453,12 +486,14 @@ The app has strong debugging and inspection scaffolding.
 ### Shipped
 
 - raw quote debug JSON
+- visible preflight diagnostics JSON
 - activity log panel
 - detailed status cards
 - friendly HTTP / thrown-error handling paths
 - route explanation text where appropriate
 - backend exception handler that returns useful trace info in development
 - diagnostics for unsupported quote universes
+- insufficient-funds / account-setup diagnostics before Phantom signing
 
 This is valuable for product development and for the project’s developer-support / integration-support angle.
 
@@ -474,14 +509,21 @@ Recent local validation has improved confidence.
 - registry tests for curated swap tokens
 - tests for fail-soft unsupported quote behavior
 - tests ensuring unsupported venues do not create fake cards
-- tests covering quote-only/non-clickable behavior for curated universes
+- tests covering quote-only/clickable behavior for supported universes
+- tests covering provider prepare/preflight safety
+- tests covering pasted-mint external-token recognition
 - `AGENTS.md` repository guidelines for coding agents
-- latest token and docs commits pushed to GitHub
+- latest implementation checkpoints:
+  - `0f3f15a` — Fix Orca native SOL wrapping
+  - `343a2ba` — Support recognized external token swaps
 
 Recent test checkpoint:
 
 - `python3 -m unittest test_sanity.py`
-- 70 tests passing
+- 299 tests passing
+- Node syntax checks passed for Orca/PumpSwap helpers
+- Python compile checks passed
+- `git diff --check` passed
 
 ---
 
@@ -505,6 +547,10 @@ Right now, Web3 Digest supports:
 14. exposing route/debug details honestly
 15. failing softly when a universe does not support a pair
 16. avoiding fake quote cards
+17. executing supported Jupiter/Raydium/Orca/PumpSwap routes through Phantom
+18. preflighting prepared transactions before Phantom opens
+19. recognizing pasted Solana mints after safe decimal resolution
+20. refreshing recognized external-token balances
 
 That is a real shipped foundation.
 
@@ -514,16 +560,16 @@ That is a real shipped foundation.
 
 To stay honest, these are **not** fully shipped yet:
 
-- real swap execution flow from the swap cards
-- Jupiter route execution through Phantom
-- executable Raydium routes
-- executable Orca routes
 - executable Meteora routes
-- executable PumpSwap routes
+- Phantom execution/handoff route
 - full route-fee decomposition for every quote universe
 - final-grade transaction-specific network-fee estimation
-- scalable token intake by pasted mint
 - token search / discovery
+- composed routes like PumpSwap token -> SOL -> USDC
+- duplicate recognized-token asset-list polish
+- final external-token valuation/source warning UX
+- random DexScreener mint and suspicious/scam mint testing
+- Bubblemaps / holder concentration live UX testing
 - final two-panel swap input UX
 - polished connected dashboard experience
 - mobile-optimized final UI
@@ -546,11 +592,12 @@ Web3 Digest already has:
 - a real Phantom connection boundary
 - a real devnet send flow
 - a real Solana swap quote/comparison surface
+- real guarded swap execution through Phantom for Jupiter, Raydium, Orca, and PumpSwap direct paths
 - a real multi-universe execution-transparency wedge
-- a curated meme-token test surface
+- a curated and pasted-mint meme-token test surface
 - a first honest swap-cost explanation model
 - a fail-soft trust philosophy
 
 The product thesis is now visible in the working local app.
 
-The next work is to stabilize the comparison/decision UX, then make the recommended Jupiter route executable through Phantom.
+The next work is live regression testing, external-token polish, route/provider expansion planning, and production hardening.
