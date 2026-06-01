@@ -182,6 +182,10 @@ def build_ui_html() -> str:
     </div>
     <div class="muted" id="swapBalanceFreshnessHint" style="display:none; margin-top:6px; font-size:12px;"></div>
     <button id="btnSwapRefreshBalances" type="button" class="secondary" style="display:none; margin-top:6px; padding:6px 8px;">Refresh balances</button>
+    <div class="card" id="swapBalanceRefreshDebugWrap" style="display:none; margin-top:8px; font-size:12px;">
+      <div class="muted" style="font-weight:600;">LATEST BALANCE REFRESH DIAGNOSTICS JSON</div>
+      <pre id="swapBalanceRefreshDebug" style="margin-top:8px;">No balance refresh yet.</pre>
+    </div>
 
     <div class="swap-input-grid">
       <div class="swap-token-card" id="swapSellCard">
@@ -366,8 +370,8 @@ def build_ui_html() -> str:
   const MAINNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
 
   const ACTIVITY_LIMIT = 8;
-  const SWAP_QUOTE_TTL_SECONDS = 20;
-  const SWAP_BALANCE_FRESH_MS = 5 * 60 * 1000;
+  const SWAP_QUOTE_TTL_SECONDS = 90;
+  const SWAP_BALANCE_FRESH_MS = 10 * 60 * 1000;
   const SWAP_SOL_FEE_ACCOUNT_SETUP_BUFFER_SOL = 0.001;
   const SWAP_DEFAULT_NETWORK_FEE_SOL = 0.0001;
   const SWAP_RECOGNIZED_TOKENS_STORAGE_KEY = "web3Digest.swapRecognizedTokens.v1";
@@ -392,6 +396,7 @@ def build_ui_html() -> str:
   let latestSwapQuoteResponse = null;
   let latestPreparedSwap = null;
   let latestSwapPreflightResponse = null;
+  let latestSwapBalanceRefreshDiagnostics = null;
   let swapExecutionState = "idle";
   let swapQuoteExpiresAt = null;
   let swapQuoteTimerId = null;
@@ -476,7 +481,7 @@ function renderSwapBalanceFreshnessHint(holding=null) {
 
   const staleHolding = holding && !isSwapBalanceSnapshotFresh(holding.balance_ts);
   if (swapBalancesStaleAfterSubmit) {
-    hint.textContent = "Balances may be stale after this swap — refresh balances.";
+    hint.textContent = "Balances may have changed after the last swap — refresh balances.";
     hint.style.display = "block";
     if (button) button.style.display = "inline-block";
     return;
@@ -493,7 +498,7 @@ function renderSwapBalanceFreshnessHint(holding=null) {
   if (button) button.style.display = "none";
 }
 
-function portfolioHoldingRows() {
+function portfolioBalanceRows() {
   const positions = latestPortfolioReport?.positions || {};
   return Object.entries(positions)
     .map(([asset, position]) => {
@@ -515,8 +520,36 @@ function portfolioHoldingRows() {
         value: Number(position?.value)
       };
     })
-    .filter((row) => Number.isFinite(row.amount) && row.amount > 0)
+    .filter((row) => Number.isFinite(row.amount))
     .sort((a, b) => (Number.isFinite(b.value) ? b.value : 0) - (Number.isFinite(a.value) ? a.value : 0));
+}
+
+function portfolioHoldingRows() {
+  return portfolioBalanceRows().filter((row) => row.amount > 0);
+}
+
+function swapWalletAssetLabels(limit=4) {
+  const labels = [];
+  const seen = new Set();
+  for (const row of portfolioHoldingRows()) {
+    const label = String(row.label || row.token_value || "").trim();
+    if (!label) continue;
+    const keys = [
+      row.asset,
+      row.mint,
+      row.token_input_value,
+      row.token_value,
+      label
+    ]
+      .map((value) => normalizeSwapAssetKey(value))
+      .filter(Boolean);
+    const duplicate = keys.some((key) => seen.has(key));
+    if (duplicate) continue;
+    keys.forEach((key) => seen.add(key));
+    labels.push(label);
+    if (labels.length >= limit) break;
+  }
+  return labels;
 }
 
 function selectedFromHolding() {
@@ -524,7 +557,7 @@ function selectedFromHolding() {
   const resolvedMint = normalizeSwapAssetKey(swapTokenResolveState.from?.mint);
   if (!query && !resolvedMint) return null;
 
-  const matches = portfolioHoldingRows().filter((row) => {
+  const matches = portfolioBalanceRows().filter((row) => {
     const asset = normalizeSwapAssetKey(row.asset);
     const mint = normalizeSwapAssetKey(row.mint);
     const label = normalizeSwapAssetKey(row.label);
@@ -544,10 +577,86 @@ function selectedFromHolding() {
   return matches[0] || null;
 }
 
+function selectedFromHoldingDiagnostics() {
+  const selectedToken = selectedFromRecognizedToken();
+  const holding = selectedFromHolding();
+  const positions = latestPortfolioReport?.positions || {};
+  return {
+    input_value: $("swapFromToken")?.value || "",
+    resolved_mint: swapTokenResolveState.from?.mint || "",
+    selected_token: selectedToken ? {
+      symbol: selectedToken.symbol || "",
+      mint: selectedToken.mint || "",
+      asset_key: selectedToken.asset_key || selectedToken.asset || "",
+      spl_asset_key: selectedToken.mint ? "spl:" + selectedToken.mint : ""
+    } : null,
+    portfolio_assets: Object.keys(positions),
+    holding_rows: portfolioHoldingRows().map((row) => ({
+      asset: row.asset,
+      mint: row.mint,
+      token_input_value: row.token_input_value,
+      token_value: row.token_value,
+      label: row.label,
+      amount: row.amount,
+      balance_ts: row.balance_ts
+    })),
+    balance_rows: portfolioBalanceRows().map((row) => ({
+      asset: row.asset,
+      mint: row.mint,
+      token_input_value: row.token_input_value,
+      token_value: row.token_value,
+      label: row.label,
+      amount: row.amount,
+      balance_ts: row.balance_ts
+    })),
+    matched_holding: holding ? {
+      asset: holding.asset,
+      mint: holding.mint,
+      token_input_value: holding.token_input_value,
+      token_value: holding.token_value,
+      label: holding.label,
+      amount: holding.amount,
+      balance_ts: holding.balance_ts,
+      is_zero: holding.amount === 0,
+      is_fresh: isSwapBalanceSnapshotFresh(holding.balance_ts)
+    } : null,
+    matched_holding_is_zero: holding ? holding.amount === 0 : false,
+    matched_holding_is_fresh: holding ? isSwapBalanceSnapshotFresh(holding.balance_ts) : false
+  };
+}
+
 function selectedSolHolding() {
   return portfolioHoldingRows().find((row) => normalizeSwapAssetKey(row.token_value) === "SOL" ||
     normalizeSwapAssetKey(row.label) === "SOL" ||
     normalizeSwapAssetKey(row.asset) === "SOL") || null;
+}
+
+function validateSwapInputBalanceBeforePrepare(amount) {
+  const holding = selectedFromHolding();
+  if (!holding) return { ok: true };
+  const fresh = isSwapBalanceSnapshotFresh(holding.balance_ts) && !swapBalancesStaleAfterSubmit;
+  if (!fresh) return { ok: true };
+
+  const available = Number(holding.amount);
+  const requested = Number(amount);
+  if (!Number.isFinite(available) || !Number.isFinite(requested) || requested <= available) {
+    return { ok: true };
+  }
+
+  const label = holding.label || holding.token_value || $("swapFromToken")?.value || "this token";
+  const availableText = fmtNum(available, 6);
+  const requestedText = fmtNum(requested, 6);
+  const zero = available === 0;
+  return {
+    ok: false,
+    label,
+    available,
+    requested,
+    message: zero
+      ? "You do not currently hold " + label + "."
+      : "Insufficient " + label + " balance for this swap.",
+    detail: "You only have " + availableText + " " + label + ", but you entered " + requestedText + " " + label + ". Enter an amount within your available balance."
+  };
 }
 
 function renderSwapWalletStrip() {
@@ -556,7 +665,7 @@ function renderSwapWalletStrip() {
 
   const wallet = phantomPubkey ? "Wallet: " + shortenMiddle(phantomPubkey, 6, 6) : "Wallet: not connected";
   const account = latestPortfolioAccount ? "Saved profile: " + latestPortfolioAccount : "Saved profile: not loaded";
-  const held = portfolioHoldingRows().slice(0, 4).map((row) => row.label || row.token_value).filter(Boolean);
+  const held = swapWalletAssetLabels(4);
   const assets = held.length ? "Assets: " + held.join(" / ") : "Assets: load balances";
   box.textContent = wallet + " · " + account + " · " + assets;
 }
@@ -596,30 +705,39 @@ function renderSwapFromBalance() {
     const available = fmtNum(holding.amount, 6);
     const age = formatSwapSnapshotAge(holding.balance_ts);
     const fresh = isSwapBalanceSnapshotFresh(holding.balance_ts) && !swapBalancesStaleAfterSubmit;
+    const zeroBalance = holding.amount === 0;
     if (hint) {
       hint.textContent = fresh
         ? "Available: " + available + " " + label
         : "Available snapshot: " + available + " " + label + " · " + age;
     }
     if (amountHelper) {
-      amountHelper.textContent = fresh
-        ? (label === "SOL"
+      if (fresh && zeroBalance) {
+        amountHelper.textContent = "You do not currently hold " + label + ".";
+      } else if (fresh) {
+        amountHelper.textContent = label === "SOL"
           ? "MAX keeps SOL reserved for network fees/account setup."
-          : "Use 50% or MAX from your loaded wallet balance.")
-        : "Refresh balances to use 50% or MAX.";
+          : "Use 50% or MAX from your loaded wallet balance.";
+      } else if (swapBalancesStaleAfterSubmit) {
+        amountHelper.textContent = "Balances may have changed after the last swap — refresh balances to use 50% or MAX.";
+      } else {
+        amountHelper.textContent = "Refresh balances to use 50% or MAX.";
+      }
     }
-    if (half) half.disabled = !fresh;
-    if (max) max.disabled = !fresh;
+    if (half) half.disabled = !fresh || zeroBalance;
+    if (max) max.disabled = !fresh || zeroBalance;
     renderSwapBalanceFreshnessHint(holding);
     return;
   }
 
   if (hint) {
     hint.textContent = latestPortfolioReport
-      ? "Available: no loaded balance for " + (token || "this token") + "."
+      ? "No fresh balance found for " + (token || "this token") + "."
       : "Available: connect wallet / refresh balances.";
   }
-  if (amountHelper) amountHelper.textContent = "Use 50% or MAX after balances load.";
+  if (amountHelper) amountHelper.textContent = latestPortfolioReport
+    ? "No fresh balance found for this token."
+    : "Use 50% or MAX after balances load.";
   if (half) half.disabled = true;
   if (max) max.disabled = true;
   renderSwapBalanceFreshnessHint(null);
@@ -630,14 +748,36 @@ function renderSwapHoldingsDropdown() {
   if (!box) return;
 
   const rows = portfolioHoldingRows();
+  const selectedRecognized = selectedFromRecognizedToken();
+  const selectedHolding = selectedFromHolding();
+  const selectedRecognizedKey = normalizeSwapAssetKey(
+    selectedRecognized?.mint || selectedRecognized?.asset_key || selectedRecognized?.asset || ""
+  );
+  const hasSelectedRecognizedRow = selectedRecognizedKey && portfolioBalanceRows().some((row) =>
+    [row.asset, row.mint, row.token_input_value, row.token_value, row.label]
+      .some((value) => normalizeSwapAssetKey(value) === selectedRecognizedKey)
+  );
+  const selectedRecognizedHtml = selectedRecognized && selectedHolding && selectedHolding.amount === 0
+    ? `
+    <div class="muted" style="padding:6px 0;">
+      Selected token: ${escapeHtml(selectedRecognized.symbol || selectedRecognized.display_name || selectedHolding.label || "External token")} · 0
+    </div>
+  `
+    : selectedRecognized && !hasSelectedRecognizedRow
+    ? `
+    <div class="muted" style="padding:6px 0;">
+      Selected token: ${escapeHtml(selectedRecognized.symbol || selectedRecognized.display_name || "External token")} · balance not loaded / refresh balances
+    </div>
+  `
+    : "";
   if (!rows.length) {
-    box.innerHTML = "<div class='muted'>Type or paste a token mint above.</div><div class='muted' style='margin-top:6px;'>No wallet balances loaded yet.</div>";
+    box.innerHTML = "<div class='muted'>Type or paste a token mint above.</div>" + selectedRecognizedHtml + "<div class='muted' style='margin-top:6px;'>No wallet balances loaded yet.</div>";
     return;
   }
 
   box.innerHTML = `
     <div class="muted" style="padding:4px 0 6px 0;">Type or paste a token mint above.</div>
-  ` + rows.map((row) => `
+  ` + selectedRecognizedHtml + rows.map((row) => `
     <button
       type="button"
       class="secondary"
@@ -654,7 +794,13 @@ function setSwapAmountFromHolding(fraction) {
   const holding = selectedFromHolding();
   if (!holding) {
     const helper = $("swapAmountHelper");
-    if (helper) helper.textContent = "No loaded balance for the selected From token.";
+    if (helper) helper.textContent = "No fresh balance found for this token.";
+    return;
+  }
+  if (swapBalancesStaleAfterSubmit) {
+    const helper = $("swapAmountHelper");
+    if (helper) helper.textContent = "Balances may have changed after the last swap — refresh balances to use 50% or MAX.";
+    renderSwapFromBalance();
     return;
   }
   if (!isSwapBalanceSnapshotFresh(holding.balance_ts)) {
@@ -915,6 +1061,15 @@ function resetSwapExecutionPrepare() {
   if (visiblePreflightDebug) visiblePreflightDebug.textContent = "No preflight check yet.";
   setSwapPreparedActionVisible(false);
   setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
+}
+
+function resetSwapStateForTokenChange(options = {}) {
+  if (options.clearAmount) {
+    const amountInput = $("swapAmount");
+    if (amountInput) amountInput.value = "";
+  }
+  resetSwapQuoteDisplay();
+  resetSwapInlineBaseline();
 }
 
 function clearSwapUi() {
@@ -1608,7 +1763,7 @@ function renderSwapExternalTokenNotice(quote) {
     return;
   }
 
-  box.textContent = "External token metadata used: " + labels.join(", ") + " · unverified";
+  box.textContent = "External token metadata used: " + labels.join(", ") + " · unverified. External-token market references may be stale or incomplete. Use quoted output and wallet confirmation as source of truth.";
   box.style.display = "block";
 }
 
@@ -2110,6 +2265,15 @@ async function prepareSwapRoute(routeRequest) {
     return;
   }
 
+  const inputBalanceCheck = validateSwapInputBalanceBeforePrepare(amount);
+  if (inputBalanceCheck.ok === false) {
+    latestPreparedSwap = null;
+    renderSwapPreflightDebug(null);
+    setSwapPreparedActionVisible(false);
+    setSwapExecutionStatus("failed", inputBalanceCheck.message, inputBalanceCheck.detail);
+    return;
+  }
+
   const payload = {
     provider,
     variant_id: variantId,
@@ -2518,7 +2682,7 @@ function renderSwapSubmittedSuccess(signature) {
     `<div>Network: Solana mainnet</div>`,
     `<div><a href="${escapeHtml(explorer)}" target="_blank">Open in Solana Explorer</a></div>`,
     `<div style="margin-top:4px;">${escapeHtml(tokenText)}</div>`,
-    `<div class="muted" style="margin-top:4px;">Balances may be stale after this swap — refresh balances.</div>`
+    `<div class="muted" style="margin-top:4px;">Balances may have changed after the last swap — refresh balances.</div>`
   ].filter(Boolean);
 
   swapExecutionState = "submitted";
@@ -2583,6 +2747,8 @@ async function signAndSubmitPreparedSwap() {
       preparedPreflight.simulation_supported === true ||
       preparedPreflight.error_category !== "rpc_unavailable";
     if (mustBlock) {
+      latestPreparedSwap = null;
+      setSwapPreparedActionVisible(false);
       setSwapExecutionStatus(
         "failed",
         provider === "orca-whirlpool"
@@ -3633,14 +3799,24 @@ function qs(params) {
     if (!token || typeof token !== "object") return null;
     const mint = String(token.mint || "").trim();
     const decimals = Number(token.decimals);
-    const symbol = String(token.symbol || token.display_name || "").trim();
+    const registryToken = swapTokenList.find((item) =>
+      mint && String(item?.mint || "").trim().toLowerCase() === mint.toLowerCase()
+    );
+    const symbol = String(token.symbol || registryToken?.symbol || token.display_name || "").trim();
     if (!mint || !Number.isInteger(decimals) || decimals < 0 || !symbol) return null;
+    const assetKey = String(
+      token.asset_key ||
+      token.asset ||
+      registryToken?.asset_key ||
+      registryToken?.asset ||
+      ("spl:" + mint)
+    ).trim();
     return {
       symbol,
-      display_name: String(token.display_name || token.name || symbol).trim() || symbol,
-      name: String(token.name || token.display_name || symbol).trim() || symbol,
-      mint,
-      asset_key: String(token.asset_key || token.asset || ("spl:" + mint)).trim(),
+      display_name: String(token.display_name || token.name || registryToken?.display_name || symbol).trim() || symbol,
+      name: String(token.name || token.display_name || registryToken?.display_name || symbol).trim() || symbol,
+      mint: String(registryToken?.mint || mint).trim(),
+      asset_key: assetKey,
       decimals,
       logo_uri: token.logo_uri || "",
       source: token.source || token.resolver_source || "external_resolver",
@@ -3654,6 +3830,12 @@ function qs(params) {
   function recognizedSwapTokenAssetKey(token) {
     const normalized = normalizeRecognizedSwapToken(token);
     if (!normalized) return "";
+    const registryToken = swapTokenList.find((item) =>
+      normalized.mint && String(item?.mint || "").trim().toLowerCase() === normalized.mint.toLowerCase()
+    );
+    if (registryToken?.asset_key || registryToken?.asset) {
+      return String(registryToken.asset_key || registryToken.asset).trim();
+    }
     return normalized.asset_key || ("spl:" + normalized.mint);
   }
 
@@ -3669,8 +3851,15 @@ function qs(params) {
     return Object.values(swapRecognizedTokenMap).find((token) => {
       const mint = String(token?.mint || "").trim().toLowerCase();
       const tokenAsset = String(token?.asset_key || token?.asset || "").trim().toLowerCase();
+      const symbol = String(token?.symbol || "").trim().toLowerCase();
+      const registryToken = swapTokenList.find((item) =>
+        mint && String(item?.mint || "").trim().toLowerCase() === mint
+      );
+      const registryAsset = String(registryToken?.asset_key || registryToken?.asset || "").trim().toLowerCase();
       return (mint && (assetKey === mint || assetKey === "spl:" + mint || positionMint === mint)) ||
-        (tokenAsset && assetKey === tokenAsset);
+        (tokenAsset && assetKey === tokenAsset) ||
+        (registryAsset && assetKey === registryAsset) ||
+        (symbol && assetKey === symbol);
     }) || null;
   }
 
@@ -3681,12 +3870,35 @@ function qs(params) {
       .filter(Boolean);
     const currentAssets = Object.keys(latestPortfolioReport?.positions || {});
     const baseAssets = typedAssets.length ? typedAssets : (currentAssets.length ? currentAssets : ["sol", "usdc"]);
-    const assets = new Set(baseAssets);
+    const assets = [];
+    const seen = new Set();
+    const addAsset = (asset) => {
+      const value = String(asset || "").trim();
+      if (!value) return;
+      const recognized = recognizedSwapTokenForAsset(value);
+      const mint = String(recognized?.mint || "").trim();
+      const keyParts = [
+        value,
+        value.replace(/^spl:/i, ""),
+        recognized?.asset_key,
+        recognized?.asset,
+        mint,
+        mint ? "spl:" + mint : "",
+        recognized?.symbol
+      ]
+        .map((item) => normalizeSwapAssetKey(item))
+        .filter(Boolean);
+      const duplicate = keyParts.some((key) => seen.has(key));
+      if (duplicate) return;
+      keyParts.forEach((key) => seen.add(key));
+      assets.push(value);
+    };
+    baseAssets.forEach(addAsset);
     for (const asset of recognizedSwapTokenAssetKeys()) {
-      if (asset) assets.add(asset);
+      addAsset(asset);
     }
-    if (!assets.size) return "";
-    return Array.from(assets).join(",");
+    if (!assets.length) return "";
+    return assets.join(",");
   }
 
   function loadRecognizedSwapTokens() {
@@ -3749,14 +3961,34 @@ function qs(params) {
     const recognized = rememberResolvedSwapToken(token);
     if (!recognized) return;
     const input = $(side === "from" ? "swapFromToken" : "swapToToken");
-    if (input) input.value = recognized.mint;
+    const selectedValue = recognizedSwapTokenAssetKey(recognized).toLowerCase().startsWith("spl:")
+      ? recognized.mint
+      : (recognized.symbol || recognized.mint);
+    if (input) input.value = selectedValue;
     swapSelectedRecognizedTokenMint[side] = recognized.mint;
+    resetSwapStateForTokenChange({ clearAmount: side === "from" });
     setTokenResolvePreview(side, recognized);
+    if (side === "from") {
+      renderSwapFromBalance();
+      renderSwapHoldingsDropdown();
+    }
     updateLiveSwapBaseline();
   }
 
   function resetResolvedSwapTokenSelection(side) {
     swapSelectedRecognizedTokenMint[side] = "";
+  }
+
+  function selectedFromRecognizedToken() {
+    const query = normalizeSwapAssetKey($("swapFromToken")?.value);
+    const resolvedMint = normalizeSwapAssetKey(swapTokenResolveState.from?.mint);
+    return Object.values(swapRecognizedTokenMap).find((token) => {
+      const mint = normalizeSwapAssetKey(token?.mint);
+      const asset = normalizeSwapAssetKey(token?.asset_key || token?.asset);
+      const symbol = normalizeSwapAssetKey(token?.symbol);
+      return (query && (query === mint || query === asset || query === symbol)) ||
+        (resolvedMint && resolvedMint === mint);
+    }) || null;
   }
 
   function renderSwapTokenChoices() {
@@ -4286,26 +4518,43 @@ function fmtUsdCost(x) {
     if (!r1.ok) {
       showStatus("err", "GET /portfolio/latest failed", r1.data || r1.text);
       renderReport(null);
-      return;
+      return false;
     }
     showStatus("ok", "Loaded latest portfolio", null);
     renderReport(r1.data);
 
     const r2 = await fetchMaybeJson("/portfolio/history?" + qs({ account, currency, limit: 30 }));
     if (r2.ok) renderHistory(r2.data);
+    return true;
   }
 
   async function refreshBalances() {
     const account = $("accountSelect").value;
     const force = "true";
-    const r = await fetchMaybeJson("/refresh/balances?" + qs({ account, force }), { method: "POST" });
+    const assets = swapPortfolioAssetRequestValue();
+    const r = await fetchMaybeJson("/refresh/balances?" + qs({ account, force, assets }), { method: "POST" });
     if (!r.ok) {
       showStatus("err", "POST /refresh/balances failed", r.data || r.text);
       return;
     }
     showStatus("ok", "Balances refreshed", r.data);
-    swapBalancesStaleAfterSubmit = false;
-    await loadReportAndHistory();
+    const loaded = await loadReportAndHistory();
+    latestSwapBalanceRefreshDiagnostics = {
+      requested_assets_sent_by_ui: assets,
+      backend_response: r.data || null,
+      portfolio_assets_returned: Object.keys(latestPortfolioReport?.positions || {}),
+      selected_from_holding: selectedFromHoldingDiagnostics()
+    };
+    const debugWrap = $("swapBalanceRefreshDebugWrap");
+    const debugBox = $("swapBalanceRefreshDebug");
+    if (debugWrap) debugWrap.style.display = "block";
+    if (debugBox) debugBox.textContent = JSON.stringify(latestSwapBalanceRefreshDiagnostics, null, 2);
+    console.debug("swap balance refresh diagnostics", latestSwapBalanceRefreshDiagnostics);
+    if (loaded) {
+      swapBalancesStaleAfterSubmit = false;
+      renderSwapBalanceFreshnessHint(selectedFromHolding());
+      renderSwapFromBalance();
+    }
   }
 
   async function refreshPrices() {
@@ -4359,8 +4608,8 @@ function fmtUsdCost(x) {
     if (!button) return;
     $("swapFromToken").value = button.dataset.swapHoldingInput || button.dataset.swapHoldingToken || "";
     $("swapHoldingsDropdown").style.display = "none";
+    resetSwapStateForTokenChange({ clearAmount: true });
     resolveSwapTokenInput("from");
-    updateLiveSwapBaseline();
     renderSwapFromBalance();
   });
   $("swapCard").addEventListener("click", handleSwapExecuteClick);
@@ -4377,22 +4626,24 @@ function fmtUsdCost(x) {
     openSwapHoldingsDropdown();
   });
   $("swapFromToken").addEventListener("input", () => {
+    resetSwapStateForTokenChange({ clearAmount: true });
     resetResolvedSwapTokenSelection("from");
     renderSwapFromBalance();
     scheduleSwapTokenResolve("from");
   });
   $("swapToToken").addEventListener("input", () => {
+    resetSwapStateForTokenChange({ clearAmount: false });
     resetResolvedSwapTokenSelection("to");
     scheduleSwapTokenResolve("to");
   });
   $("swapFromToken").addEventListener("change", () => {
+    resetSwapStateForTokenChange({ clearAmount: true });
     resolveSwapTokenInput("from");
     renderSwapFromBalance();
-    updateLiveSwapBaseline();
   });
   $("swapToToken").addEventListener("change", () => {
+    resetSwapStateForTokenChange({ clearAmount: false });
     resolveSwapTokenInput("to");
-    updateLiveSwapBaseline();
   });
 
   // init

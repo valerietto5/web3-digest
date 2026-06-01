@@ -25,6 +25,7 @@ def _public_token(meta: dict[str, Any], *, source: str) -> dict[str, Any]:
     return {
         "source": source,
         "asset": meta.get("asset"),
+        "asset_key": meta.get("asset"),
         "symbol": symbol,
         "name": meta.get("name") or display_name or symbol,
         "display_name": display_name or symbol,
@@ -58,12 +59,16 @@ def _registry_entries() -> list[dict[str, Any]]:
 
 def _resolve_registry_token(query: str) -> dict[str, Any] | None:
     wanted_symbol = query.strip().upper()
-    wanted_mint = query.strip()
+    raw_query = query.strip()
+    raw_without_spl = raw_query.split(":", 1)[1] if raw_query.lower().startswith("spl:") else raw_query
+    wanted_mint = raw_without_spl.lower()
+    wanted_asset = raw_without_spl.lower()
 
     for meta in _registry_entries():
         symbol = (meta.get("symbol") or "").strip().upper()
-        mint = (meta.get("mint") or "").strip()
-        if symbol == wanted_symbol or mint == wanted_mint:
+        mint = (meta.get("mint") or "").strip().lower()
+        asset = (meta.get("asset") or "").strip().lower()
+        if symbol == wanted_symbol or mint == wanted_mint or (asset and asset == wanted_asset):
             return _public_token(meta, source="registry")
 
     return None

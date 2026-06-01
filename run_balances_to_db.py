@@ -7,7 +7,7 @@ from typing import Dict, List
 from db import init_db, insert_balance_snapshot, get_latest_balances
 from portfolio import compute_portfolio_report
 
-from token_registry import TOKENS
+from token_registry import TOKENS, mint_to_asset_key
 
 def normalize_asset_key(s: str) -> str:
     """
@@ -30,6 +30,30 @@ def normalize_asset_key(s: str) -> str:
     return low
 
 
+def normalize_solana_requested_asset(s: str) -> str:
+    raw = str(s).strip()
+    low = raw.lower()
+    if low.startswith("spl:"):
+        mint = raw.split(":", 1)[1]
+        return mint_to_asset_key(mint)
+    for mint in TOKENS.keys():
+        if raw == mint or low == mint.lower():
+            return mint_to_asset_key(mint)
+    return normalize_asset_key(raw)
+
+
+def apply_requested_zero_balances(
+    balances: Dict[str, float],
+    requested_assets: List[str],
+) -> Dict[str, float]:
+    out = dict(balances)
+    for asset in requested_assets:
+        key = normalize_solana_requested_asset(asset)
+        if key:
+            out.setdefault(key, 0.0)
+    return out
+
+
 def parse_set_kv(pairs: List[str]) -> Dict[str, float]:
     out: Dict[str, float] = {}
     for item in pairs:
@@ -44,7 +68,7 @@ def parse_set_kv(pairs: List[str]) -> Dict[str, float]:
 def main(argv: List[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Insert balance snapshot into SQLite (manual source)")
     p.add_argument("--account", default="val-main", help="Account id (default: val-main)")
-    p.add_argument("--assets", nargs="+", default=["btc", "eth", "usdc"], help="Assets list")
+    p.add_argument("--assets", nargs="+", default=[], help="Assets list")
     p.add_argument("--source", default="manual", help="Source label (default: manual)")
     p.add_argument(
         "--set",
@@ -68,10 +92,13 @@ def main(argv: List[str] | None = None) -> None:
 
         from solana_balance_provider import fetch_solana_owner_balances
         balances = fetch_solana_owner_balances(args.address)
-        assets = list(balances.keys())
+        requested_assets = [normalize_solana_requested_asset(a) for a in args.assets]
+        balances = apply_requested_zero_balances(balances, requested_assets)
+        assets = requested_assets or list(balances.keys())
 
     else:
-        assets = [normalize_asset_key(a) for a in args.assets]
+        asset_args = args.assets or ["btc", "eth", "usdc"]
+        assets = [normalize_asset_key(a) for a in asset_args]
 
 
         # Default balances (used if --set not provided for a given asset)

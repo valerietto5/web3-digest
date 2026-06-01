@@ -55,6 +55,8 @@ from api.main import (
     _fetch_jupiter_swap_transaction,
     _fetch_orca_whirlpool_swap_transaction,
     _fetch_raydium_swap_transaction,
+    _derive_solana_associated_token_account,
+    _raydium_prepare_token_accounts,
     build_swap_execution_readiness,
     get_swap_execution_provider,
     get_swap_execution_provider_capability,
@@ -89,6 +91,10 @@ from tools.token_promotion_audit import (
     provider_diagnostics as token_promotion_provider_diagnostics,
     standard_pairs_for_mint,
     visible_live_surfaces as token_promotion_visible_live_surfaces,
+)
+from run_balances_to_db import (
+    apply_requested_zero_balances,
+    normalize_solana_requested_asset,
 )
 
 from db import (
@@ -226,6 +232,30 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["token"]["decimals"], 9)
         fetch_external.assert_not_called()
         fetch_decimals.assert_not_called()
+
+    def test_token_resolver_resolves_figure_by_asset_key_and_mint_variants(self):
+        figure_mint = "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump"
+        figure_mint_upper_variant = "7LSsEoJGhLeZzGvDofTdNg7M3JttXqqGWNLo6vWMpump"
+
+        for query in ("FIGURE", "figure", figure_mint, figure_mint_upper_variant, "spl:" + figure_mint):
+            with self.subTest(query=query):
+                with patch("providers.token_resolver.fetch_dexscreener_token_metadata") as fetch_external:
+                    result = resolve_token(query)
+
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["token"]["source"], "registry")
+                self.assertEqual(result["token"]["symbol"], "FIGURE")
+                self.assertEqual(result["token"]["asset"], "figure")
+                self.assertEqual(result["token"]["asset_key"], "figure")
+                self.assertEqual(result["token"]["mint"], figure_mint)
+                self.assertEqual(result["token"]["decimals"], 6)
+                fetch_external.assert_not_called()
+
+        endpoint = token_resolve(query="spl:" + figure_mint_upper_variant, allow_external=True)
+        self.assertTrue(endpoint["ok"])
+        self.assertTrue(endpoint["can_quote"])
+        self.assertEqual(endpoint["token"]["symbol"], "FIGURE")
+        self.assertEqual(endpoint["token"]["asset_key"], "figure")
 
     def test_token_resolver_resolves_registry_mint_missing_decimals_via_rpc_without_mutating_registry(self):
         snp500_mint = "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
@@ -1814,9 +1844,58 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(by_symbol["SPX6900"]["decimals"], 8)
         self.assertTrue(by_symbol["SPX6900"]["default_enabled"])
         self.assertTrue(by_symbol["SPX6900"]["verified"])
+        self.assertEqual(by_symbol["FIGURE"]["asset"], "figure")
+        self.assertEqual(by_symbol["FIGURE"]["asset_key"], "figure")
         self.assertEqual(by_symbol["FIGURE"]["display_name"], "Action Figure")
         self.assertFalse(by_symbol["FIGURE"]["verified"])
         self.assertNotIn("USDT", by_symbol)
+
+    def test_portfolio_report_includes_explicitly_requested_unpriced_balance(self):
+        import portfolio as portfolio_module
+
+        with (
+            patch(
+                "portfolio.get_latest_balances_with_ts",
+                return_value={"figure": ("2026-06-01T10:00:00+00:00", 52497.317836)},
+            ),
+            patch("portfolio.get_latest_prices_with_ts", return_value={}),
+            patch("portfolio.get_price_at_or_before", return_value=None),
+            patch("portfolio.get_price_history", return_value=[]),
+        ):
+            report = portfolio_module.compute_portfolio_report(
+                account="sol-test",
+                assets=["figure"],
+                currency="usd",
+                include_unpriced=True,
+            )
+
+        self.assertIn("figure", report.positions)
+        pos = report.positions["figure"]
+        self.assertEqual(pos.amount, 52497.317836)
+        self.assertIsNone(pos.price)
+        self.assertIsNone(pos.price_ts)
+        self.assertIsNone(pos.value)
+        self.assertIn("figure", report.missing_prices)
+        self.assertEqual(report.total_value, 0.0)
+
+    def test_portfolio_report_still_drops_unpriced_balance_when_not_requested_for_unpriced(self):
+        import portfolio as portfolio_module
+
+        with (
+            patch(
+                "portfolio.get_latest_balances_with_ts",
+                return_value={"figure": ("2026-06-01T10:00:00+00:00", 52497.317836)},
+            ),
+            patch("portfolio.get_latest_prices_with_ts", return_value={}),
+        ):
+            report = portfolio_module.compute_portfolio_report(
+                account="sol-test",
+                assets=["figure"],
+                currency="usd",
+            )
+
+        self.assertNotIn("figure", report.positions)
+        self.assertIn("figure", report.missing_prices)
 
     def test_quote_coverage_audit_parses_explicit_pairs(self):
         from tools.quote_coverage_audit import parse_pair
@@ -1998,12 +2077,13 @@ class TestSanity(unittest.TestCase):
         html = build_ui_html()
 
         self.assertIn('id="swapQuoteFreshness"', html)
-        self.assertIn("SWAP_QUOTE_TTL_SECONDS = 20", html)
+        self.assertIn("SWAP_QUOTE_TTL_SECONDS = 90", html)
         self.assertIn("Quote expires in ", html)
         self.assertIn("Quote expired — preview again before swapping.", html)
         self.assertIn("function startSwapQuoteFreshnessTimer()", html)
         self.assertIn("function clearSwapQuoteFreshness()", html)
         self.assertIn("if (isSwapQuoteExpired())", html)
+        self.assertLess(html.index("latestSwapQuoteResponse = quote;"), html.index("startSwapQuoteFreshnessTimer();"))
         self.assertIn("startSwapQuoteFreshnessTimer();", html)
         self.assertIn("clearSwapQuoteFreshness();", html)
 
@@ -2029,8 +2109,12 @@ class TestSanity(unittest.TestCase):
         self.assertIn("function rememberResolvedSwapToken(token)", html)
         self.assertIn("function useResolvedSwapToken(side)", html)
         self.assertIn("function resetResolvedSwapTokenSelection(side)", html)
+        self.assertIn("function resetSwapStateForTokenChange(options = {})", html)
+        self.assertIn('if (options.clearAmount)', html)
+        self.assertIn('amountInput.value = "";', html)
         self.assertIn('swapSelectedRecognizedTokenMint[side] = recognized.mint;', html)
         self.assertIn('swapSelectedRecognizedTokenMint[side] = "";', html)
+        self.assertIn('resetSwapStateForTokenChange({ clearAmount: side === "from" });', html)
         self.assertIn("Token added ✓", html)
         self.assertIn("token-resolve-use-added", html)
         self.assertIn("disabledAttr", html)
@@ -2085,6 +2169,9 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn('id="btnSwapHoldings"', html)
         self.assertNotIn(">Holdings</button>", html)
         self.assertIn('id="swapWalletStrip"', html)
+        self.assertIn('id="swapBalanceRefreshDebugWrap"', html)
+        self.assertIn('id="swapBalanceRefreshDebug"', html)
+        self.assertIn("LATEST BALANCE REFRESH DIAGNOSTICS JSON", html)
         self.assertIn("Wallet-aware swap input: connect Phantom and load balances.", html)
         self.assertIn('id="swapWalletControls"', html)
         self.assertIn('id="btnSwapConnectPhantom"', html)
@@ -2115,14 +2202,28 @@ class TestSanity(unittest.TestCase):
         self.assertIn('id="btnSwapAmountMax"', html)
         self.assertIn(">MAX</button>", html)
         self.assertIn('id="swapHoldingsDropdown"', html)
+        self.assertIn("function portfolioBalanceRows()", html)
         self.assertIn("function selectedFromHolding()", html)
+        self.assertIn("function selectedFromHoldingDiagnostics()", html)
+        self.assertIn("function swapWalletAssetLabels(limit=4)", html)
+        self.assertIn("const held = swapWalletAssetLabels(4);", html)
+        self.assertIn("const duplicate = keys.some((key) => seen.has(key));", html)
+        self.assertIn("keys.forEach((key) => seen.add(key));", html)
         self.assertIn("function setSwapAmountFromHolding(fraction)", html)
         self.assertIn("function openSwapHoldingsDropdown()", html)
+        self.assertIn("function selectedFromRecognizedToken()", html)
         self.assertIn("function recognizedSwapTokenAssetKeys()", html)
         self.assertIn("function recognizedSwapTokenForAsset(asset, position=null)", html)
         self.assertIn("function swapPortfolioAssetRequestValue()", html)
-        self.assertIn('asset_key: String(token.asset_key || token.asset || ("spl:" + mint)).trim()', html)
+        self.assertIn("const assetKey = String(", html)
+        self.assertIn('("spl:" + mint)', html)
+        self.assertIn("registryToken?.asset_key ||", html)
+        self.assertIn("registryToken?.asset ||", html)
+        self.assertIn("return String(registryToken.asset_key || registryToken.asset).trim();", html)
         self.assertIn("const recognized = recognizedSwapTokenForAsset(rawAsset, position);", html)
+        self.assertIn("const registryAsset = String(registryToken?.asset_key || registryToken?.asset || \"\").trim().toLowerCase();", html)
+        self.assertIn("(registryAsset && assetKey === registryAsset)", html)
+        self.assertIn("(symbol && assetKey === symbol)", html)
         self.assertIn("splMint || recognizedMint", html)
         self.assertIn("const baseAssets = typedAssets.length ? typedAssets : (currentAssets.length ? currentAssets : [\"sol\", \"usdc\"]);", html)
         self.assertIn("for (const asset of recognizedSwapTokenAssetKeys())", html)
@@ -2133,6 +2234,15 @@ class TestSanity(unittest.TestCase):
         self.assertIn("rawAsset.toLowerCase().startsWith(\"spl:\")", html)
         self.assertIn('data-swap-holding-input="${escapeHtml(row.token_input_value)}"', html)
         self.assertIn('$("swapHoldingsDropdown").style.display = "none";', html)
+        self.assertIn("const selectedRecognized = selectedFromRecognizedToken();", html)
+        self.assertIn("selectedRecognizedHtml", html)
+        self.assertIn("Selected token: ${escapeHtml(selectedRecognized.symbol || selectedRecognized.display_name || \"External token\")}", html)
+        self.assertIn("Selected token: ${escapeHtml(selectedRecognized.symbol || selectedRecognized.display_name || selectedHolding.label || \"External token\")} · 0", html)
+        self.assertIn("You do not currently hold \" + label + \".", html)
+        self.assertIn("if (half) half.disabled = !fresh || zeroBalance;", html)
+        self.assertIn("if (max) max.disabled = !fresh || zeroBalance;", html)
+        self.assertIn("matched_holding_is_zero", html)
+        self.assertIn("matched_holding_is_fresh", html)
         self.assertIn("Type or paste a token mint above.", html)
         self.assertIn("No wallet balances loaded yet.", html)
         self.assertIn("MAX keeps SOL reserved for network fees/account setup.", html)
@@ -2140,15 +2250,97 @@ class TestSanity(unittest.TestCase):
         self.assertIn("const SWAP_DEFAULT_NETWORK_FEE_SOL = 0.0001;", html)
         self.assertNotIn("SWAP_ORCA_SOL_INPUT_SETUP_RESERVE_SOL", html)
         self.assertIn("function formatSwapSnapshotAge(value)", html)
-        self.assertIn("const SWAP_BALANCE_FRESH_MS = 5 * 60 * 1000;", html)
+        self.assertIn("const SWAP_BALANCE_FRESH_MS = 10 * 60 * 1000;", html)
         self.assertIn("function isSwapBalanceSnapshotFresh(value)", html)
         self.assertIn("Available snapshot: ", html)
         self.assertIn("Refresh balances to use 50% or MAX.", html)
+        self.assertIn("No fresh balance found for this token.", html)
+        self.assertIn("Balances may have changed after the last swap — refresh balances to use 50% or MAX.", html)
+        self.assertIn("Balances may have changed after the last swap — refresh balances.", html)
         self.assertIn("Balances are from snapshots. Refresh before swapping.", html)
+        self.assertNotIn("Balances may be stale after this swap — refresh balances.", html)
         self.assertIn('id="btnSwapRefreshBalances"', html)
         self.assertIn('$("btnSwapRefreshBalances").addEventListener("click", refreshBalances);', html)
+        self.assertIn("const assets = swapPortfolioAssetRequestValue();", html)
+        self.assertIn('fetchMaybeJson("/refresh/balances?" + qs({ account, force, assets })', html)
+        self.assertIn("requested_assets_sent_by_ui: assets", html)
+        self.assertIn("portfolio_assets_returned: Object.keys(latestPortfolioReport?.positions || {})", html)
+        self.assertIn("selected_from_holding: selectedFromHoldingDiagnostics()", html)
+        self.assertIn("swap balance refresh diagnostics", html)
+        self.assertIn("const loaded = await loadReportAndHistory();", html)
+        self.assertIn("if (loaded) {", html)
+        self.assertIn("swapBalancesStaleAfterSubmit = false;", html)
+        self.assertIn("renderSwapBalanceFreshnessHint(selectedFromHolding());", html)
         self.assertIn("position?.balance_ts", html)
         self.assertIn('" · " + age', html)
+
+    def test_swap_ui_token_switch_resets_amount_and_quote_state(self):
+        html = build_ui_html()
+
+        reset_start = html.index("function resetSwapStateForTokenChange(options = {})")
+        reset_end = html.index("function clearSwapUi()", reset_start)
+        reset_block = html[reset_start:reset_end]
+
+        self.assertIn('if (options.clearAmount)', reset_block)
+        self.assertIn('amountInput.value = "";', reset_block)
+        self.assertIn("resetSwapQuoteDisplay();", reset_block)
+        self.assertIn("resetSwapInlineBaseline();", reset_block)
+
+        events_start = html.index('$("swapHoldingsDropdown").addEventListener("click"')
+        events_end = html.index("// init", events_start)
+        events_block = html[events_start:events_end]
+
+        self.assertIn('resetSwapStateForTokenChange({ clearAmount: true });', events_block)
+        self.assertIn('$("swapFromToken").addEventListener("input"', events_block)
+        self.assertIn('$("swapFromToken").addEventListener("change"', events_block)
+        self.assertIn('$("swapToToken").addEventListener("input"', events_block)
+        self.assertIn('$("swapToToken").addEventListener("change"', events_block)
+        self.assertIn('resetSwapStateForTokenChange({ clearAmount: false });', events_block)
+
+        use_start = html.index("function useResolvedSwapToken(side)")
+        use_end = html.index("function resetResolvedSwapTokenSelection(side)", use_start)
+        use_block = html[use_start:use_end]
+        self.assertIn('resetSwapStateForTokenChange({ clearAmount: side === "from" });', use_block)
+        self.assertIn('recognized.symbol || recognized.mint', use_block)
+        self.assertIn("renderSwapFromBalance();", use_block)
+        self.assertIn("renderSwapHoldingsDropdown();", use_block)
+
+    def test_swap_ui_recognized_selected_token_stays_visible_without_holding_row(self):
+        html = build_ui_html()
+        start = html.index("function renderSwapHoldingsDropdown()")
+        end = html.index("function setSwapAmountFromHolding", start)
+        dropdown_block = html[start:end]
+
+        self.assertIn("const selectedRecognized = selectedFromRecognizedToken();", dropdown_block)
+        self.assertIn("const selectedHolding = selectedFromHolding();", dropdown_block)
+        self.assertIn("const hasSelectedRecognizedRow = selectedRecognizedKey && portfolioBalanceRows().some", dropdown_block)
+        self.assertIn("selectedHolding && selectedHolding.amount === 0", dropdown_block)
+        self.assertIn("Selected token: ${escapeHtml(selectedRecognized.symbol || selectedRecognized.display_name || selectedHolding.label || \"External token\")} · 0", dropdown_block)
+        self.assertIn("Selected token: ${escapeHtml(selectedRecognized.symbol || selectedRecognized.display_name || \"External token\")}", dropdown_block)
+        self.assertIn("balance not loaded / refresh balances", dropdown_block)
+
+    def test_swap_ui_selected_recognized_zero_balance_is_not_missing(self):
+        html = build_ui_html()
+        balance_start = html.index("function portfolioBalanceRows()")
+        selected_start = html.index("function selectedFromHolding()", balance_start)
+        diagnostics_start = html.index("function selectedFromHoldingDiagnostics()", selected_start)
+        render_start = html.index("function renderSwapFromBalance()", diagnostics_start)
+        dropdown_start = html.index("function renderSwapHoldingsDropdown()", render_start)
+        balance_block = html[balance_start:dropdown_start]
+
+        self.assertIn(".filter((row) => Number.isFinite(row.amount))", balance_block)
+        self.assertIn("return portfolioBalanceRows().filter((row) => row.amount > 0);", balance_block)
+        selected_block = html[selected_start:diagnostics_start]
+        self.assertIn("const matches = portfolioBalanceRows().filter((row) => {", selected_block)
+        render_block = html[render_start:dropdown_start]
+        self.assertIn("const zeroBalance = holding.amount === 0;", render_block)
+        self.assertIn("You do not currently hold \" + label + \".", render_block)
+        self.assertIn("if (half) half.disabled = !fresh || zeroBalance;", render_block)
+        self.assertIn("if (max) max.disabled = !fresh || zeroBalance;", render_block)
+        diagnostics_block = html[diagnostics_start:render_start]
+        self.assertIn("balance_rows: portfolioBalanceRows().map((row) => ({", diagnostics_block)
+        self.assertIn("matched_holding_is_zero", diagnostics_block)
+        self.assertIn("matched_holding_is_fresh", diagnostics_block)
 
     def test_swap_ui_amount_shortcuts_do_not_execute_swaps(self):
         html = build_ui_html()
@@ -2160,6 +2352,8 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("holding.amount - 0.005", amount_block)
         self.assertIn("defaultSwapSolReserveForMax()", amount_block)
         self.assertIn("holding.amount - defaultSwapSolReserveForMax()", amount_block)
+        self.assertIn("if (swapBalancesStaleAfterSubmit)", amount_block)
+        self.assertIn("Balances may have changed after the last swap — refresh balances to use 50% or MAX.", amount_block)
         self.assertIn("if (!isSwapBalanceSnapshotFresh(holding.balance_ts))", amount_block)
         self.assertIn("Refresh balances to use 50% or MAX.", amount_block)
         self.assertIn("updateLiveSwapBaseline();", amount_block)
@@ -2172,6 +2366,121 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(display_asset("snp500"), "SNP500")
         self.assertEqual(display_asset("spl:3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"), "SNP500")
+
+    def test_solana_balance_refresh_zero_fills_requested_missing_spl_assets(self):
+        balances = apply_requested_zero_balances(
+            {"sol": 0.049104},
+            ["sol", "usdc", "spl:3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"],
+        )
+
+        self.assertEqual(balances["sol"], 0.049104)
+        self.assertEqual(balances["usdc"], 0.0)
+        self.assertEqual(balances["snp500"], 0.0)
+        self.assertNotIn("spl:3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump", balances)
+        self.assertEqual(
+            normalize_solana_requested_asset("spl:3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"),
+            "snp500",
+        )
+
+    def test_solana_balance_refresh_normalizes_figure_mint_to_registry_asset(self):
+        figure_mint = "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump"
+
+        self.assertEqual(normalize_solana_requested_asset("figure"), "figure")
+        self.assertEqual(normalize_solana_requested_asset(figure_mint), "figure")
+        self.assertEqual(normalize_solana_requested_asset("spl:" + figure_mint), "figure")
+
+        balances = apply_requested_zero_balances(
+            {"figure": 3500.0},
+            ["sol", "spl:" + figure_mint],
+        )
+
+        self.assertEqual(balances["figure"], 3500.0)
+        self.assertNotIn("spl:" + figure_mint, balances)
+
+    def test_refresh_balances_passes_requested_assets_to_solana_refresh_script(self):
+        from api.main import refresh_balances
+
+        captured = {}
+
+        def fake_run_cmd(cmd, timeout=60):
+            captured["cmd"] = cmd
+            return {"returncode": 0, "stdout": "ok", "stderr": ""}
+
+        with (
+            patch(
+                "api.main.load_accounts",
+                return_value={
+                    "accounts": {
+                        "sol-test": {
+                            "chain": "solana",
+                            "address": "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                            "default_assets": ["sol", "usdc"],
+                        }
+                    }
+                },
+            ),
+            patch("api.main._run_cmd", side_effect=fake_run_cmd),
+            patch("api.main._write_portfolio_snapshot"),
+            patch("api.main.db.get_latest_balances", return_value={"sol": 0.049104, "usdc": 0.0, "snp500": 38089.22}),
+        ):
+            result = refresh_balances(
+                account="sol-test",
+                assets="sol,usdc,snp500",
+                force=True,
+            )
+
+        self.assertEqual(result["refreshed"][0]["account"], "sol-test")
+        self.assertIn("--assets", captured["cmd"])
+        assets_index = captured["cmd"].index("--assets")
+        self.assertEqual(captured["cmd"][assets_index + 1: assets_index + 4], ["sol", "usdc", "snp500"])
+        self.assertEqual(result["refreshed"][0]["requested_assets"], ["sol", "usdc", "snp500"])
+        self.assertEqual(result["refreshed"][0]["normalized_requested_assets"], ["sol", "usdc", "snp500"])
+        self.assertEqual(result["refreshed"][0]["balance_keys_written"], ["snp500", "sol", "usdc"])
+        self.assertEqual(result["refreshed"][0]["latest_balances"]["snp500"], 38089.22)
+
+    def test_refresh_balances_diagnostics_normalize_figure_mint(self):
+        from api.main import refresh_balances
+
+        figure_mint = "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump"
+
+        def fake_run_cmd(cmd, timeout=60):
+            return {"returncode": 0, "stdout": "ok", "stderr": ""}
+
+        with (
+            patch(
+                "api.main.load_accounts",
+                return_value={
+                    "accounts": {
+                        "sol-test": {
+                            "chain": "solana",
+                            "address": "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                            "default_assets": ["sol"],
+                        }
+                    }
+                },
+            ),
+            patch("api.main._run_cmd", side_effect=fake_run_cmd),
+            patch("api.main._write_portfolio_snapshot"),
+            patch("api.main.db.get_latest_balances", return_value={"figure": 4200.0}),
+        ):
+            result = refresh_balances(
+                account="sol-test",
+                assets="sol,spl:" + figure_mint,
+                force=True,
+            )
+
+        row = result["refreshed"][0]
+        self.assertEqual(row["requested_assets"], ["sol", "spl:" + figure_mint])
+        self.assertEqual(row["normalized_requested_assets"], ["sol", "figure"])
+        self.assertEqual(row["balance_keys_written"], ["figure"])
+        self.assertEqual(row["latest_balances"]["figure"], 4200.0)
+
+    def test_swap_ui_external_token_warning_mentions_reference_limits(self):
+        html = build_ui_html()
+
+        self.assertIn("External token metadata used: ", html)
+        self.assertIn("External-token market references may be stale or incomplete.", html)
+        self.assertIn("Use quoted output and wallet confirmation as source of truth.", html)
 
     def test_swap_ui_preflights_sol_requirement_before_phantom(self):
         html = build_ui_html()
@@ -2483,6 +2792,32 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("VersionedTransaction", prepare_block)
         self.assertNotIn("signAndSubmitPreparedSwap", prepare_block)
 
+    def test_swap_ui_blocks_prepare_when_fresh_from_balance_is_insufficient(self):
+        html = build_ui_html()
+
+        self.assertIn("function validateSwapInputBalanceBeforePrepare(amount)", html)
+        self.assertIn("const holding = selectedFromHolding();", html)
+        self.assertIn("const fresh = isSwapBalanceSnapshotFresh(holding.balance_ts) && !swapBalancesStaleAfterSubmit;", html)
+        self.assertIn("requested <= available", html)
+        self.assertIn("You do not currently hold \" + label + \".", html)
+        self.assertIn("Insufficient \" + label + \" balance for this swap.", html)
+        self.assertIn("You only have \" + availableText + \" \" + label + \", but you entered \" + requestedText + \" \" + label", html)
+        self.assertIn("Enter an amount within your available balance.", html)
+
+        start = html.index("async function prepareSwapRoute(routeRequest)")
+        end = html.index("function isPhantomUserRejection", start)
+        prepare_block = html[start:end]
+        self.assertIn("const inputBalanceCheck = validateSwapInputBalanceBeforePrepare(amount);", prepare_block)
+        self.assertIn("if (inputBalanceCheck.ok === false)", prepare_block)
+        self.assertIn("latestPreparedSwap = null;", prepare_block)
+        self.assertIn("renderSwapPreflightDebug(null);", prepare_block)
+        self.assertIn("setSwapPreparedActionVisible(false);", prepare_block)
+        self.assertIn("setSwapExecutionStatus(\"failed\", inputBalanceCheck.message, inputBalanceCheck.detail);", prepare_block)
+        self.assertLess(
+            prepare_block.index("validateSwapInputBalanceBeforePrepare(amount)"),
+            prepare_block.index('fetchMaybeJson("/swap/execute/prepare"'),
+        )
+
     def test_swap_ui_renders_swap_button_for_supported_executable_cards(self):
         html = build_ui_html()
 
@@ -2550,7 +2885,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Provider: ${escapeHtml(providerLabel)}", html)
         self.assertIn("Open in Solana Explorer", html)
         self.assertIn("Token received — check your Phantom wallet.", html)
-        self.assertIn("Balances may be stale after this swap — refresh balances.", html)
+        self.assertIn("Balances may have changed after the last swap — refresh balances.", html)
         self.assertIn("Swap failed.", html)
         self.assertIn("Swap was rejected in Phantom.", html)
         self.assertIn("Quote expired. Preview again.", html)
@@ -2625,6 +2960,24 @@ class TestSanity(unittest.TestCase):
         self.assertIn("if (!solanaWeb3?.VersionedTransaction?.deserialize)", sign_block)
         self.assertIn("Swap signing is not supported in this browser session.", sign_block)
         self.assertIn("Connect Phantom to continue.", sign_block)
+
+    def test_swap_ui_preflight_failure_clears_prepared_state_before_phantom(self):
+        html = build_ui_html()
+        start = html.index("async function signAndSubmitPreparedSwap()")
+        end = html.index("function handleSwapExecuteClick", start)
+        sign_block = html[start:end]
+        failure_start = sign_block.index("if (preparedPreflight && preparedPreflight.ok === false)")
+        failure_end = sign_block.index("let tx;", failure_start)
+        failure_block = sign_block[failure_start:failure_end]
+
+        self.assertIn("latestPreparedSwap = null;", failure_block)
+        self.assertIn("setSwapPreparedActionVisible(false);", failure_block)
+        self.assertIn("This route would likely fail before Phantom approval.", failure_block)
+        self.assertLess(
+            failure_block.index("setSwapPreparedActionVisible(false);"),
+            failure_block.index("setSwapExecutionStatus("),
+        )
+        self.assertNotIn("phantomProvider.signTransaction(tx)", failure_block)
 
     def test_swap_ui_signing_deserializes_signs_submits_and_confirms(self):
         html = build_ui_html()
@@ -6786,6 +7139,69 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(captured["payload"]["computeUnitPriceMicroLamports"], "10000")
         self.assertIn("swapResponse", captured["payload"])
 
+    def test_raydium_prepare_token_accounts_derive_usdc_input_for_usdc_to_sol(self):
+        self.assertEqual(
+            _derive_solana_associated_token_account(
+                owner="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                mint=METEORA_DLMM_USDC_MINT,
+            ),
+            "GwWhFWPZm8hxqksYzRv5FYoZsVGYgTuYS6uRkodqEDcV",
+        )
+        accounts = _raydium_prepare_token_accounts(
+            input_mint=METEORA_DLMM_USDC_MINT,
+            output_mint=METEORA_DLMM_SOL_MINT,
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertFalse(accounts["wrap_sol"])
+        self.assertTrue(accounts["unwrap_sol"])
+        self.assertEqual(
+            accounts["input_account"],
+            "GwWhFWPZm8hxqksYzRv5FYoZsVGYgTuYS6uRkodqEDcV",
+        )
+        self.assertIsNone(accounts["output_account"])
+
+    def test_raydium_prepare_token_accounts_derive_usdc_output_for_sol_to_usdc(self):
+        accounts = _raydium_prepare_token_accounts(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint=METEORA_DLMM_USDC_MINT,
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+        )
+
+        self.assertTrue(accounts["wrap_sol"])
+        self.assertFalse(accounts["unwrap_sol"])
+        self.assertIsNone(accounts["input_account"])
+        self.assertEqual(
+            accounts["output_account"],
+            "GwWhFWPZm8hxqksYzRv5FYoZsVGYgTuYS6uRkodqEDcV",
+        )
+
+    def test_raydium_fetch_swap_transaction_sends_input_and_output_accounts_when_provided(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=20):
+            captured["payload"] = json.loads(req.data.decode("utf-8"))
+            return self._fake_urlopen_response({
+                "success": True,
+                "data": [{"transaction": "raydium-base64tx"}],
+            })
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = _fetch_raydium_swap_transaction(
+                swap_response={"success": True, "data": {"outputAmount": "1"}},
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                wrap_sol=False,
+                unwrap_sol=True,
+                input_account="inputAta",
+                output_account=None,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(captured["payload"]["wrapSol"])
+        self.assertTrue(captured["payload"]["unwrapSol"])
+        self.assertEqual(captured["payload"]["inputAccount"], "inputAta")
+        self.assertNotIn("outputAccount", captured["payload"])
+
     def test_fetch_raydium_swap_transaction_allows_compute_unit_price_override(self):
         captured = {}
 
@@ -6842,6 +7258,43 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(fetch_swap.call_args.kwargs["tx_version"], "V0")
         self.assertTrue(fetch_swap.call_args.kwargs["wrap_sol"])
         self.assertFalse(fetch_swap.call_args.kwargs["unwrap_sol"])
+        self.assertIsNone(fetch_swap.call_args.kwargs["input_account"])
+        self.assertEqual(
+            fetch_swap.call_args.kwargs["output_account"],
+            "GwWhFWPZm8hxqksYzRv5FYoZsVGYgTuYS6uRkodqEDcV",
+        )
+
+    def test_raydium_prepare_usdc_to_sol_passes_input_ata_and_unwraps_sol(self):
+        quote = self._mock_raydium_execution_quote()
+        with (
+            patch("api.main._fetch_raydium_quote", return_value=quote),
+            patch(
+                "api.main._fetch_raydium_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "transaction_base64": "raydium-base64tx",
+                    "raw": {"data": [{"transaction": "raydium-base64tx"}]},
+                },
+            ) as fetch_swap,
+        ):
+            result = swap_execute_prepare(
+                self._base_swap_execute_prepare_payload(
+                    provider="raydium-trade-api",
+                    variant_id="raydium_quote",
+                    from_token="USDC",
+                    to_token="SOL",
+                    amount=1.0,
+                )
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(fetch_swap.call_args.kwargs["wrap_sol"])
+        self.assertTrue(fetch_swap.call_args.kwargs["unwrap_sol"])
+        self.assertEqual(
+            fetch_swap.call_args.kwargs["input_account"],
+            "GwWhFWPZm8hxqksYzRv5FYoZsVGYgTuYS6uRkodqEDcV",
+        )
+        self.assertIsNone(fetch_swap.call_args.kwargs["output_account"])
 
     def test_raydium_prepare_rejects_non_raydium_variant(self):
         result = prepare_swap_transaction_with_provider(

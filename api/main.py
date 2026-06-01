@@ -17,6 +17,7 @@ import subprocess
 import time
 import os
 import re
+import hashlib
 import urllib.parse
 import urllib.request
 from fastapi import Request
@@ -32,7 +33,7 @@ from providers.token_holder_concentration import (
     get_holder_concentration_rpc_config_status,
 )
 from providers.token_resolver import resolve_token
-from token_registry import default_swap_token_meta_by_symbol, get_token_meta_by_symbol
+from token_registry import default_swap_token_meta_by_symbol, get_token_meta_by_symbol, mint_to_asset_key, TOKENS
 
 app = FastAPI(title="Web3 Digest API", version="0.1.0")
 
@@ -738,7 +739,10 @@ def wallet_activity(address: str = Query(""), limit: int = Query(20)):
 
 
 def _public_swap_token_meta(symbol: str, meta: dict) -> dict:
+    asset_key = meta.get("asset") or str(symbol or "").lower()
     return {
+        "asset": asset_key,
+        "asset_key": asset_key,
         "symbol": symbol,
         "display_name": meta.get("display_name") or meta.get("name") or symbol,
         "mint": meta.get("mint"),
@@ -747,6 +751,19 @@ def _public_swap_token_meta(symbol: str, meta: dict) -> dict:
         "verified": bool(meta.get("verified")),
         "default_enabled": bool(meta.get("default_enabled")),
     }
+
+
+def _normalize_refresh_asset_for_diagnostics(asset: str) -> str:
+    raw = str(asset or "").strip()
+    if not raw:
+        return ""
+    low = raw.lower()
+    if low.startswith("spl:"):
+        return mint_to_asset_key(raw.split(":", 1)[1])
+    for mint in TOKENS.keys():
+        if raw == mint or low == mint.lower():
+            return mint_to_asset_key(mint)
+    return low
 
 
 @app.get("/swap/tokens")
@@ -1421,6 +1438,119 @@ def _jupiter_execution_quote_summary(
 
 RAYDIUM_EXECUTION_SOL_MINT = "So11111111111111111111111111111111111111112"
 RAYDIUM_DEFAULT_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS = "10000"
+RAYDIUM_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+
+def _base58_decode_bytes(value: str) -> bytes:
+    if not isinstance(value, str) or not value:
+        raise ValueError("base58 value is required")
+
+    decoded = 0
+    for char in value:
+        if char not in _BASE58_ALPHABET:
+            raise ValueError("invalid base58 character")
+        decoded = decoded * 58 + _BASE58_ALPHABET.index(char)
+    raw = decoded.to_bytes((decoded.bit_length() + 7) // 8, "big") if decoded else b""
+    leading_zeroes = len(value) - len(value.lstrip("1"))
+    return (b"\x00" * leading_zeroes) + raw
+
+
+def _solana_pubkey_bytes(value: str) -> bytes:
+    raw = _base58_decode_bytes(value)
+    if len(raw) != 32:
+        raise ValueError("Solana public key must decode to 32 bytes")
+    return raw
+
+
+def _ed25519_is_on_curve(compressed: bytes) -> bool:
+    if len(compressed) != 32:
+        return False
+
+    p = 2**255 - 19
+    y = int.from_bytes(compressed, "little") & ((1 << 255) - 1)
+    if y >= p:
+        return False
+
+    y2 = (y * y) % p
+    u = (y2 - 1) % p
+    d = (-121665 * pow(121666, p - 2, p)) % p
+    v = (d * y2 + 1) % p
+    if v == 0:
+        return False
+    x2 = (u * pow(v, p - 2, p)) % p
+    return pow(x2, (p - 1) // 2, p) == 1 or x2 == 0
+
+
+def _solana_create_program_address(seeds: list[bytes], program_id: bytes) -> bytes:
+    if len(seeds) > 16:
+        raise ValueError("too many PDA seeds")
+    for seed in seeds:
+        if len(seed) > 32:
+            raise ValueError("PDA seed is too long")
+
+    digest = hashlib.sha256(
+        b"".join(seeds) + program_id + b"ProgramDerivedAddress"
+    ).digest()
+    if _ed25519_is_on_curve(digest):
+        raise ValueError("PDA landed on curve")
+    return digest
+
+
+def _solana_find_program_address(seeds: list[bytes], program_id: bytes) -> tuple[bytes, int]:
+    for bump in range(255, -1, -1):
+        try:
+            address = _solana_create_program_address(seeds + [bytes([bump])], program_id)
+            return address, bump
+        except ValueError:
+            continue
+    raise ValueError("could not find a valid PDA")
+
+
+def _derive_solana_associated_token_account(
+    *,
+    owner: str,
+    mint: str,
+    token_program_id: str = RAYDIUM_TOKEN_PROGRAM_ID,
+) -> str:
+    owner_bytes = _solana_pubkey_bytes(owner)
+    mint_bytes = _solana_pubkey_bytes(mint)
+    token_program_bytes = _solana_pubkey_bytes(token_program_id)
+    associated_program_bytes = _solana_pubkey_bytes(SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID)
+    ata_bytes, _bump = _solana_find_program_address(
+        [owner_bytes, token_program_bytes, mint_bytes],
+        associated_program_bytes,
+    )
+    return _base58_encode_bytes(ata_bytes)
+
+
+def _raydium_prepare_token_accounts(
+    *,
+    input_mint: str,
+    output_mint: str,
+    user_public_key: str,
+) -> dict:
+    wrap_sol = input_mint == RAYDIUM_EXECUTION_SOL_MINT
+    unwrap_sol = output_mint == RAYDIUM_EXECUTION_SOL_MINT
+
+    input_account = None
+    output_account = None
+    if not wrap_sol:
+        input_account = _derive_solana_associated_token_account(
+            owner=user_public_key,
+            mint=input_mint,
+        )
+    if not unwrap_sol:
+        output_account = _derive_solana_associated_token_account(
+            owner=user_public_key,
+            mint=output_mint,
+        )
+
+    return {
+        "wrap_sol": wrap_sol,
+        "unwrap_sol": unwrap_sol,
+        "input_account": input_account,
+        "output_account": output_account,
+    }
 
 
 def _raydium_execution_error(code: str, message: str, **extra) -> dict:
@@ -2399,14 +2529,26 @@ def _prepare_raydium_swap_transaction(
     if fresh_quote.get("ok") is not True:
         return fresh_quote
 
-    wrap_sol = input_meta.get("mint") == RAYDIUM_EXECUTION_SOL_MINT
-    unwrap_sol = output_meta.get("mint") == RAYDIUM_EXECUTION_SOL_MINT
+    try:
+        token_accounts = _raydium_prepare_token_accounts(
+            input_mint=input_meta.get("mint") or "",
+            output_mint=output_meta.get("mint") or "",
+            user_public_key=user_public_key,
+        )
+    except Exception:
+        return _swap_execution_error(
+            "SWAP_EXECUTION_RAYDIUM_UNSUPPORTED_ROUTE",
+            "This Raydium route cannot be prepared because required token accounts could not be derived.",
+        )
+
     swap_tx = _fetch_raydium_swap_transaction(
         swap_response=fresh_quote["quote"],
         user_public_key=user_public_key,
         tx_version="V0",
-        wrap_sol=wrap_sol,
-        unwrap_sol=unwrap_sol,
+        wrap_sol=token_accounts["wrap_sol"],
+        unwrap_sol=token_accounts["unwrap_sol"],
+        input_account=token_accounts["input_account"],
+        output_account=token_accounts["output_account"],
     )
     if swap_tx.get("ok") is not True:
         return swap_tx
@@ -6447,7 +6589,11 @@ def portfolio_latest(
         requested_assets = [a.strip() for a in assets.split(",") if a.strip()]
         if not requested_assets:
             raise HTTPException(status_code=400, detail="assets parameter was provided but empty after parsing")
-        assets_list = requested_assets
+        assets_list = [
+            item
+            for item in (_normalize_refresh_asset_for_diagnostics(a) for a in requested_assets)
+            if item
+        ]
     else:
         assets_list = default_assets
 
@@ -6462,7 +6608,7 @@ def portfolio_latest(
         assets=assets_list,
         currency=currency,
         show_unpriced=show_unpriced, # will be ignored if not supported
-        include_unpriced=show_unpriced,  # common alternative name; ignored if not supported
+        include_unpriced=bool(assets) or show_unpriced,  # explicit asset requests need balance rows for swap controls
 )
 
     encoded = jsonable_encoder(report)
@@ -6499,6 +6645,7 @@ def root():
 @app.post("/refresh/balances")
 def refresh_balances(
     account: str | None = Query(None, description="If provided, refresh only this account"),
+    assets: str | None = Query(None, description="Comma-separated asset keys to refresh, e.g. sol,usdc,spl:<mint>"),
     force: bool = Query(False),
 ):
     data = load_accounts()
@@ -6527,6 +6674,17 @@ def refresh_balances(
             skipped.append({"account": name, "reason": "cooldown"})
             continue
 
+        account_config = accounts_map.get(name) or {}
+        if assets:
+            assets_list = [a.strip() for a in assets.split(",") if a.strip()]
+        else:
+            assets_list = account_config.get("default_assets") or account_config.get("assets") or []
+        normalized_assets = [
+            item
+            for item in (_normalize_refresh_asset_for_diagnostics(a) for a in assets_list)
+            if item
+        ]
+
         cmd = [
             sys.executable, "run_balances_to_db.py",
             "--source", "solana",
@@ -6534,8 +6692,18 @@ def refresh_balances(
             "--account", name,
             "--no-report",
         ]
+        if assets_list:
+            cmd.extend(["--assets", *assets_list])
         r = _run_cmd(cmd)
-        refreshed.append({"account": name, **r})
+        latest_balances = db.get_latest_balances(account=name, assets=normalized_assets) if normalized_assets else {}
+        refreshed.append({
+            "account": name,
+            "requested_assets": assets_list,
+            "normalized_requested_assets": normalized_assets,
+            "balance_keys_written": sorted(latest_balances.keys()),
+            "latest_balances": latest_balances,
+            **r,
+        })
 
         if r["returncode"] == 0:
             _mark_refreshed(key)

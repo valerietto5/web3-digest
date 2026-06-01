@@ -65,9 +65,9 @@ class PortfolioPosition:
     asset: str
     amount: float
     balance_ts: str
-    price: float
-    price_ts: str
-    value: float  # amount * price
+    price: float | None
+    price_ts: str | None
+    value: float | None  # amount * price, or None when unpriced
 
     prev_price: float | None
     prev_price_ts: str | None
@@ -139,6 +139,8 @@ def compute_portfolio_report(
     account: str,
     assets: Iterable[str],
     currency: str = "usd",
+    include_unpriced: bool = False,
+    show_unpriced: bool = False,
 ) -> PortfolioReport:
     """
     Wallet-domain function:
@@ -191,6 +193,28 @@ def compute_portfolio_report(
         pr = prices.get(asset)
         if pr is None:
             missing_prices.append(asset)
+            if include_unpriced or show_unpriced:
+                positions[asset] = PortfolioPosition(
+                    asset=asset,
+                    amount=float(amt),
+                    balance_ts=balance_ts,
+                    price=None,
+                    price_ts=None,
+                    value=None,
+                    prev_price=None,
+                    prev_price_ts=None,
+                    price_change=None,
+                    price_change_pct=None,
+                    value_change=None,
+                    price_24h=None,
+                    price_24h_ts=None,
+                    price_change_24h=None,
+                    price_change_pct_24h=None,
+                    value_change_24h=None,
+                    baseline_24h_valid=False,
+                )
+                missing_prev_prices.append(asset)
+                missing_24h_prices.append(asset)
             continue
         price_ts, px = pr
 
