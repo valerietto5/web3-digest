@@ -1136,7 +1136,7 @@ JUPITER_EXECUTION_PROVIDER_ALIASES = {
     "jupiter-metis": "jupiter-metis",
 }
 
-SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis", "raydium-trade-api", "orca-whirlpool", "pumpswap"}
+SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis", "raydium-trade-api", "orca-whirlpool", "meteora-dlmm", "pumpswap"}
 
 SWAP_EXECUTION_PROVIDER_CAPABILITIES = {
     "jupiter-metis": {
@@ -1162,9 +1162,9 @@ SWAP_EXECUTION_PROVIDER_CAPABILITIES = {
     },
     "meteora-dlmm": {
         "quote": True,
-        "prepare": False,
-        "submit": False,
-        "status": "execution_research",
+        "prepare": True,
+        "submit": True,
+        "status": "executable_v1_single_pool",
         "label": "Meteora",
     },
     "pumpswap": {
@@ -1201,6 +1201,7 @@ SWAP_EXECUTION_PROVIDER_VARIANTS = {
     "jupiter-metis": JUPITER_EXECUTION_VARIANTS,
     "raydium-trade-api": {"raydium_quote"},
     "orca-whirlpool": {"orca_whirlpool_quote"},
+    "meteora-dlmm": {"meteora_dlmm_quote"},
     "pumpswap": {"pumpswap_quote"},
 }
 
@@ -1302,6 +1303,12 @@ def get_swap_execution_provider(provider_id: str) -> dict | None:
             "provider": "orca-whirlpool",
             "execution_surface_label": "Orca",
             "prepare": _prepare_orca_whirlpool_swap_transaction,
+        }
+    if provider == "meteora-dlmm":
+        return {
+            "provider": "meteora-dlmm",
+            "execution_surface_label": "Meteora",
+            "prepare": _prepare_meteora_dlmm_swap_transaction,
         }
     if provider == "pumpswap":
         return {
@@ -2108,6 +2115,254 @@ def _orca_execution_quote_summary(
     }
 
 
+def _meteora_execution_error(code: str, message: str, **extra) -> dict:
+    return _swap_execution_error(code, message, **extra)
+
+
+def _safe_meteora_provider_scalar(value, *, fallback: str | None = None):
+    if value is None or isinstance(value, (dict, list, tuple)):
+        return fallback
+
+    text = str(value).strip()
+    if not text:
+        return fallback
+
+    lower = text.lower()
+    unsafe_markers = (
+        "http://",
+        "https://",
+        "api-key",
+        "api_key",
+        "access_token",
+        "key=",
+        "token=",
+        "auth=",
+        "signature=",
+        "password",
+        "secret",
+        "transaction_base64",
+        "transactionbase64",
+        "swaptransaction",
+        "signed_transaction",
+        "signedtransaction",
+    )
+    if any(marker in lower for marker in unsafe_markers):
+        return fallback
+
+    if len(text) > 240:
+        text = text[:237] + "..."
+    return text
+
+
+def _safe_meteora_provider_error_details(helper_error) -> dict:
+    if not isinstance(helper_error, dict):
+        return {}
+
+    details = {}
+    provider_message = _safe_meteora_provider_scalar(helper_error.get("message") or helper_error.get("msg"))
+    provider_code = _safe_meteora_provider_scalar(helper_error.get("code") or helper_error.get("id"))
+    provider_detail = _safe_meteora_provider_scalar(helper_error.get("detail") or helper_error.get("details"))
+
+    if provider_message:
+        details["provider_message"] = provider_message
+    if provider_code:
+        details["provider_code"] = provider_code
+    if provider_detail:
+        details["provider_detail"] = provider_detail
+    return details
+
+
+def _fetch_fresh_meteora_dlmm_execution_quote(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount_raw: int,
+    slippage_bps: int,
+) -> dict:
+    rpc_url, _rpc_source = _configured_swap_prepare_rpc_url()
+    payload = _build_meteora_dlmm_quote_payload(
+        input_mint=input_meta["mint"],
+        output_mint=output_meta["mint"],
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+        rpc_url=rpc_url or SOLANA_MAINNET_RPC_URL,
+    )
+
+    result = _try_fetch_meteora_dlmm_quote(payload)
+    if result.get("ok") is not True:
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_PREPARE_FAILED",
+            "Could not refresh a Meteora DLMM quote for swap execution.",
+            provider_detail=result.get("error", {}).get("detail") if isinstance(result.get("error"), dict) else None,
+            provider_code=result.get("error", {}).get("code") if isinstance(result.get("error"), dict) else None,
+        )
+
+    quote = result["data"]
+    if quote.get("route_shape") == "two-hop" or isinstance(quote.get("leg_quotes"), list):
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_UNSUPPORTED_ROUTE",
+            "Only single-pool Meteora DLMM routes are supported for prepare V1.",
+            provider_detail="two-hop routes remain quote-only",
+        )
+    if not (quote.get("pool") or {}).get("address") or not quote.get("bin_arrays"):
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_PREPARE_FAILED",
+            "Meteora DLMM quote is missing pool or bin array data required for prepare.",
+        )
+
+    return {
+        "ok": True,
+        "quote": quote,
+        "payload": payload,
+    }
+
+
+def _extract_meteora_dlmm_transaction_base64(payload: dict) -> dict:
+    transaction = payload.get("transaction_base64") or payload.get("transactionBase64") or payload.get("transaction")
+    if not transaction:
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_TRANSACTION_MISSING",
+            "Meteora DLMM did not return a swap transaction.",
+        )
+    return {
+        "ok": True,
+        "transaction_base64": transaction,
+    }
+
+
+def _fetch_meteora_dlmm_swap_transaction(
+    *,
+    quote_response: dict,
+    user_public_key: str,
+    tx_version: str = "V0",
+) -> dict:
+    helper_path = project_root() / "tools" / "meteora_dlmm_prepare.mjs"
+    if not helper_path.exists():
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_HELPER_FAILED",
+            "Meteora DLMM transaction preparation helper is not available yet.",
+        )
+
+    payload = {
+        "user_public_key": user_public_key,
+        "pool_address": (quote_response.get("pool") or {}).get("address"),
+        "input_mint": quote_response.get("input_mint"),
+        "output_mint": quote_response.get("output_mint"),
+        "amount_raw": quote_response.get("in_amount_raw"),
+        "min_out_amount_raw": quote_response.get("min_out_amount_raw"),
+        "slippage_bps": quote_response.get("slippage_bps"),
+        "bin_arrays": quote_response.get("bin_arrays"),
+        "route_shape": quote_response.get("route_shape") or "single-pool",
+        "tx_version": tx_version,
+    }
+    rpc_url, _rpc_source = _configured_swap_prepare_rpc_url()
+    if rpc_url:
+        payload["rpc_url"] = rpc_url
+
+    try:
+        proc = subprocess.run(
+            [os.getenv("NODE_BINARY") or "node", str(helper_path)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=25,
+            cwd=project_root(),
+        )
+    except FileNotFoundError:
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_HELPER_FAILED",
+            "Meteora DLMM transaction preparation runtime is not available.",
+        )
+    except subprocess.TimeoutExpired:
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_HELPER_FAILED",
+            "Meteora DLMM transaction preparation helper timed out.",
+        )
+    except Exception:
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_HELPER_FAILED",
+            "Meteora DLMM transaction preparation helper failed.",
+        )
+
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_HELPER_FAILED",
+            "Meteora DLMM transaction preparation helper returned no JSON output.",
+        )
+
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_HELPER_FAILED",
+            "Meteora DLMM transaction preparation helper returned invalid JSON.",
+        )
+
+    if proc.returncode != 0 or data.get("ok") is False:
+        helper_error = data.get("error") if isinstance(data, dict) else None
+        helper_code = helper_error.get("code") if isinstance(helper_error, dict) else None
+        if helper_code == "METEORA_DLMM_UNSUPPORTED_ROUTE":
+            return _meteora_execution_error(
+                "SWAP_EXECUTION_METEORA_UNSUPPORTED_ROUTE",
+                "This Meteora DLMM route cannot be prepared for execution.",
+                **_safe_meteora_provider_error_details(helper_error),
+            )
+        if helper_code in (
+            "EMPTY_STDIN",
+            "INVALID_JSON",
+            "INVALID_REQUEST",
+            "INVALID_PUBLIC_KEY",
+            "INVALID_AMOUNT_RAW",
+            "METEORA_DLMM_BIN_ARRAYS_REQUIRED",
+            "INVALID_SLIPPAGE_BPS",
+            "UNSUPPORTED_TX_VERSION",
+        ):
+            return _meteora_execution_error(
+                "SWAP_EXECUTION_METEORA_HELPER_FAILED",
+                "Meteora DLMM transaction preparation helper rejected the request.",
+                **_safe_meteora_provider_error_details(helper_error),
+            )
+        return _meteora_execution_error(
+            "SWAP_EXECUTION_METEORA_PREPARE_FAILED",
+            "Meteora DLMM transaction preparation was not successful.",
+            **_safe_meteora_provider_error_details(helper_error),
+        )
+
+    extracted = _extract_meteora_dlmm_transaction_base64(data)
+    if extracted.get("ok") is not True:
+        return extracted
+
+    return {
+        "ok": True,
+        "transaction_base64": extracted["transaction_base64"],
+        "raw": data,
+    }
+
+
+def _meteora_dlmm_execution_quote_summary(
+    *,
+    quote: dict,
+    from_token: str,
+    to_token: str,
+    amount: float,
+    output_decimals: int,
+    slippage_bps: int,
+    variant_id: str,
+) -> dict:
+    return {
+        "from_token": from_token,
+        "to_token": to_token,
+        "amount": amount,
+        "estimated_output": _ui_amount(quote.get("out_amount_raw"), output_decimals),
+        "estimated_output_raw": quote.get("out_amount_raw"),
+        "min_received": _ui_amount(quote.get("min_out_amount_raw"), output_decimals),
+        "min_received_raw": quote.get("min_out_amount_raw"),
+        "slippage_bps": slippage_bps,
+        "variant_id": variant_id,
+    }
+
+
 def _pumpswap_execution_error(code: str, message: str, **extra) -> dict:
     return _swap_execution_error(code, message, **extra)
 
@@ -2632,6 +2887,65 @@ def _prepare_orca_whirlpool_swap_transaction(
             variant_id=variant_id,
         ),
         "warnings": ["quote_refreshed_before_execution"],
+        "submit_preflight": _swap_submit_preflight_metadata(),
+    }
+
+
+def _prepare_meteora_dlmm_swap_transaction(
+    *,
+    input_meta: dict,
+    output_meta: dict,
+    amount: float,
+    amount_raw: int,
+    slippage_bps: int,
+    variant_id: str,
+    user_public_key: str,
+    from_token_query: str,
+    to_token_query: str,
+) -> dict:
+    if variant_id != "meteora_dlmm_quote":
+        return _swap_execution_error(
+            "SWAP_EXECUTION_METEORA_UNSUPPORTED_ROUTE",
+            "This Meteora DLMM route cannot be prepared for execution.",
+        )
+
+    fresh_quote = _fetch_fresh_meteora_dlmm_execution_quote(
+        input_meta=input_meta,
+        output_meta=output_meta,
+        amount_raw=amount_raw,
+        slippage_bps=slippage_bps,
+    )
+    if fresh_quote.get("ok") is not True:
+        return fresh_quote
+
+    swap_tx = _fetch_meteora_dlmm_swap_transaction(
+        quote_response=fresh_quote["quote"],
+        user_public_key=user_public_key,
+        tx_version="V0",
+    )
+    if swap_tx.get("ok") is not True:
+        return swap_tx
+
+    from_token = input_meta.get("quote_label") or input_meta.get("symbol") or from_token_query
+    to_token = output_meta.get("quote_label") or output_meta.get("symbol") or to_token_query
+
+    return {
+        "ok": True,
+        "provider": "meteora-dlmm",
+        "execution_surface_label": "Meteora",
+        "execution_status": "prepared",
+        "transaction_base64": swap_tx.get("transaction_base64"),
+        "transaction_format": "versioned",
+        "quote_summary": _meteora_dlmm_execution_quote_summary(
+            quote=fresh_quote["quote"],
+            from_token=from_token,
+            to_token=to_token,
+            amount=amount,
+            output_decimals=output_meta["decimals"],
+            slippage_bps=slippage_bps,
+            variant_id=variant_id,
+        ),
+        "warnings": ["quote_refreshed_before_execution", "meteora_dlmm_prepare_research_only"],
         "submit_preflight": _swap_submit_preflight_metadata(),
     }
 
@@ -3174,6 +3488,7 @@ def _decode_solana_transaction_diagnostics(transaction_base64: str, *, expected_
             "static_account_count": len(account_keys),
             "instruction_count": len(program_ids),
             "program_ids": unique_program_ids[:16],
+            "instruction_program_ids": program_ids[:64],
             "ata_create_count": program_ids.count(SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID),
             "ata_create_details": ata_create_details,
             "token_program_instruction_count": program_ids.count(SOLANA_TOKEN_PROGRAM_ID),
@@ -3233,10 +3548,86 @@ def _safe_swap_preflight_logs_preview(logs) -> list[str]:
     return safe
 
 
-def _classify_swap_preflight_error(err, logs) -> str:
+def _safe_swap_preflight_logs_tail(logs, limit: int = 40) -> list[str]:
+    if not isinstance(logs, list):
+        return []
+    safe = []
+    for item in logs[-limit:]:
+        line = _safe_swap_preflight_log_line(item)
+        if line:
+            safe.append(line)
+    return safe
+
+
+def _safe_simulation_error_value(value, *, depth: int = 0):
+    if depth > 4:
+        return str(type(value).__name__)
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, str):
+        return _safe_swap_preflight_log_line(value) or None
+    if isinstance(value, list):
+        return [_safe_simulation_error_value(item, depth=depth + 1) for item in value[:20]]
+    if isinstance(value, dict):
+        safe = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if re.search(
+                r"transaction_base64|transactionBase64|signed_transaction|signedTransaction|swapTransaction|rpc_url|api[-_]?key|access_token|secret",
+                key_text,
+                re.IGNORECASE,
+            ):
+                continue
+            safe[key_text] = _safe_simulation_error_value(item, depth=depth + 1)
+        return safe
+    return _safe_swap_preflight_log_line(value) or None
+
+
+def _simulation_error_summary(err) -> str | None:
+    if err in (None, "", False):
+        return None
+    if isinstance(err, dict) and "InstructionError" in err:
+        instruction_error = err.get("InstructionError")
+        if isinstance(instruction_error, list) and len(instruction_error) >= 2:
+            return f"InstructionError[{instruction_error[0]}]: {instruction_error[1]}"
+    summary = json.dumps(_safe_simulation_error_value(err), sort_keys=True)
+    if len(summary) > 300:
+        summary = summary[:297] + "..."
+    return summary
+
+
+def _failing_instruction_index(err) -> int | None:
+    if isinstance(err, dict):
+        instruction_error = err.get("InstructionError")
+        if isinstance(instruction_error, list) and instruction_error:
+            try:
+                return int(instruction_error[0])
+            except Exception:
+                return None
+    return None
+
+
+def _failing_program_id(err, transaction_diagnostics: dict | None) -> str | None:
+    index = _failing_instruction_index(err)
+    if index is None or not isinstance(transaction_diagnostics, dict):
+        return None
+    program_ids = transaction_diagnostics.get("instruction_program_ids")
+    if isinstance(program_ids, list) and 0 <= index < len(program_ids):
+        return program_ids[index]
+    return None
+
+
+def _classify_swap_preflight_error(err, logs, *, provider: str = "", transaction_diagnostics: dict | None = None) -> str:
     text = " ".join([str(err or ""), " ".join(str(x or "") for x in (logs or []))]).lower()
     if any(term in text for term in ("insufficient funds", "insufficient lamports", "not enough", "account balance", "attempt to debit")):
         return "insufficient_funds"
+    if any(term in text for term in ("incorrectprogramid", "incorrect program id", "token-2022", "token2022", "token program", "owner mismatch")):
+        return "token_program_error"
+    failing_program = (_failing_program_id(err, transaction_diagnostics) or "").lower()
+    if "custom program error" in text or "custom" in text and "instructionerror" in text:
+        if (provider or "").strip().lower() == "meteora-dlmm" or failing_program:
+            return "meteora_program_error" if (provider or "").strip().lower() == "meteora-dlmm" else "provider_program_error"
+        return "provider_program_error"
     if any(term in text for term in ("rent", "account setup", "associated token", "initializeaccount", "create account", "wrapped sol", "wsol")):
         return "account_setup"
     return "simulation_failed"
@@ -3335,10 +3726,21 @@ def _fetch_solana_simulate_transaction(
             "provider": provider or None,
             "variant_id": variant_id or None,
             "simulation_supported": True,
-            "error_category": _classify_swap_preflight_error(rpc_error, []),
+            "error_category": _classify_swap_preflight_error(
+                rpc_error,
+                [],
+                provider=provider,
+                transaction_diagnostics=transaction_diagnostics,
+            ),
             "message": "Preflight simulation failed.",
             "rpc_error": rpc_error,
+            "raw_simulation_error": _safe_simulation_error_value(rpc_error),
+            "simulation_error_summary": _simulation_error_summary(rpc_error),
             "logs_preview": [],
+            "logs_tail": [],
+            "failing_instruction_index": None,
+            "failing_program_id": None,
+            "units_consumed": None,
             "insufficient_account_candidates": _extract_pubkeys_from_solana_logs(rpc_error),
             "transaction_diagnostics": transaction_diagnostics or None,
             **(setup_cost_estimate or {}),
@@ -3348,15 +3750,29 @@ def _fetch_solana_simulate_transaction(
     logs = value.get("logs") or []
     err = value.get("err")
     logs_preview = _safe_swap_preflight_logs_preview(logs)
+    logs_tail = _safe_swap_preflight_logs_tail(logs)
+    failing_instruction_index = _failing_instruction_index(err)
+    failing_program_id = _failing_program_id(err, transaction_diagnostics)
     if err:
         return {
             "ok": False,
             "provider": provider or None,
             "variant_id": variant_id or None,
             "simulation_supported": True,
-            "error_category": _classify_swap_preflight_error(err, logs),
+            "error_category": _classify_swap_preflight_error(
+                err,
+                logs,
+                provider=provider,
+                transaction_diagnostics=transaction_diagnostics,
+            ),
             "message": "Preflight simulation indicates this transaction may fail.",
+            "raw_simulation_error": _safe_simulation_error_value(err),
+            "simulation_error_summary": _simulation_error_summary(err),
             "logs_preview": logs_preview,
+            "logs_tail": logs_tail,
+            "failing_instruction_index": failing_instruction_index,
+            "failing_program_id": failing_program_id,
+            "units_consumed": value.get("unitsConsumed"),
             "insufficient_account_candidates": _extract_pubkeys_from_solana_logs(err, logs),
             "transaction_diagnostics": transaction_diagnostics or None,
             **(setup_cost_estimate or {}),
@@ -3370,6 +3786,8 @@ def _fetch_solana_simulate_transaction(
         "error_category": None,
         "message": "Preflight simulation passed.",
         "logs_preview": logs_preview,
+        "logs_tail": logs_tail,
+        "units_consumed": value.get("unitsConsumed"),
         "transaction_diagnostics": transaction_diagnostics or None,
         **(setup_cost_estimate or {}),
     }
@@ -4489,6 +4907,64 @@ def _extract_phantom_route_fees(quote: dict) -> dict:
     }
 
 
+def _phantom_nested_values(payload, key_names: set[str]):
+    found = []
+    stack = [payload]
+    while stack and len(found) < 20:
+        item = stack.pop()
+        if isinstance(item, dict):
+            for key, value in item.items():
+                normalized_key = str(key).lower()
+                if normalized_key in key_names and value not in (None, ""):
+                    found.append(value)
+                elif isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(item, list):
+            stack.extend(item[:50])
+    return found
+
+
+def _extract_phantom_actionability_metadata(quote: dict) -> dict:
+    quote_response = quote.get("quoteResponse") or {}
+    quotes = quote_response.get("quotes") or []
+    first_quote = quotes[0] if quotes else {}
+    payloads = [quote, quote_response, first_quote]
+
+    transaction_values = []
+    route_id_values = []
+    quote_id_values = []
+    url_values = []
+    for payload in payloads:
+        transaction_values.extend(_phantom_nested_values(
+            payload,
+            {
+                "transaction",
+                "transactionbase64",
+                "transaction_base64",
+                "base64encodedtx",
+                "base64_encoded_tx",
+                "swaptransaction",
+            },
+        ))
+        route_id_values.extend(_phantom_nested_values(payload, {"routeid", "route_id"}))
+        quote_id_values.extend(_phantom_nested_values(payload, {"quoteid", "quote_id", "id"}))
+        url_values.extend(_phantom_nested_values(
+            payload,
+            {"url", "deeplink", "deep_link", "deeplinkurl", "deeplink_url", "handoffurl", "handoff_url"},
+        ))
+
+    return {
+        "actionability_status": "benchmark_only",
+        "can_build_transaction": False,
+        "can_handoff": False,
+        "transaction_payload_present": bool(transaction_values),
+        "route_id_present": bool(route_id_values),
+        "quote_id_present": bool(quote_id_values),
+        "handoff_url_present": bool(url_values),
+        "reason": "Current Phantom quote response is a benchmark quote only; no safe transaction build or handoff path is wired.",
+    }
+
+
 def _compute_trade_execution_cost(
     reference_output_amount: float | None,
     quoted_output_amount: float | None,
@@ -4916,6 +5392,9 @@ def _normalize_meteora_dlmm_quote_option(
             }
         ]
     route_shape = quote.get("route_shape") or "single-pool"
+    has_pool_address = bool(pool.get("address"))
+    has_bin_arrays = isinstance(quote.get("bin_arrays"), list) and bool(quote.get("bin_arrays"))
+    single_pool_executable = route_shape == "single-pool" and has_pool_address and has_bin_arrays
 
     return {
         "variant_id": variant_id,
@@ -4924,11 +5403,11 @@ def _normalize_meteora_dlmm_quote_option(
         "provider": "meteora-dlmm",
         "execution_surface_label": "Meteora",
         "quote_status": "live",
-        "execution_status": "quote_only",
+        "execution_status": "executable_capable" if single_pool_executable else "quote_only",
         "supports_current_pair": True,
         "quote_source_type": "venue_native_pool",
-        "is_comparison_only": True,
-        "is_clickable": False,
+        "is_comparison_only": not single_pool_executable,
+        "is_clickable": single_pool_executable,
         "is_jupiter_only": False,
         "from_token": from_token,
         "to_token": to_token,
@@ -4948,7 +5427,11 @@ def _normalize_meteora_dlmm_quote_option(
         "explicit_route_fees": _extract_meteora_dlmm_route_fees(quote),
         "estimated_network_fee": None,
         "network_fee_scope": "not_estimated_in_preview",
-        "network_fee_detail": "Meteora DLMM is quote-only in this preview path.",
+        "network_fee_detail": (
+            "Meteora DLMM fee estimation is not available in quote preview."
+            if single_pool_executable
+            else "Meteora DLMM execution is available only for complete single-pool quotes in this preview path."
+        ),
         "price_impact_pct": _safe_float(quote.get("price_impact")),
         "slippage_bps": quote.get("slippage_bps"),
         "route_label": "Meteora DLMM",
@@ -4960,9 +5443,13 @@ def _normalize_meteora_dlmm_quote_option(
             "slippage_bps": quote.get("slippage_bps"),
         },
         "explanation": (
-            "Meteora DLMM venue-restricted two-hop quote. Comparison-only for now."
+            "Meteora DLMM venue-restricted two-hop quote. Execution is not supported for two-hop Meteora routes yet."
             if route_shape == "two-hop"
-            else "Meteora DLMM single-pool quote. Comparison-only for now."
+            else (
+                "Meteora DLMM single-pool quote. Execution prepare is available after Phantom connects."
+                if single_pool_executable
+                else "Meteora DLMM quote is missing pool/bin-array data required for execution prepare."
+            )
         ),
         "raw_quote": quote,
         "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
@@ -5202,7 +5689,7 @@ def _normalize_phantom_quote_option(
         "explicit_route_fees": _extract_phantom_route_fees(quote),
         "estimated_network_fee": None,
         "network_fee_scope": "not_estimated_in_preview",
-        "network_fee_detail": "Phantom routing API is quote-only in this preview path.",
+        "network_fee_detail": "Phantom routing API is benchmark-only here; no transaction build or handoff path is available yet.",
         "price_impact_pct": _safe_float(first_quote.get("priceImpact")),
         "slippage_bps": None,
         "route_label": route_label,
@@ -5216,7 +5703,8 @@ def _normalize_phantom_quote_option(
             "simulation_failed": first_quote.get("simulationFailed"),
             "base_provider": base_provider,
         },
-        "explanation": "Phantom routing API quote. Comparison-only for now.",
+        "actionability": _extract_phantom_actionability_metadata(quote),
+        "explanation": "Phantom routing API benchmark quote. Comparison-only; no safe transaction build or handoff path is wired yet.",
         "raw_quote": quote,
         "_sort_out_amount_raw": int(out_amount_raw) if out_amount_raw is not None else -1,
     }
@@ -6217,7 +6705,7 @@ def swap_quote(
     )
 
     executable_candidates = [
-        opt for opt in ranked_jupiter_candidates if _is_executable_quote_option(opt)
+        opt for opt in ranked_universe_options if _is_executable_quote_option(opt)
     ]
     recommended_executable_base = executable_candidates[0] if executable_candidates else None
     recommended_executable_variant_id = (
@@ -6286,7 +6774,7 @@ def swap_quote(
         "direct_route_check": "The selected direct/simple route produced the best checked output for this request.",
         "broader_search": "A broader routing search produced the best checked output for this request.",
         "raydium_quote": "Raydium produced the best checked quote for this request and can be prepared for Phantom signing.",
-        "meteora_dlmm_quote": "Meteora DLMM produced the best checked quote for this request, but it is comparison-only in this preview path.",
+        "meteora_dlmm_quote": "Meteora DLMM produced the best checked quote for this request and can be prepared for Phantom signing when the route is single-pool.",
         "orca_whirlpool_quote": "Orca Whirlpool produced the best checked quote for this request and can be prepared for Phantom signing when the route is single-pool.",
         "phoenix_quote": "Phoenix CLOB produced the best checked quote for this request, but it is comparison-only in this preview path.",
         "phantom_quote": "Phantom routing API produced the best checked quote for this request, but it is comparison-only in this preview path.",
@@ -6515,8 +7003,8 @@ def swap_quote(
                 "Direct/simple route is selected across available live quote universes. The Jupiter direct-route quote remains one candidate in that model.",
                 "Benchmark gap is a reference comparison, not a fee. Explicit route fees are provider-disclosed fee evidence and may already be reflected in quoted output.",
                 "Phantom uses the official Phantom routing API quote surface. It is quote-only and non-clickable in this preview path.",
-                "Orca and Phoenix use standalone SDK helpers. They are quote-only and non-clickable in this preview path.",
-                "PumpSwap uses a standalone SDK helper only for curated known pool candidates. It is quote-only and non-clickable in this preview path.",
+                "Meteora, Orca, PumpSwap, and Phoenix use standalone SDK helpers. Meteora execution is limited to complete single-pool DLMM routes; Phoenix remains quote-only.",
+                "PumpSwap uses a standalone SDK helper only for direct SOL <-> pump-token paths.",
             ],
         },
     }

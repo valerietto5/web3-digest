@@ -1453,6 +1453,7 @@ const SWAP_EXECUTABLE_PROVIDERS = new Set([
   "jupiter-metis",
   "raydium-trade-api",
   "orca-whirlpool",
+  "meteora-dlmm",
   "pumpswap"
 ]);
 
@@ -1465,6 +1466,7 @@ const SWAP_EXECUTABLE_VARIANTS = {
   ]),
   "raydium-trade-api": new Set(["raydium_quote"]),
   "orca-whirlpool": new Set(["orca_whirlpool_quote"]),
+  "meteora-dlmm": new Set(["meteora_dlmm_quote"]),
   "pumpswap": new Set(["pumpswap_quote"])
 };
 
@@ -1472,6 +1474,7 @@ const SWAP_EXECUTION_READY_LABELS = {
   "jupiter-metis": "Execution-ready via Jupiter",
   "raydium-trade-api": "Execution-ready via Raydium",
   "orca-whirlpool": "Execution-ready via Orca",
+  "meteora-dlmm": "Execution-ready via Meteora",
   "pumpswap": "Execution-ready via PumpSwap"
 };
 
@@ -1494,6 +1497,7 @@ function isExecutableRouteOption(opt) {
 function executableRouteButtonLabel(opt) {
   if (opt?.provider === "raydium-trade-api") return "Swap via Raydium";
   if (opt?.provider === "orca-whirlpool") return "Swap via Orca";
+  if (opt?.provider === "meteora-dlmm") return "Swap via Meteora";
   if (opt?.provider === "pumpswap") return "Swap via PumpSwap";
   return "Swap this route";
 }

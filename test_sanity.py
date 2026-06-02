@@ -28,6 +28,7 @@ from api.main import (
     _fetch_phoenix_quote,
     _fetch_pumpswap_quote,
     _fetch_fresh_pumpswap_execution_quote,
+    _fetch_meteora_dlmm_swap_transaction,
     _fetch_pumpswap_swap_transaction,
     _is_executable_quote_option,
     _normalize_meteora_dlmm_quote_option,
@@ -55,6 +56,7 @@ from api.main import (
     _fetch_jupiter_swap_transaction,
     _fetch_orca_whirlpool_swap_transaction,
     _fetch_raydium_swap_transaction,
+    _prepare_meteora_dlmm_swap_transaction,
     _derive_solana_associated_token_account,
     _raydium_prepare_token_accounts,
     build_swap_execution_readiness,
@@ -2831,9 +2833,15 @@ class TestSanity(unittest.TestCase):
             html.index("const SWAP_EXECUTABLE_VARIANTS")
         ]
         self.assertIn('"pumpswap"', executable_providers_block)
+        self.assertIn('"meteora-dlmm"', executable_providers_block)
         self.assertIn('"raydium_quote"', html)
         self.assertIn('"orca_whirlpool_quote"', html)
+        self.assertIn('"meteora_dlmm_quote"', html)
         self.assertIn('"pumpswap_quote"', html)
+        self.assertIn('"meteora-dlmm": new Set(["meteora_dlmm_quote"])', html)
+        self.assertIn("Execution-ready via Meteora", html)
+        self.assertIn("Swap via Meteora", html)
+        self.assertNotIn('"phantom-routing-api"', executable_providers_block)
         self.assertIn("SWAP_EXECUTABLE_PROVIDERS.has(provider)", html)
         self.assertIn("supportedVariants?.has(opt?.variant_id) === true", html)
         self.assertIn("opt?.execution_readiness?.execution_ready === true", html)
@@ -4086,6 +4094,58 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["route_labels"], ["ZeroFi via OKX"])
         self.assertEqual(option["route_shape"], "wallet-routing")
         self.assertTrue(option["explicit_route_fees"]["has_explicit_fees"])
+        self.assertEqual(option["actionability"]["actionability_status"], "benchmark_only")
+        self.assertFalse(option["actionability"]["can_build_transaction"])
+        self.assertFalse(option["actionability"]["can_handoff"])
+        self.assertFalse(option["actionability"]["transaction_payload_present"])
+        self.assertFalse(option["actionability"]["route_id_present"])
+        self.assertFalse(option["actionability"]["handoff_url_present"])
+        self.assertIn("no safe transaction build or handoff path", option["explanation"])
+
+    def test_normalize_phantom_quote_option_detects_but_does_not_expose_action_payloads(self):
+        quote = {
+            "ok": True,
+            "status_code": 200,
+            "first_quote_buyAmount": "83843388",
+            "quoteResponse": {
+                "quotes": [
+                    {
+                        "id": "quote-123",
+                        "route_id": "route-123",
+                        "transaction_base64": "hidden-base64",
+                        "deeplink_url": "phantom://swap/mock",
+                        "buyAmount": "83843388",
+                        "sellAmount": "1000000000",
+                        "baseProvider": {"id": "phantom", "name": "Phantom"},
+                        "sources": [{"name": "Phantom Route", "proportion": "1"}],
+                    }
+                ]
+            },
+        }
+
+        option = _normalize_phantom_quote_option(
+            variant_id="phantom_quote",
+            label="Via Phantom",
+            kind="alternative",
+            quote=quote,
+            from_token="SOL",
+            to_token="USDC",
+            input_amount=1.0,
+            input_amount_raw=1000000000,
+            output_decimals=6,
+        )
+
+        self.assertTrue(option["is_comparison_only"])
+        self.assertFalse(option["is_clickable"])
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["actionability"]["transaction_payload_present"])
+        self.assertTrue(option["actionability"]["route_id_present"])
+        self.assertTrue(option["actionability"]["quote_id_present"])
+        self.assertTrue(option["actionability"]["handoff_url_present"])
+        self.assertFalse(option["actionability"]["can_build_transaction"])
+        self.assertFalse(option["actionability"]["can_handoff"])
+        self.assertNotIn("hidden-base64", json.dumps(option["actionability"]))
+        self.assertNotIn("phantom://swap/mock", json.dumps(option["actionability"]))
 
     def test_normalize_pumpswap_quote_option_marks_single_pool_executable(self):
         quote = {
@@ -4162,7 +4222,7 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(option["is_comparison_only"])
         self.assertFalse(option["is_clickable"])
 
-    def test_normalize_meteora_dlmm_quote_option_marks_comparison_only(self):
+    def test_normalize_meteora_dlmm_quote_option_marks_single_pool_executable(self):
         quote = {
             "ok": True,
             "provider": "meteora_dlmm",
@@ -4203,13 +4263,13 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["provider"], "meteora-dlmm")
         self.assertEqual(option["execution_surface_label"], "Meteora")
         self.assertEqual(option["quote_status"], "live")
-        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertEqual(option["execution_status"], "executable_capable")
         self.assertTrue(option["supports_current_pair"])
         self.assertEqual(option["quote_source_type"], "venue_native_pool")
         self.assertEqual(option["cost_transparency"]["benchmark_gap_scope"], "reference_comparison_not_fee")
         self.assertEqual(option["cost_transparency"]["cost_completeness"], "partial")
-        self.assertTrue(option["is_comparison_only"])
-        self.assertFalse(option["is_clickable"])
+        self.assertFalse(option["is_comparison_only"])
+        self.assertTrue(option["is_clickable"])
         self.assertEqual(option["route_label"], "Meteora DLMM")
         self.assertEqual(option["route_shape"], "single-pool")
         self.assertEqual(option["estimated_output"], 84.019465)
@@ -4218,6 +4278,37 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(option["route_steps"][0]["pool_address"], quote["pool"]["address"])
         self.assertEqual(option["raw_quote"]["discovery"]["selected_pool"]["tvl"], 100000)
         self.assertEqual(option["_sort_out_amount_raw"], 84019465)
+        self.assertIn("Execution prepare is available", option["explanation"])
+
+    def test_normalize_meteora_dlmm_missing_prepare_data_stays_quote_only(self):
+        quote = {
+            "ok": True,
+            "provider": "meteora_dlmm",
+            "pool": {"address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6"},
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "84019465",
+            "min_out_amount_raw": "83599367",
+            "bin_arrays": [],
+        }
+
+        option = _normalize_meteora_dlmm_quote_option(
+            variant_id="meteora_dlmm_quote",
+            label="Via Meteora",
+            kind="alternative",
+            quote=quote,
+            from_token="SOL",
+            to_token="USDC",
+            input_amount=1.0,
+            input_amount_raw=1000000000,
+            output_decimals=6,
+        )
+
+        self.assertEqual(option["execution_status"], "quote_only")
+        self.assertTrue(option["is_comparison_only"])
+        self.assertFalse(option["is_clickable"])
+        self.assertIn("missing pool/bin-array data", option["explanation"])
 
     def test_normalize_meteora_dlmm_two_hop_quote_option_marks_comparison_only(self):
         wif_mint = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
@@ -4695,8 +4786,9 @@ class TestSanity(unittest.TestCase):
 
         meteora_option = response["direct_route_check"]
         self.assertEqual(meteora_option["provider"], "meteora-dlmm")
-        self.assertTrue(meteora_option["is_comparison_only"])
-        self.assertFalse(meteora_option["is_clickable"])
+        self.assertFalse(meteora_option["is_comparison_only"])
+        self.assertTrue(meteora_option["is_clickable"])
+        self.assertEqual(meteora_option["execution_status"], "executable_capable")
         self.assertEqual(meteora_option["route_shape"], "single-pool")
         self.assertIn("meteora_dlmm_quote", response["summary"]["checked_variants"])
 
@@ -5001,11 +5093,16 @@ class TestSanity(unittest.TestCase):
         self.assertIn("orca-whirlpool", visible_providers)
         self.assertIn("phantom-routing-api", visible_providers)
         self.assertNotIn("phoenix-clob", visible_providers)
-        for provider in ["meteora-dlmm", "phantom-routing-api"]:
-            option = next(opt for opt in visible if opt and opt["provider"] == provider)
-            self.assertTrue(option["is_comparison_only"])
-            self.assertFalse(option["is_clickable"])
-            self.assertIsNotNone(option["estimated_output_usd"])
+        meteora_option = next(opt for opt in visible if opt and opt["provider"] == "meteora-dlmm")
+        self.assertFalse(meteora_option["is_comparison_only"])
+        self.assertTrue(meteora_option["is_clickable"])
+        self.assertEqual(meteora_option["execution_status"], "executable_capable")
+        self.assertIsNotNone(meteora_option["estimated_output_usd"])
+        phantom_option = next(opt for opt in visible if opt and opt["provider"] == "phantom-routing-api")
+        self.assertTrue(phantom_option["is_comparison_only"])
+        self.assertFalse(phantom_option["is_clickable"])
+        self.assertEqual(phantom_option["execution_status"], "quote_only")
+        self.assertIsNotNone(phantom_option["estimated_output_usd"])
         orca_option = next(opt for opt in visible if opt and opt["provider"] == "orca-whirlpool")
         self.assertFalse(orca_option["is_comparison_only"])
         self.assertTrue(orca_option["is_clickable"])
@@ -5148,13 +5245,18 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("phoenix-clob", visible_providers)
         self.assertNotIn("pumpswap", visible_providers)
 
-        for provider in ["meteora-dlmm", "phantom-routing-api"]:
-            option = next(opt for opt in visible if opt and opt["provider"] == provider)
-            self.assertEqual(option["quote_status"], "live")
-            self.assertEqual(option["execution_status"], "quote_only")
-            self.assertTrue(option["is_comparison_only"])
-            self.assertFalse(option["is_clickable"])
-            self.assertIsNotNone(option["estimated_output_usd"])
+        meteora_option = next(opt for opt in visible if opt and opt["provider"] == "meteora-dlmm")
+        self.assertEqual(meteora_option["quote_status"], "live")
+        self.assertEqual(meteora_option["execution_status"], "executable_capable")
+        self.assertFalse(meteora_option["is_comparison_only"])
+        self.assertTrue(meteora_option["is_clickable"])
+        self.assertIsNotNone(meteora_option["estimated_output_usd"])
+        phantom_option = next(opt for opt in visible if opt and opt["provider"] == "phantom-routing-api")
+        self.assertEqual(phantom_option["quote_status"], "live")
+        self.assertEqual(phantom_option["execution_status"], "quote_only")
+        self.assertTrue(phantom_option["is_comparison_only"])
+        self.assertFalse(phantom_option["is_clickable"])
+        self.assertIsNotNone(phantom_option["estimated_output_usd"])
         orca_option = next(opt for opt in visible if opt and opt["provider"] == "orca-whirlpool")
         self.assertEqual(orca_option["quote_status"], "live")
         self.assertEqual(orca_option["execution_status"], "executable_capable")
@@ -5626,9 +5728,9 @@ class TestSanity(unittest.TestCase):
             ]
             meteora_option = next(opt for opt in visible if opt and opt["provider"] == "meteora-dlmm")
             self.assertEqual(meteora_option["quote_status"], "live")
-            self.assertEqual(meteora_option["execution_status"], "quote_only")
-            self.assertTrue(meteora_option["is_comparison_only"])
-            self.assertFalse(meteora_option["is_clickable"])
+            self.assertEqual(meteora_option["execution_status"], "executable_capable")
+            self.assertFalse(meteora_option["is_comparison_only"])
+            self.assertTrue(meteora_option["is_clickable"])
             self.assertEqual(meteora_option["raw_quote"]["discovery"]["selected_pool"]["address"], pool_address)
 
     def test_swap_quote_popcat_and_spx_can_include_discovered_orca_quote(self):
@@ -5799,7 +5901,7 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(response["recommended_option"]["execution_readiness"]["execution_ready"])
         self.assertAlmostEqual(response["recommended_option"]["estimated_output"], 45.0)
         self.assertAlmostEqual(response["recommended_option"]["estimated_output_usd"], 0.00081)
-        self.assertEqual(response["recommended_executable_option"]["provider"], "jupiter-metis")
+        self.assertEqual(response["recommended_executable_option"]["provider"], "pumpswap")
         self.assertIn("pumpswap_quote", response["summary"]["checked_variants"])
 
     def test_swap_quote_sol_to_bonk_does_not_show_fake_pumpswap(self):
@@ -6009,10 +6111,10 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(response["best_quote_option"]["provider"], "meteora-dlmm")
         self.assertEqual(response["recommended_option"]["provider"], "meteora-dlmm")
         self.assertEqual(response["recommended"]["provider"], "meteora-dlmm")
-        self.assertTrue(response["recommended_option"]["is_comparison_only"])
-        self.assertFalse(response["recommended_option"]["is_clickable"])
-        self.assertEqual(response["recommended_option"]["execution_status"], "quote_only")
-        self.assertEqual(response["recommended_executable_option"]["provider"], "jupiter-metis")
+        self.assertFalse(response["recommended_option"]["is_comparison_only"])
+        self.assertTrue(response["recommended_option"]["is_clickable"])
+        self.assertEqual(response["recommended_option"]["execution_status"], "executable_capable")
+        self.assertEqual(response["recommended_executable_option"]["provider"], "meteora-dlmm")
         self.assertEqual(
             response["recommended_executable_option"]["execution_status"],
             "executable_capable",
@@ -6020,7 +6122,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(response["summary"]["recommended_variant_id"], "meteora_dlmm_quote")
         self.assertEqual(
             response["summary"]["recommended_executable_variant_id"],
-            "recommended_default",
+            "meteora_dlmm_quote",
         )
         self.assertEqual(
             response["summary"]["recommendation_scope"],
@@ -6032,8 +6134,8 @@ class TestSanity(unittest.TestCase):
         )
 
         other_providers = [opt["provider"] for opt in response["other_options"]]
+        self.assertIn("jupiter-metis", other_providers)
         self.assertIn("raydium-trade-api", other_providers)
-        self.assertNotIn("jupiter-metis", other_providers)
         self.assertNotIn("meteora-dlmm", other_providers)
 
     def test_swap_quote_recommends_orca_when_it_has_best_output(self):
@@ -6358,8 +6460,9 @@ class TestSanity(unittest.TestCase):
 
         self.assertEqual(response["direct_route_check"]["provider"], "meteora-dlmm")
         self.assertEqual(response["direct_route_check"]["route_shape"], "single-pool")
-        self.assertTrue(response["direct_route_check"]["is_comparison_only"])
-        self.assertFalse(response["direct_route_check"]["is_clickable"])
+        self.assertFalse(response["direct_route_check"]["is_comparison_only"])
+        self.assertTrue(response["direct_route_check"]["is_clickable"])
+        self.assertEqual(response["direct_route_check"]["execution_status"], "executable_capable")
         self.assertEqual(response["summary"]["direct_route_variant_id"], "meteora_dlmm_quote")
         self.assertEqual(
             response["summary"]["direct_route_selection_basis"],
@@ -6655,7 +6758,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_WALLET_REQUIRED")
 
     def test_swap_execute_prepare_rejects_unsupported_provider(self):
-        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="meteora-dlmm"))
+        result = swap_execute_prepare(self._base_swap_execute_prepare_payload(provider="unknown-provider"))
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_PROVIDER_NOT_IMPLEMENTED")
 
@@ -6674,7 +6777,7 @@ class TestSanity(unittest.TestCase):
 
     def test_prepare_swap_transaction_with_provider_blocks_unimplemented_provider(self):
         result = prepare_swap_transaction_with_provider(
-            provider_id="meteora-dlmm",
+            provider_id="unknown-provider",
             input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
             output_meta={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
             amount=1.0,
@@ -7789,11 +7892,103 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["error_category"], "insufficient_funds")
         self.assertEqual(result["provider"], "orca-whirlpool")
         self.assertIn("insufficient funds for rent", result["logs_preview"][0])
+        self.assertIn("insufficient funds for rent", result["logs_tail"][0])
+        self.assertEqual(result["simulation_error_summary"], "InstructionError[0]: Custom")
+        self.assertEqual(result["raw_simulation_error"], {"InstructionError": [0, "Custom"]})
+        self.assertEqual(result["failing_instruction_index"], 0)
         self.assertEqual(result["transaction_diagnostics"]["fee_payer"], "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL")
         self.assertNotIn("AQID", result_json)
         self.assertNotIn("transaction_base64", result_json)
         self.assertNotIn("api-key", result_json)
         self.assertNotIn("SECRET", result_json)
+
+    def test_fetch_solana_simulate_transaction_reports_meteora_program_error_after_successful_ata_logs(self):
+        class Response:
+            status_code = 200
+            ok = True
+            text = ""
+
+            def json(self):
+                return {
+                    "result": {
+                        "value": {
+                            "err": {"InstructionError": [4, {"Custom": 6043}]},
+                            "logs": [
+                                "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [1]",
+                                "Program log: CreateIdempotent",
+                                "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success",
+                                "Program 11111111111111111111111111111111 invoke [1]",
+                                "Program 11111111111111111111111111111111 success",
+                                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [1]",
+                                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+                                "Program MeteoraDLMM111111111111111111111111111111 invoke [1]",
+                                "Program log: Instruction: Swap2",
+                                "Program MeteoraDLMM111111111111111111111111111111 failed: custom program error: 0x179b",
+                            ],
+                            "unitsConsumed": 123456,
+                        }
+                    }
+                }
+
+        diagnostics = {
+            "decode_ok": True,
+            "instruction_program_ids": [
+                "ComputeBudget111111111111111111111111111111",
+                "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+                "11111111111111111111111111111111",
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "MeteoraDLMM111111111111111111111111111111",
+            ],
+        }
+        with patch("api.main.requests.post", return_value=Response()):
+            result = _fetch_solana_simulate_transaction(
+                transaction_base64="AQID",
+                rpc_url="https://rpc.example",
+                provider="meteora-dlmm",
+                variant_id="meteora_dlmm_quote",
+                transaction_diagnostics=diagnostics,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_category"], "meteora_program_error")
+        self.assertNotEqual(result["error_category"], "account_setup")
+        self.assertEqual(result["simulation_error_summary"], "InstructionError[4]: {'Custom': 6043}")
+        self.assertEqual(result["failing_instruction_index"], 4)
+        self.assertEqual(result["failing_program_id"], "MeteoraDLMM111111111111111111111111111111")
+        self.assertEqual(result["units_consumed"], 123456)
+        self.assertIn("failed: custom program error", result["logs_tail"][-1])
+
+    def test_fetch_solana_simulate_transaction_classifies_token_program_error(self):
+        class Response:
+            status_code = 200
+            ok = True
+            text = ""
+
+            def json(self):
+                return {
+                    "result": {
+                        "value": {
+                            "err": {"InstructionError": [2, "IncorrectProgramId"]},
+                            "logs": [
+                                "Program log: CreateIdempotent",
+                                "Program log: Error: IncorrectProgramId",
+                            ],
+                        }
+                    }
+                }
+
+        with patch("api.main.requests.post", return_value=Response()):
+            result = _fetch_solana_simulate_transaction(
+                transaction_base64="AQID",
+                rpc_url="https://rpc.example",
+                provider="meteora-dlmm",
+                variant_id="meteora_dlmm_quote",
+                transaction_diagnostics={"decode_ok": True},
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_category"], "token_program_error")
+        self.assertEqual(result["simulation_error_summary"], "InstructionError[2]: IncorrectProgramId")
 
     def test_swap_ui_passes_wallet_to_preflight_and_keeps_diagnostics_out_of_default_copy(self):
         html = build_ui_html()
@@ -8590,6 +8785,230 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("signTransaction", source)
         self.assertNotIn("/swap/execute/submit", source)
 
+    def test_meteora_dlmm_prepare_helper_exists_and_is_prepare_only(self):
+        source = Path("tools/meteora_dlmm_prepare.mjs").read_text()
+
+        self.assertIn("readInputArgOrStdin", source)
+        self.assertIn("process.argv[2]", source)
+        self.assertIn("DLMM.create", source)
+        self.assertIn("dlmmPool.swap", source)
+        self.assertIn("ensureBinArrayBitmapExtensionWritable", source)
+        self.assertIn("binArrayBitmapExtension", source)
+        self.assertIn("meta.isWritable = true", source)
+        self.assertIn("bin_array_bitmap_extension_marked_writable", source)
+        self.assertIn("instruction_diagnostics", source)
+        self.assertIn("account_metas", source)
+        self.assertIn("include_diagnostics", source)
+        self.assertIn("new TransactionMessage", source)
+        self.assertIn("new VersionedTransaction", source)
+        self.assertIn('transaction_format: "versioned"', source)
+        self.assertIn('"transactionbase64"', source)
+        self.assertIn('"signedtransaction"', source)
+        self.assertNotIn("console.log", source)
+        self.assertNotIn("sendTransaction", source)
+        self.assertNotIn("signTransaction", source)
+        self.assertNotIn("/swap/execute/submit", source)
+
+    def test_meteora_dlmm_prepare_dry_run_helper_exists_and_hides_transaction_by_default(self):
+        source = Path("tools/meteora_dlmm_prepare_dry_run.mjs").read_text()
+
+        self.assertIn("readInputArgOrStdin", source)
+        self.assertIn("process.argv[2]", source)
+        self.assertIn("quoteHelperPath", source)
+        self.assertIn("prepareHelperPath", source)
+        self.assertIn("transaction_base64_present", source)
+        self.assertIn("transaction_base64_length", source)
+        self.assertIn("include_transaction_base64", source)
+        self.assertIn("include_diagnostics", source)
+        self.assertIn("prepare_diagnostics", source)
+        self.assertIn("writable_account_patch", source)
+        self.assertIn("request.includeTransactionBase64 === true", source)
+        self.assertIn("result.transaction_base64 = transactionBase64", source)
+        self.assertNotIn("sendTransaction", source)
+        self.assertNotIn("signTransaction", source)
+        self.assertNotIn("/swap/execute/submit", source)
+
+    def test_meteora_dlmm_prepare_dry_run_rejects_non_single_pool_by_source_gate(self):
+        source = Path("tools/meteora_dlmm_prepare_dry_run.mjs").read_text()
+
+        self.assertIn('routeShape !== "single-pool"', source)
+        self.assertIn("METEORA_DLMM_DRY_RUN_UNSUPPORTED_ROUTE", source)
+        self.assertIn("METEORA_DLMM_DRY_RUN_POOL_MISSING", source)
+        self.assertIn("METEORA_DLMM_DRY_RUN_BIN_ARRAYS_MISSING", source)
+        self.assertIn("Only single-pool Meteora DLMM routes are supported", source)
+
+    def test_meteora_dlmm_prepare_helper_rejects_two_hop_and_missing_pool(self):
+        base_payload = {
+            "user_public_key": "EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            "pool_address": "3tdsJ4hX5yhfWzjvYjzp7NQ4zoyEoJ9RuqGpWr3x6wmg",
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "amount_raw": "1000000000",
+            "min_out_amount_raw": "84900000",
+            "slippage_bps": 50,
+            "bin_arrays": ["8oaT3tYHjpuQJnE1tdv6UQV8kF2CPvDQpFK2bMMp6eAX"],
+            "route_shape": "single-pool",
+            "tx_version": "V0",
+        }
+
+        cases = [
+            ({"route_shape": "two-hop"}, "METEORA_DLMM_UNSUPPORTED_ROUTE"),
+            ({"pool_address": ""}, "INVALID_PUBLIC_KEY"),
+            ({"bin_arrays": []}, "METEORA_DLMM_BIN_ARRAYS_REQUIRED"),
+        ]
+        for override, expected_code in cases:
+            payload = {**base_payload, **override}
+            with self.subTest(expected_code=expected_code):
+                proc = subprocess.run(
+                    ["node", "tools/meteora_dlmm_prepare.mjs", json.dumps(payload)],
+                    capture_output=True,
+                    text=True,
+                    cwd=Path(__file__).resolve().parent,
+                    timeout=10,
+                )
+                data = json.loads(proc.stdout)
+
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertFalse(data["ok"])
+                self.assertEqual(data["error"]["code"], expected_code)
+
+    def _mock_meteora_execution_quote(self, **overrides):
+        quote = {
+            "provider": "meteora_dlmm",
+            "pool": {"address": "3tdsJ4hX5yhfWzjvYjzp7NQ4zoyEoJ9RuqGpWr3x6wmg"},
+            "input_mint": METEORA_DLMM_SOL_MINT,
+            "output_mint": METEORA_DLMM_USDC_MINT,
+            "in_amount_raw": "1000000000",
+            "out_amount_raw": "85000000",
+            "min_out_amount_raw": "84900000",
+            "slippage_bps": 50,
+            "bin_arrays": ["8oaT3tYHjpuQJnE1tdv6UQV8kF2CPvDQpFK2bMMp6eAX"],
+            "route_shape": "single-pool",
+        }
+        quote.update(overrides)
+        return quote
+
+    def test_meteora_prepare_rejects_unsupported_variant(self):
+        result = prepare_swap_transaction_with_provider(
+            provider_id="meteora-dlmm",
+            input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            output_meta={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+            amount=1.0,
+            amount_raw=1000000000,
+            slippage_bps=50,
+            variant_id="recommended_default",
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            from_token_query="SOL",
+            to_token_query="USDC",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_METEORA_UNSUPPORTED_ROUTE")
+
+    def test_meteora_prepare_rejects_two_hop_quote(self):
+        quote = self._mock_meteora_execution_quote(route_shape="two-hop", leg_quotes=[{"pool": "mock"}])
+        with patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": quote}):
+            result = _prepare_meteora_dlmm_swap_transaction(
+                input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+                output_meta={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+                amount=1.0,
+                amount_raw=1000000000,
+                slippage_bps=50,
+                variant_id="meteora_dlmm_quote",
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                from_token_query="SOL",
+                to_token_query="USDC",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_METEORA_UNSUPPORTED_ROUTE")
+        self.assertIn("two-hop", result["error"]["provider_detail"])
+
+    def test_meteora_prepare_rejects_missing_pool_or_bin_arrays(self):
+        cases = [
+            self._mock_meteora_execution_quote(pool={}),
+            self._mock_meteora_execution_quote(bin_arrays=[]),
+        ]
+        for quote in cases:
+            with self.subTest(quote=quote):
+                with patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": quote}):
+                    result = _prepare_meteora_dlmm_swap_transaction(
+                        input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+                        output_meta={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+                        amount=1.0,
+                        amount_raw=1000000000,
+                        slippage_bps=50,
+                        variant_id="meteora_dlmm_quote",
+                        user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                        from_token_query="SOL",
+                        to_token_query="USDC",
+                    )
+
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"]["code"], "SWAP_EXECUTION_METEORA_PREPARE_FAILED")
+
+    def test_fetch_meteora_dlmm_swap_transaction_normalizes_helper_success(self):
+        helper_json = json.dumps({
+            "ok": True,
+            "provider": "meteora-dlmm",
+            "transaction_format": "versioned",
+            "transaction_base64": "meteora-base64tx",
+        })
+
+        def fake_run(*_args, **_kwargs):
+            return subprocess.CompletedProcess(args=["node"], returncode=0, stdout=helper_json, stderr="")
+
+        with patch("api.main.subprocess.run", side_effect=fake_run) as run:
+            result = _fetch_meteora_dlmm_swap_transaction(
+                quote_response=self._mock_meteora_execution_quote(),
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transaction_base64"], "meteora-base64tx")
+        sent_payload = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(sent_payload["pool_address"], "3tdsJ4hX5yhfWzjvYjzp7NQ4zoyEoJ9RuqGpWr3x6wmg")
+        self.assertEqual(sent_payload["route_shape"], "single-pool")
+        self.assertEqual(sent_payload["tx_version"], "V0")
+
+    def test_meteora_prepare_normalizes_mocked_success_with_single_pool_capability_enabled(self):
+        quote = self._mock_meteora_execution_quote()
+        before = json.dumps(TOKEN_META, sort_keys=True)
+        with (
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value={"ok": True, "data": quote}),
+            patch(
+                "api.main._fetch_meteora_dlmm_swap_transaction",
+                return_value={
+                    "ok": True,
+                    "transaction_base64": "meteora-base64tx",
+                    "raw": {"transaction_format": "versioned"},
+                },
+            ),
+        ):
+            result = _prepare_meteora_dlmm_swap_transaction(
+                input_meta={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9, "symbol": "SOL"},
+                output_meta={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6, "symbol": "USDC"},
+                amount=1.0,
+                amount_raw=1000000000,
+                slippage_bps=50,
+                variant_id="meteora_dlmm_quote",
+                user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+                from_token_query="SOL",
+                to_token_query="USDC",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["provider"], "meteora-dlmm")
+        self.assertEqual(result["execution_surface_label"], "Meteora")
+        self.assertEqual(result["transaction_format"], "versioned")
+        self.assertEqual(result["transaction_base64"], "meteora-base64tx")
+        self.assertEqual(result["quote_summary"]["variant_id"], "meteora_dlmm_quote")
+        self.assertIn("meteora_dlmm_prepare_research_only", result["warnings"])
+        self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["meteora-dlmm"]["prepare"])
+        self.assertTrue(SWAP_EXECUTION_PROVIDER_CAPABILITIES["meteora-dlmm"]["submit"])
+        self.assertEqual(SWAP_EXECUTION_PROVIDER_CAPABILITIES["meteora-dlmm"]["status"], "executable_v1_single_pool")
+        self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
     def _readiness_jupiter_option(self, **overrides):
         option = {
             "provider": "jupiter-metis",
@@ -8632,13 +9051,16 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(jupiter["prepare"])
         self.assertTrue(jupiter["submit"])
 
-        for provider_id in {"raydium-trade-api", "orca-whirlpool", "pumpswap"}:
+        for provider_id in {"raydium-trade-api", "orca-whirlpool", "meteora-dlmm", "pumpswap"}:
             capability = SWAP_EXECUTION_PROVIDER_CAPABILITIES[provider_id]
             self.assertTrue(capability["prepare"])
             self.assertTrue(capability["submit"])
-            self.assertEqual(capability["status"], "executable_v1")
+            if provider_id == "meteora-dlmm":
+                self.assertEqual(capability["status"], "executable_v1_single_pool")
+            else:
+                self.assertEqual(capability["status"], "executable_v1")
 
-        for provider_id in expected - {"jupiter-metis", "raydium-trade-api", "orca-whirlpool", "pumpswap"}:
+        for provider_id in expected - {"jupiter-metis", "raydium-trade-api", "orca-whirlpool", "meteora-dlmm", "pumpswap"}:
             capability = SWAP_EXECUTION_PROVIDER_CAPABILITIES[provider_id]
             self.assertFalse(capability["prepare"])
             self.assertFalse(capability["submit"])
@@ -8686,6 +9108,23 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(result["prepare_capable"])
         self.assertTrue(result["submit_capable"])
 
+    def test_swap_execution_readiness_marks_meteora_single_pool_prepare_available(self):
+        result = build_swap_execution_readiness(
+            self._readiness_jupiter_option(
+                provider="meteora-dlmm",
+                variant_id="meteora_dlmm_quote",
+            ),
+            from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
+            to_resolution={"mint": METEORA_DLMM_USDC_MINT, "decimals": 6},
+        )
+
+        self.assertTrue(result["execution_ready"])
+        self.assertEqual(result["execution_stage"], "prepare_available")
+        self.assertEqual(result["execution_provider"], "meteora-dlmm")
+        self.assertEqual(result["provider_status"], "executable_v1_single_pool")
+        self.assertTrue(result["prepare_capable"])
+        self.assertTrue(result["submit_capable"])
+
     def test_swap_execution_readiness_marks_pumpswap_prepare_available(self):
         result = build_swap_execution_readiness(
             self._readiness_jupiter_option(
@@ -8704,7 +9143,7 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(result["submit_capable"])
 
     def test_swap_execution_readiness_rejects_unsupported_non_jupiter_providers(self):
-        for provider_id in ("meteora-dlmm", "phantom-routing-api", "phoenix-clob"):
+        for provider_id in ("phantom-routing-api", "phoenix-clob"):
             result = build_swap_execution_readiness(
                 self._readiness_jupiter_option(provider=provider_id, variant_id=f"{provider_id}_quote"),
                 from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
@@ -8714,8 +9153,8 @@ class TestSanity(unittest.TestCase):
             self.assertEqual(result["execution_stage"], "quote_only")
             self.assertIn("NON_JUPITER_ROUTE", result["reasons"])
 
-    def test_swap_execution_readiness_rejects_raydium_or_orca_or_pumpswap_unsupported_variant(self):
-        for provider_id in ("raydium-trade-api", "orca-whirlpool", "pumpswap"):
+    def test_swap_execution_readiness_rejects_executable_provider_unsupported_variant(self):
+        for provider_id in ("raydium-trade-api", "orca-whirlpool", "meteora-dlmm", "pumpswap"):
             result = build_swap_execution_readiness(
                 self._readiness_jupiter_option(provider=provider_id, variant_id="recommended_default"),
                 from_resolution={"mint": METEORA_DLMM_SOL_MINT, "decimals": 9},
