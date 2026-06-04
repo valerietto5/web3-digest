@@ -23,6 +23,8 @@ def build_ui_html() -> str:
     .swap-token-selector input { border: 0; min-width: 0; flex: 1 1 auto; box-shadow: none; }
     .swap-token-selector-arrow { color: #666; font-size: 12px; line-height: 1; flex: 0 0 auto; }
     .swap-amount-actions { display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end; }
+    .swap-summary-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:6px; }
+    .swap-summary-value { font-size:13px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     @media (max-width: 760px) { .swap-token-card-main { grid-template-columns: 1fr; } }
     .token-preview { margin-top: 4px; font-size: 12px; line-height: 1.35; min-height: 18px; }
     @media (max-width: 760px) { .swap-input-grid { grid-template-columns: 1fr; } }
@@ -39,6 +41,10 @@ def build_ui_html() -> str:
     .ok { background: #e8fff0; }
     .warn { background: #fff4e5; }
     .err { background: #ffecec; }
+    .modal-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.42); z-index: 50; }
+    .modal-backdrop.is-open { display: flex; }
+    .modal-panel { width: min(480px, 100%); background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 14px; box-shadow: 0 16px 42px rgba(0,0,0,.18); }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
   </style>
 </head>
 <body>
@@ -203,6 +209,7 @@ def build_ui_html() -> str:
           <div class="amount-side">
             <label>Amount</label>
             <input id="swapAmount" placeholder="0.0" />
+            <div class="muted token-preview" id="swapSellValueEstimate" style="text-align:right;">USD estimate: —</div>
             <div class="muted token-preview" id="swapFromBalanceHint">Available: load wallet balances.</div>
             <div class="swap-amount-actions">
               <button id="btnSwapAmountHalf" type="button" class="secondary" disabled style="padding:6px 8px;">50%</button>
@@ -224,7 +231,7 @@ def build_ui_html() -> str:
           <div class="amount-side">
             <label>Estimated receive</label>
             <div id="swapBuyEstimate" class="muted" style="text-align:right; font-size:18px; padding:8px 0;">Preview quote</div>
-            <div class="muted token-preview" style="text-align:right;">Estimated receive after preview.</div>
+            <div class="muted token-preview" id="swapBuyValueEstimate" style="text-align:right;">Estimated receive after preview.</div>
           </div>
         </div>
       </div>
@@ -243,12 +250,27 @@ def build_ui_html() -> str:
       <div id="holderConcentrationBox" class="muted">No holder concentration check yet.</div>
     </div>
 
-    <div class="row" id="swapInlineBaselineRow" style="margin-top: 6px;">
-      <div class="muted" id="swapSpendValueHint">You spend: —</div>
-      <div class="muted" id="swapIdealOutputHint">Estimated receive: click Preview Quote to compare live routes.</div>
-      <div class="muted" id="swapBaselineDeltaHint">Market reference: —</div>
-      <div class="muted" id="swapMarketCompareHint">Best quote vs market: —</div>
-      <div class="muted" id="swapBaselineNote" style="font-size:12px; opacity:0.78;">Reference pricing is used only to compare route quality — not an executable route.</div>
+    <div class="card" id="swapInlineBaselineRow" style="margin-top: 10px;">
+      <h4 style="margin: 0 0 8px 0;">Swap summary</h4>
+      <div class="swap-summary-grid">
+        <div>
+          <div class="muted" style="font-size:12px;">You sell</div>
+          <div id="swapSpendValueHint" class="swap-summary-value">—</div>
+        </div>
+        <div>
+          <div class="muted" style="font-size:12px;">Market reference</div>
+          <div id="swapBaselineDeltaHint" class="swap-summary-value">—</div>
+        </div>
+        <div>
+          <div class="muted" style="font-size:12px;">Best executable quote</div>
+          <div id="swapIdealOutputHint" class="swap-summary-value">Preview Quote</div>
+        </div>
+        <div>
+          <div class="muted" style="font-size:12px;">Route difference vs reference</div>
+          <div id="swapMarketCompareHint" class="swap-summary-value">—</div>
+        </div>
+      </div>
+      <div class="muted" id="swapBaselineNote" style="margin-top:8px; font-size:12px; opacity:0.78;">Reference pricing is used only to compare route quality — not an executable route.</div>
     </div>
 
     <div class="card" id="swapQuoteCard" style="margin-top:10px;">
@@ -278,12 +300,12 @@ def build_ui_html() -> str:
     </div>
 
     <div class="card" id="swapRecommendedCard" style="margin-top:10px;">
-      <h4 style="margin: 0 0 6px 0;">Recommended route</h4>
+      <h4 style="margin: 0 0 6px 0;">Recommended executable route</h4>
       <div class="muted" id="swapRecommendedBox">No quote yet.</div>
     </div>
 
     <div class="card" id="swapDirectCard" style="margin-top:10px;">
-      <h4 style="margin: 0 0 6px 0;">Direct route check</h4>
+      <h4 style="margin: 0 0 6px 0;">Direct/simple route check</h4>
       <div class="muted" id="swapDirectBox">No direct-route check yet.</div>
     </div>
 
@@ -300,6 +322,17 @@ def build_ui_html() -> str:
     </details>
 
     <div id="swapStatus" class="card" style="display:none; margin-top:10px;"></div>
+
+    <div id="swapSuccessModal" class="modal-backdrop" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="swapSuccessModalTitle">
+        <h3 id="swapSuccessModalTitle" style="margin:0 0 8px 0;">Swap submitted successfully</h3>
+        <div id="swapSuccessModalBody" class="muted" style="line-height:1.45;"></div>
+        <div class="modal-actions">
+          <a id="swapSuccessExplorerLink" class="secondary" href="#" target="_blank" style="display:none; padding:10px 12px; border-radius:10px; border:1px solid #aaa; color:#111; text-decoration:none;">Open in Solana Explorer</a>
+          <button id="btnCloseSwapSuccessModal" type="button" class="secondary">Close</button>
+        </div>
+      </div>
+    </div>
 
     </div>
 
@@ -1093,8 +1126,8 @@ function clearSwapUi() {
 
 
 async function updateLiveSwapBaseline() {
-  const fromToken = $("swapFromToken").value;
-  const toToken = $("swapToToken").value;
+  const fromToken = canonicalSwapTokenQuery("from");
+  const toToken = canonicalSwapTokenQuery("to");
   const rawAmount = ($("swapAmount").value || "").trim();
   const amount = Number(rawAmount);
 
@@ -1139,13 +1172,17 @@ function resetSwapInlineBaseline() {
   const compare = $("swapMarketCompareHint");
   const note = $("swapBaselineNote");
   const buyEstimate = $("swapBuyEstimate");
+  const sellValue = $("swapSellValueEstimate");
+  const buyValue = $("swapBuyValueEstimate");
 
-  if (spend) spend.textContent = "You spend: —";
-  if (ideal) ideal.textContent = "Estimated receive: click Preview Quote to compare live routes.";
-  if (delta) delta.textContent = "Market reference: —";
-  if (compare) compare.textContent = "Best quote vs market: —";
+  if (spend) spend.textContent = "—";
+  if (ideal) ideal.textContent = "Preview Quote";
+  if (delta) delta.textContent = "—";
+  if (compare) compare.textContent = "—";
   if (note) note.textContent = "Reference pricing is used only to compare route quality — not an executable route.";
   if (buyEstimate) buyEstimate.textContent = "Preview quote";
+  if (sellValue) sellValue.textContent = "USD estimate: —";
+  if (buyValue) buyValue.textContent = "Reference estimate before preview.";
 }
 
 
@@ -1174,6 +1211,9 @@ function renderSwapInlineBaseline(baseline, delta = null) {
   const deltaLine = $("swapBaselineDeltaHint");
   const compareLine = $("swapMarketCompareHint");
   const note = $("swapBaselineNote");
+  const sellValue = $("swapSellValueEstimate");
+  const buyEstimate = $("swapBuyEstimate");
+  const buyValue = $("swapBuyValueEstimate");
 
   if (!baseline) {
     resetSwapInlineBaseline();
@@ -1198,10 +1238,15 @@ function renderSwapInlineBaseline(baseline, delta = null) {
     baseline.output_usd_value == null
       ? null
       : fmtUsdCost(Number(baseline.output_usd_value));
+  const uncertainUsdText = "USD estimate unavailable / reference uncertain";
+  const inputUsdText = inputUsd || uncertainUsdText;
+  const outputUsdText = outputUsd || uncertainUsdText;
 
   if (spend) {
-    spend.textContent =
-      "You spend: " + inputAmount + " " + inputToken + (inputUsd ? " ≈ " + inputUsd : "");
+    spend.textContent = inputAmount + " " + inputToken + " ≈ " + inputUsdText;
+  }
+  if (sellValue) {
+    sellValue.textContent = "≈ " + inputUsdText;
   }
 
   function referenceSourceLabel(_source) {
@@ -1214,27 +1259,31 @@ function renderSwapInlineBaseline(baseline, delta = null) {
       const bestUsd = Number.isFinite(Number(baseline.output_usd_price))
         ? bestOut * Number(baseline.output_usd_price)
         : null;
-      ideal.textContent =
-        "Best live quote: ~" +
-        fmtNum(bestOut, 6) +
-        " " +
-        outputToken +
-        (Number.isFinite(bestUsd) ? " ≈ " + fmtUsdCost(bestUsd) : "");
-      const buyEstimate = $("swapBuyEstimate");
+      const bestUsdText = Number.isFinite(bestUsd) ? fmtUsdCost(bestUsd) : uncertainUsdText;
+      ideal.textContent = "~" + fmtNum(bestOut, 6) + " " + outputToken + " ≈ " + bestUsdText;
       if (buyEstimate) {
         buyEstimate.textContent = "~" + fmtNum(bestOut, 6) + " " + outputToken;
       }
+      if (buyValue) {
+        buyValue.textContent = "≈ " + bestUsdText;
+      }
     } else {
-      ideal.textContent = "Estimated receive: click Preview Quote to compare live routes.";
-      const buyEstimate = $("swapBuyEstimate");
-      if (buyEstimate) buyEstimate.textContent = "Preview quote";
+      ideal.textContent = "Preview Quote to compare routes";
+      if (buyEstimate) {
+        buyEstimate.textContent = idealOut ? "~" + idealOut + " " + outputToken : "Preview quote";
+      }
+      if (buyValue) {
+        buyValue.textContent = idealOut
+          ? "≈ " + outputUsdText + " · Reference estimate before preview"
+          : "Reference estimate before preview.";
+      }
     }
   }
 
   if (deltaLine) {
     deltaLine.textContent = idealOut
-      ? "Market reference: ~" + idealOut + " " + outputToken + (outputUsd ? " ≈ " + outputUsd : "")
-      : "Market reference: —";
+      ? "~" + idealOut + " " + outputToken + " ≈ " + outputUsdText
+      : "—";
   }
 
   if (compareLine) {
@@ -1242,13 +1291,12 @@ function renderSwapInlineBaseline(baseline, delta = null) {
       const rawPct = Number(delta.output_diff_pct);
       if (Number.isFinite(rawPct)) {
         const direction = rawPct >= 0 ? "above" : "below";
-        compareLine.textContent =
-          "Best quote vs market: ~" + fmtNum(Math.abs(rawPct), 4) + "% " + direction + " reference";
+        compareLine.textContent = "~" + fmtNum(Math.abs(rawPct), 4) + "% " + direction;
       } else {
-        compareLine.textContent = "Best quote vs market: unavailable";
+        compareLine.textContent = "Unavailable";
       }
     } else {
-      compareLine.textContent = "Best quote vs market: preview live routes to compare.";
+      compareLine.textContent = "Preview live routes to compare.";
     }
   }
 
@@ -1580,9 +1628,10 @@ function swapOptionCardTitle(opt, opts = {}) {
 
   const kind = String(opt?.kind || "");
 
+  if (opt?.provider === "phantom-routing-api") return "Benchmark-only quote";
   if (kind === "recommended" && opt?.is_comparison_only === true) return "Best quote";
-  if (kind === "recommended") return "Recommended route";
-  if (kind === "direct") return "Direct route check";
+  if (kind === "recommended") return "Recommended executable route";
+  if (kind === "direct") return "Direct/simple route check";
 
   return opt?.label || opt?.execution_surface_label || "Route";
 }
@@ -1814,20 +1863,47 @@ function renderHolderConcentration(data) {
   const linkHtml = bubblemaps
     ? `<a href="${escapeHtml(bubblemaps)}" target="_blank" rel="noopener">Open Bubblemaps</a>`
     : "Open Bubblemaps unavailable";
+  const holderDiagnostics = data?.diagnostics && typeof data.diagnostics === "object"
+    ? data.diagnostics
+    : {};
+  const holderDiagnosticFields = [
+    "rpc_url_source",
+    "rpc_methods_attempted",
+    "rate_limited",
+    "cached",
+    "cache_age_seconds",
+    "partial_data_available"
+  ];
+  const visibleHolderDiagnostics = {};
+  for (const field of holderDiagnosticFields) {
+    if (holderDiagnostics[field] !== undefined) visibleHolderDiagnostics[field] = holderDiagnostics[field];
+  }
+  const holderDiagnosticsJson = JSON.stringify(visibleHolderDiagnostics, null, 2);
+  const holderDiagnosticsHtml = Object.keys(visibleHolderDiagnostics).length
+    ? `
+      <details style="margin-top:6px;">
+        <summary class="muted" style="cursor:pointer; font-size:12px;">Holder diagnostics</summary>
+        <pre style="margin-top:6px; font-size:11px;">${escapeHtml(holderDiagnosticsJson)}</pre>
+      </details>
+    `
+    : "";
 
   if (!data?.ok) {
     const code = data?.error?.code || "";
     const statusCode = data?.error?.status_code;
-    const message = code === "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED" || (
+    const partial = data?.partial_data_available === true || data?.diagnostics?.partial_data_available === true;
+    const technicalMessage = code === "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED" || (
       code === "TOKEN_HOLDER_CONCENTRATION_HTTP_ERROR" && Number(statusCode) === 429
     )
       ? "Solana RPC is rate-limited right now. Try again later."
       : "Holder concentration unavailable right now.";
-    box.className = "muted err";
+    box.className = "muted";
     box.innerHTML = `
-      <div style="font-weight:600;">Holder concentration unavailable right now.</div>
-      <div style="margin-top:6px;">${escapeHtml(message)}</div>
+      <div style="font-weight:600;">${partial ? "Holder data partially available" : "Holder data unavailable"}</div>
+      ${partial ? `<div class="muted" style="margin-top:6px; font-size:12px;">Supply found; largest accounts unavailable.</div>` : ""}
       <div style="margin-top:6px;">${linkHtml}</div>
+      <div class="muted" style="margin-top:6px; font-size:12px;">${escapeHtml(technicalMessage)}</div>
+      ${holderDiagnosticsHtml}
       <div class="muted" style="margin-top:6px; font-size:12px;">Distribution only — not a safety score.</div>
     `;
     card.style.display = "block";
@@ -1837,14 +1913,21 @@ function renderHolderConcentration(data) {
   const summary = data.summary || {};
   const topAccount = formatHolderPct(summary.top_account_pct);
   const top5 = formatHolderPct(summary.top_5_accounts_pct);
+  const top10 = formatHolderPct(summary.top_10_accounts_pct);
+  const accountCount = Number(summary.number_of_accounts_used || summary.sampled_account_count);
+  const accountCountText = Number.isFinite(accountCount) && accountCount > 0
+    ? " · " + String(accountCount) + " accounts sampled"
+    : "";
 
   box.className = "muted";
   box.innerHTML = `
     <div style="font-weight:600; color:#e5eefb;">Holder concentration</div>
     <div style="margin-top:6px;">Top visible token account: ${escapeHtml(topAccount)}</div>
     <div>Top 5 visible token accounts: ${escapeHtml(top5)}</div>
+    <div>Top 10 holders: ${escapeHtml(top10)}${escapeHtml(accountCountText)}</div>
     <div class="muted" style="margin-top:6px; font-size:12px;">Based on visible token accounts from Solana RPC. Separate from route ranking.</div>
     <div style="margin-top:6px;">${linkHtml}</div>
+    ${holderDiagnosticsHtml}
     <div class="muted" style="margin-top:6px; font-size:12px;">Distribution only — not a safety score.</div>
   `;
   card.style.display = "block";
@@ -1904,8 +1987,7 @@ function renderSwapOptionCard(opt, opts = {}) {
   const isExecutableRoute = isExecutableRouteOption(opt);
   const isComparisonOnly = opt.is_comparison_only === true && !isExecutableRoute;
   const estOut = fmtNum(Number(opt.estimated_output || 0), 6);
-  const receiveUsd = Number(opt?.estimated_output_usd);
-  const receiveUsdText = Number.isFinite(receiveUsd) ? " ≈ " + fmtUsdCost(receiveUsd) : "";
+  const receiveUsdText = routeReceiveUsdText(opt);
   const minReceived = opt.min_received == null ? "n/a" : fmtNum(Number(opt.min_received), 6);
   const impact = formatImpactPct(opt.price_impact_pct);
   const slippage = formatSettingPctFromBps(opt?.protections?.slippage_bps ?? opt?.slippage_bps);
@@ -1919,8 +2001,10 @@ function renderSwapOptionCard(opt, opts = {}) {
   const routeFeesDisclosed = !!opt?.route_fees_disclosed;
   const estimatedTotalSwapCostUsd = Number(opt?.estimated_total_swap_cost_usd);
 
-  const executionCostUsdText =
-    Number.isFinite(executionCostUsd) ? fmtUsdCost(executionCostUsd) : "n/a";
+  const executionCostUsdText = routeVsBestOutputText(opt, opts.bestOption) ||
+    (Number.isFinite(executionCostUsd) && executionCostUsd !== 0
+      ? "Quote vs market reference: " + fmtUsdCost(executionCostUsd)
+      : "Output comparison unavailable");
 
   const networkCostUsdText =
     Number.isFinite(networkCostUsd) ? fmtUsdCost(networkCostUsd) : "n/a";
@@ -2012,6 +2096,24 @@ function renderSwapOptionCard(opt, opts = {}) {
       ${shouldShowSwapOptionCardTitle(opt, opts) ? `<div><strong>${escapeHtml(title)}</strong></div>` : ""}
       <div style="margin-top:3px; font-weight:600;">${escapeHtml(routeLabel)}</div>
       ${
+        isRecommendedCard && isExecutableRoute
+          ? `
+            <div class="muted" style="margin-top:4px;">
+              Ready to approve in Phantom · Best executable route found in this quote.
+            </div>
+          `
+          : ""
+      }
+      ${
+        opt?.provider === "phantom-routing-api"
+          ? `
+            <div class="muted" style="margin-top:4px;">
+              <strong>Not executable here.</strong> Used for comparison only. No swap action available from this app.
+            </div>
+          `
+          : ""
+      }
+      ${
         isComparisonOnly
           ? `
             <div class="muted" style="margin-top:4px;">
@@ -2037,7 +2139,7 @@ function renderSwapOptionCard(opt, opts = {}) {
               : "")
       }
       <div class="muted" style="margin-top:6px; padding-right:220px;">
-        Receive (est.): ${escapeHtml(estOut)} ${escapeHtml(opt.to_token || "")}${escapeHtml(receiveUsdText)}
+        You receive: ${escapeHtml(estOut)} ${escapeHtml(opt.to_token || "")}${escapeHtml(receiveUsdText)}
       </div>
       ${renderRouteShapeLine(opt)}
       ${
@@ -2064,7 +2166,7 @@ function renderSwapOptionCard(opt, opts = {}) {
         compactDirect && Number.isFinite(executionCostUsd)
           ? `
             <div class="muted" style="margin-top:4px;">
-              Quote vs best route: ${escapeHtml(executionCostUsdText)}
+              ${escapeHtml(executionCostUsdText)}
             </div>
           `
           : `
@@ -2116,24 +2218,72 @@ function renderSwapOptionCard(opt, opts = {}) {
 
 
 
-function renderCompactAlternativeCard(opt, idx = 0) {
+function routeReceiveUsdText(opt) {
+  const estimatedOutput = Number(opt?.estimated_output);
+  const receiveUsd = Number(opt?.estimated_output_usd);
+  if (Number.isFinite(receiveUsd) && !(receiveUsd === 0 && estimatedOutput > 0)) {
+    return " ≈ " + fmtUsdCost(receiveUsd);
+  }
+  const referenceUsdPrice = Number(opt?.estimated_trade_execution_cost?.token_usd_price);
+  const referenceUsd = Number.isFinite(referenceUsdPrice) && Number.isFinite(estimatedOutput)
+    ? estimatedOutput * referenceUsdPrice
+    : null;
+  if (referenceUsd && referenceUsd > 0) {
+    return " ≈ " + fmtUsdCost(referenceUsd) + " est.";
+  }
+  if (opt?.usd_reference_uncertain) {
+    return " · USD estimate unavailable / reference uncertain";
+  }
+  if (estimatedOutput > 0) {
+    return " · USD estimate unavailable / reference uncertain";
+  }
+  return "";
+}
+
+function routeVsBestOutputText(opt, bestOption) {
+  const output = Number(opt?.estimated_output);
+  const bestOutput = Number(bestOption?.estimated_output);
+  const token = opt?.to_token || bestOption?.to_token || "";
+  if (!Number.isFinite(output) || !Number.isFinite(bestOutput) || bestOutput <= 0) {
+    return "";
+  }
+  const diff = output - bestOutput;
+  if (Math.abs(diff) < 1e-12) {
+    return "Output vs best route: matches best route";
+  }
+  const pct = (diff / bestOutput) * 100;
+  const direction = pct >= 0 ? "higher" : "lower";
+  return "Output vs best route: ~" + fmtNum(Math.abs(pct), 2) + "% " + direction +
+    " (" + fmtNum(Math.abs(diff), 6) + " " + token + ")";
+}
+
+function renderCompactAlternativeCard(opt, idx = 0, bestOption = null) {
   if (!opt) return "";
 
   const routeLabel = surfaceRouteLabel(opt);
   const isExecutableRoute = isExecutableRouteOption(opt);
   const isComparisonOnly = opt.is_comparison_only === true && !isExecutableRoute;
   const estOut = fmtNum(Number(opt?.estimated_output || 0), 6);
-  const receiveUsd = Number(opt?.estimated_output_usd);
-  const receiveUsdText = Number.isFinite(receiveUsd) ? " ≈ " + fmtUsdCost(receiveUsd) : "";
+  const receiveUsdText = routeReceiveUsdText(opt);
   const outToken = opt?.to_token || "";
   const executionCostUsd = Number(opt?.execution_cost_usd);
-  const executionCostText = Number.isFinite(executionCostUsd)
-    ? fmtUsdCost(executionCostUsd)
-    : "n/a";
+  const executionCostText = routeVsBestOutputText(opt, bestOption) ||
+    (Number.isFinite(executionCostUsd) && executionCostUsd !== 0
+      ? "Quote vs market reference: " + fmtUsdCost(executionCostUsd)
+      : "Output comparison unavailable");
 
   return `
     <div class="card" style="margin-top:8px; position:relative;">
-      <div><strong>Alternative ${idx + 1} — ${escapeHtml(routeLabel)}</strong></div>
+      <div><strong>${opt?.provider === "phantom-routing-api" ? "Benchmark-only quote" : "Alternative " + (idx + 1)} — ${escapeHtml(routeLabel)}</strong></div>
+      ${
+        opt?.provider === "phantom-routing-api"
+          ? `
+            <div class="muted" style="margin-top:4px;">
+              <strong>Not executable here.</strong> Used for comparison only. No swap action available from this app.
+            </div>
+          `
+          : ""
+      }
       ${
         isComparisonOnly
           ? `
@@ -2157,7 +2307,7 @@ function renderCompactAlternativeCard(opt, idx = 0) {
         Receive: ${escapeHtml(estOut)} ${escapeHtml(outToken)}${escapeHtml(receiveUsdText)}
       </div>
       <div class="muted" style="margin-top:2px;">
-        Quote vs best route: ${escapeHtml(executionCostText)}
+        ${escapeHtml(executionCostText)}
       </div>
       ${renderRouteShapeLine(opt, true)}
     </div>
@@ -2255,8 +2405,8 @@ async function prepareSwapRoute(routeRequest) {
 
   const variantId = routeRequest.variant_id || "";
   const supportedVariants = SWAP_EXECUTABLE_VARIANTS[provider];
-  const fromToken = $("swapFromToken").value;
-  const toToken = $("swapToToken").value;
+  const fromToken = canonicalSwapTokenQuery("from");
+  const toToken = canonicalSwapTokenQuery("to");
   const amount = Number(($("swapAmount").value || "").trim());
 
   if (supportedVariants?.has(variantId) !== true) {
@@ -2661,6 +2811,40 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+function closeSwapSuccessModal() {
+  const modal = $("swapSuccessModal");
+  if (!modal) return;
+  modal.classList.remove("is-open");
+  modal.setAttribute("aria-hidden", "true");
+}
+
+function showSwapSuccessModal(details) {
+  const modal = $("swapSuccessModal");
+  const body = $("swapSuccessModalBody");
+  const explorerLink = $("swapSuccessExplorerLink");
+  if (!modal || !body) return;
+
+  const lines = [
+    details.provider ? "Provider: " + details.provider : "",
+    details.spent ? "Spent: " + details.spent : "",
+    details.expected ? "Expected received: " + details.expected : "",
+    "Network: Solana mainnet"
+  ].filter(Boolean);
+
+  body.innerHTML = lines.map((line) => `<div>${escapeHtml(line)}</div>`).join("");
+
+  if (explorerLink && details.explorer) {
+    explorerLink.href = details.explorer;
+    explorerLink.style.display = "inline-block";
+  } else if (explorerLink) {
+    explorerLink.removeAttribute("href");
+    explorerLink.style.display = "none";
+  }
+
+  modal.classList.add("is-open");
+  modal.setAttribute("aria-hidden", "false");
+}
+
 function renderSwapSubmittedSuccess(signature) {
   const box = $("swapExecutionStatus");
   if (!box) return;
@@ -2694,6 +2878,12 @@ function renderSwapSubmittedSuccess(signature) {
   box.className = "muted ok";
   box.innerHTML = lines.join("");
   box.style.display = "block";
+  showSwapSuccessModal({
+    provider: providerLabel,
+    spent,
+    expected,
+    explorer,
+  });
   renderSwapBalanceFreshnessHint(selectedFromHolding());
   renderSwapFromBalance();
 }
@@ -2878,8 +3068,8 @@ async function previewSwap() {
   clearSwapQuoteFreshness();
   setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
 
-  const fromToken = $("swapFromToken").value;
-  const toToken = $("swapToToken").value;
+  const fromToken = canonicalSwapTokenQuery("from");
+  const toToken = canonicalSwapTokenQuery("to");
   const rawAmount = ($("swapAmount").value || "").trim();
   const amount = Number(rawAmount);
 
@@ -2946,7 +3136,6 @@ async function previewSwap() {
 
   const quote = res.data || {};
   latestSwapQuoteResponse = quote;
-  startSwapQuoteFreshnessTimer();
   renderSwapInlineBaseline(
     quote.inline_baseline,
     quote.inline_baseline_vs_recommended
@@ -2959,11 +3148,28 @@ async function previewSwap() {
   const directRoute = quote?.direct_route_check || null;
 
   if (!quote?.ok || !(bestQuote || recommended)) {
-    resetSwapQuoteDisplay();
-    setSwapPhase("Failed", "No swap route was found for this request.");
-    showSwapStatus("warn", "No route found", { quote });
+    clearSwapQuoteFreshness();
+    setSwapPreparedActionVisible(false);
+    setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
+    setSwapPhase("Failed", "No executable route found for this token/amount.");
+    $("swapRecommendedBox").innerHTML =
+      "<div class='muted'>No executable route found. Reference price is available, but no live route was found.</div>";
+    $("swapDirectBox").innerHTML =
+      "<div class='muted'>No direct/simple route returned for this token/amount.</div>";
+    $("swapAlternativesCard").style.display = "none";
+    $("swapAlternativesBox").innerHTML = "<div class='muted'>No alternatives yet.</div>";
+    $("swapRecommendation").style.display = "block";
+    $("swapRecommendation").textContent = "No executable route found for this token/amount.";
+    $("swapCompareSummary").style.display = "block";
+    $("swapCompareSummary").textContent =
+      "Reference price is available, but no live route was found. Reference pricing is not an executable route.";
+    $("swapQuotePreview").textContent = JSON.stringify(quote, null, 2);
+    $("swapDebugWrap").style.display = "block";
+    showSwapStatus("warn", "No executable route found", { quote });
     return;
   }
+
+  startSwapQuoteFreshnessTimer();
 
   function numOrNull(x) {
     const n = Number(x);
@@ -3012,6 +3218,7 @@ async function previewSwap() {
 
   function isDirectSimpleRouteOption(opt) {
     if (!opt) return false;
+    if (opt?.provider === "phantom-routing-api") return false;
     const shape = String(opt?.route_shape || "").toLowerCase();
     const steps = Number(opt?.route_step_count || 0);
     return opt?.variant_id === "direct_route_check" ||
@@ -3110,7 +3317,7 @@ async function previewSwap() {
 
     const alternativesHtml = defaultAlternativeOptions.length
       ? defaultAlternativeOptions
-          .map((opt, idx) => renderCompactAlternativeCard(opt, idx))
+          .map((opt, idx) => renderCompactAlternativeCard(opt, idx, displayRec))
           .join("")
       : "";
 
@@ -3152,7 +3359,8 @@ async function previewSwap() {
           note: directNote,
           compactDirect: true,
           showDirectAction: true,
-          cardRole: "direct"
+          cardRole: "direct",
+          bestOption: displayRec
         });
       }
     } else {
@@ -3794,6 +4002,22 @@ function qs(params) {
     return ($(id)?.value || "").trim();
   }
 
+  function canonicalSwapTokenQuery(side) {
+    const id = side === "from" ? "swapFromToken" : "swapToToken";
+    const input = $(id);
+    const selectedMint = String(input?.dataset?.selectedMint || "").trim();
+    const selectedSymbol = String(input?.dataset?.selectedSymbol || "").trim();
+    const visibleValue = String(input?.value || "").trim();
+    if (
+      selectedMint &&
+      selectedSymbol &&
+      visibleValue.toLowerCase() === selectedSymbol.toLowerCase()
+    ) {
+      return selectedMint;
+    }
+    return visibleValue;
+  }
+
   function recognizedSwapTokenKey(token) {
     const mint = String(token?.mint || "").trim();
     return mint ? mint.toLowerCase() : "";
@@ -3965,10 +4189,12 @@ function qs(params) {
     const recognized = rememberResolvedSwapToken(token);
     if (!recognized) return;
     const input = $(side === "from" ? "swapFromToken" : "swapToToken");
-    const selectedValue = recognizedSwapTokenAssetKey(recognized).toLowerCase().startsWith("spl:")
-      ? recognized.mint
-      : (recognized.symbol || recognized.mint);
+    const selectedValue = recognized.symbol || recognized.display_name || recognized.mint;
     if (input) input.value = selectedValue;
+    if (input) {
+      input.dataset.selectedMint = recognized.mint;
+      input.dataset.selectedSymbol = recognized.symbol || recognized.display_name || "";
+    }
     swapSelectedRecognizedTokenMint[side] = recognized.mint;
     resetSwapStateForTokenChange({ clearAmount: side === "from" });
     setTokenResolvePreview(side, recognized);
@@ -3981,6 +4207,11 @@ function qs(params) {
 
   function resetResolvedSwapTokenSelection(side) {
     swapSelectedRecognizedTokenMint[side] = "";
+    const input = $(side === "from" ? "swapFromToken" : "swapToToken");
+    if (input) {
+      delete input.dataset.selectedMint;
+      delete input.dataset.selectedSymbol;
+    }
   }
 
   function selectedFromRecognizedToken() {
@@ -4119,10 +4350,12 @@ function qs(params) {
 
     if (!res.ok || !res.data?.ok || !res.data?.token) {
       renderTokenResolveFailure(side, res.data || {});
+      updateLiveSwapBaseline();
       return;
     }
 
     setTokenResolvePreview(side, res.data.token);
+    updateLiveSwapBaseline();
   }
 
   function scheduleSwapTokenResolve(side) {
@@ -4604,6 +4837,13 @@ function fmtUsdCost(x) {
   $("btnSignPreparedSwap").addEventListener("click", signAndSubmitPreparedSwap);
   $("swapSignAcknowledgement").addEventListener("change", updateSwapSignButtonState);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
+  $("btnCloseSwapSuccessModal").addEventListener("click", closeSwapSuccessModal);
+  $("swapSuccessModal").addEventListener("click", (event) => {
+    if (event.target?.id === "swapSuccessModal") closeSwapSuccessModal();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeSwapSuccessModal();
+  });
   $("btnSwapAmountHalf").addEventListener("click", () => setSwapAmountFromHolding(0.5));
   $("btnSwapAmountMax").addEventListener("click", () => setSwapAmountFromHolding(1));
   $("swapFromTokenSelector").addEventListener("click", () => openSwapHoldingsDropdown());
@@ -4643,11 +4883,13 @@ function fmtUsdCost(x) {
   $("swapFromToken").addEventListener("change", () => {
     resetSwapStateForTokenChange({ clearAmount: true });
     resolveSwapTokenInput("from");
+    updateLiveSwapBaseline();
     renderSwapFromBalance();
   });
   $("swapToToken").addEventListener("change", () => {
     resetSwapStateForTokenChange({ clearAmount: false });
     resolveSwapTokenInput("to");
+    updateLiveSwapBaseline();
   });
 
   // init

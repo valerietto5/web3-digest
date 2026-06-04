@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 import os
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -10,11 +12,14 @@ import requests
 
 DEFAULT_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
 DEFAULT_TIMEOUT_SECONDS = 10
+SUCCESS_CACHE_TTL_SECONDS = 10 * 60
+RATE_LIMIT_CACHE_TTL_SECONDS = 90
 WARNINGS = [
     "token_accounts_are_not_wallet_clusters",
     "concentration_is_not_safety_score",
     "solana_rpc_top_accounts_only",
 ]
+_HOLDER_CONCENTRATION_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def _configured_rpc_url() -> tuple[str, dict[str, Any]]:
@@ -87,6 +92,9 @@ def _with_known_mint_context(
     result: dict[str, Any],
     mint: str,
     rpc_meta: dict[str, Any] | None = None,
+    *,
+    methods_attempted: list[str] | None = None,
+    partial_data_available: bool = False,
 ) -> dict[str, Any]:
     if result.get("ok") is False and mint:
         result.setdefault("links", {})
@@ -94,7 +102,58 @@ def _with_known_mint_context(
         result.setdefault("warnings", list(WARNINGS))
         if rpc_meta:
             result.setdefault("rpc", dict(rpc_meta))
+    result.setdefault("diagnostics", {})
+    diagnostics = result["diagnostics"]
+    diagnostics["rpc_url_source"] = (rpc_meta or {}).get("source") or "unknown"
+    diagnostics["rpc_methods_attempted"] = list(methods_attempted or [])
+    diagnostics["rate_limited"] = result.get("error", {}).get("code") == "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED"
+    diagnostics["cached"] = False
+    diagnostics["partial_data_available"] = bool(partial_data_available)
+    result["partial_data_available"] = bool(partial_data_available)
     return result
+
+
+def clear_holder_concentration_cache() -> None:
+    _HOLDER_CONCENTRATION_CACHE.clear()
+
+
+def _cache_key(mint: str, rpc_meta: dict[str, Any]) -> tuple[str, str]:
+    return ((rpc_meta.get("source") or "unknown"), mint)
+
+
+def _cache_ttl_for_result(result: dict[str, Any]) -> int | None:
+    if result.get("ok") is True:
+        return SUCCESS_CACHE_TTL_SECONDS
+    if result.get("error", {}).get("code") == "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED":
+        return RATE_LIMIT_CACHE_TTL_SECONDS
+    return None
+
+
+def _get_cached_result(key: tuple[str, str], now: float) -> dict[str, Any] | None:
+    cached = _HOLDER_CONCENTRATION_CACHE.get(key)
+    if not cached:
+        return None
+    expires_at = float(cached.get("expires_at") or 0)
+    if expires_at <= now:
+        _HOLDER_CONCENTRATION_CACHE.pop(key, None)
+        return None
+    result = deepcopy(cached.get("result") or {})
+    result.setdefault("diagnostics", {})
+    result["diagnostics"]["cached"] = True
+    result["diagnostics"]["cache_age_seconds"] = round(now - float(cached.get("stored_at") or now), 3)
+    result["cached"] = True
+    return result
+
+
+def _store_cached_result(key: tuple[str, str], result: dict[str, Any], now: float) -> None:
+    ttl = _cache_ttl_for_result(result)
+    if not ttl:
+        return
+    _HOLDER_CONCENTRATION_CACHE[key] = {
+        "stored_at": now,
+        "expires_at": now + ttl,
+        "result": deepcopy(result),
+    }
 
 
 def _decimal_from_value(value: Any) -> Decimal | None:
@@ -250,6 +309,7 @@ def fetch_token_holder_concentration(
     rpc_url: str | None = None,
     *,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    use_cache: bool | None = None,
 ) -> dict[str, Any]:
     mint = (mint or "").strip()
     if not mint:
@@ -259,6 +319,29 @@ def fetch_token_holder_concentration(
         )
 
     url, rpc_meta = _resolve_rpc_url(rpc_url)
+    cache_enabled = (not rpc_url) if use_cache is None else bool(use_cache)
+    now = time.time()
+    key = _cache_key(mint, rpc_meta)
+    if cache_enabled:
+        cached = _get_cached_result(key, now)
+        if cached is not None:
+            return cached
+
+    methods_attempted: list[str] = []
+    def finalize(result: dict[str, Any], *, partial_data_available: bool = False) -> dict[str, Any]:
+        out = _with_known_mint_context(
+            result,
+            mint,
+            rpc_meta,
+            methods_attempted=methods_attempted,
+            partial_data_available=partial_data_available,
+        )
+        out["cached"] = False
+        if cache_enabled:
+            _store_cached_result(key, out, now)
+        return out
+
+    methods_attempted.append("getTokenSupply")
     supply_result = _rpc_post(
         url,
         "getTokenSupply",
@@ -268,7 +351,7 @@ def fetch_token_holder_concentration(
         lookup_error_code="TOKEN_SUPPLY_LOOKUP_FAILED",
     )
     if not supply_result.get("ok"):
-        return _with_known_mint_context(supply_result, mint, rpc_meta)
+        return finalize(supply_result)
 
     supply_value = (
         ((supply_result.get("data") or {}).get("result") or {}).get("value")
@@ -279,17 +362,16 @@ def fetch_token_holder_concentration(
         (supply_value or {}).get("amount") if isinstance(supply_value, dict) else None
     )
     if supply_amount is None or supply_amount <= 0:
-        return _with_known_mint_context(
+        return finalize(
             _error(
                 "TOKEN_SUPPLY_NOT_FOUND",
                 "Solana RPC did not return a usable token supply.",
                 provider="solana_rpc",
                 mint=mint,
             ),
-            mint,
-            rpc_meta,
         )
 
+    methods_attempted.append("getTokenLargestAccounts")
     accounts_result = _rpc_post(
         url,
         "getTokenLargestAccounts",
@@ -299,7 +381,9 @@ def fetch_token_holder_concentration(
         lookup_error_code="TOKEN_LARGEST_ACCOUNTS_LOOKUP_FAILED",
     )
     if not accounts_result.get("ok"):
-        return _with_known_mint_context(accounts_result, mint, rpc_meta)
+        accounts_result.setdefault("raw", {})
+        accounts_result["raw"]["supply"] = supply_value
+        return finalize(accounts_result, partial_data_available=True)
 
     account_values = (
         ((accounts_result.get("data") or {}).get("result") or {}).get("value")
@@ -307,28 +391,30 @@ def fetch_token_holder_concentration(
         else None
     )
     if not isinstance(account_values, list) or not account_values:
-        return _with_known_mint_context(
-            _error(
-                "TOKEN_LARGEST_ACCOUNTS_NOT_FOUND",
-                "Solana RPC did not return largest token accounts.",
-                provider="solana_rpc",
-                mint=mint,
-            ),
-            mint,
-            rpc_meta,
+        result = _error(
+            "TOKEN_LARGEST_ACCOUNTS_NOT_FOUND",
+            "Solana RPC did not return largest token accounts.",
+            provider="solana_rpc",
+            mint=mint,
+        )
+        result["raw"] = {"supply": supply_value}
+        return finalize(
+            result,
+            partial_data_available=True,
         )
 
     accounts = [account for account in account_values if isinstance(account, dict)]
     if not accounts:
-        return _with_known_mint_context(
-            _error(
-                "TOKEN_LARGEST_ACCOUNTS_NOT_FOUND",
-                "Solana RPC did not return usable largest token accounts.",
-                provider="solana_rpc",
-                mint=mint,
-            ),
-            mint,
-            rpc_meta,
+        result = _error(
+            "TOKEN_LARGEST_ACCOUNTS_NOT_FOUND",
+            "Solana RPC did not return usable largest token accounts.",
+            provider="solana_rpc",
+            mint=mint,
+        )
+        result["raw"] = {"supply": supply_value}
+        return finalize(
+            result,
+            partial_data_available=True,
         )
 
     top_account_pct = _rounded_percent(_percent(_sum_top(accounts, 1), supply_amount))
@@ -338,7 +424,7 @@ def fetch_token_holder_concentration(
     concentration_level = _concentration_level(top_account_pct, top_10_accounts_pct)
     severity = _top_account_severity(top_account_pct)
 
-    return {
+    result = {
         "ok": True,
         "source": "solana_rpc",
         "chain": "solana",
@@ -349,6 +435,8 @@ def fetch_token_holder_concentration(
             "top_5_accounts_pct": top_5_accounts_pct,
             "top_10_accounts_pct": top_10_accounts_pct,
             "sampled_account_count": len(accounts),
+            "number_of_accounts_used": len(accounts),
+            "supply": str(supply_amount),
             "concentration_level": concentration_level,
         },
         "signals": [
@@ -371,3 +459,4 @@ def fetch_token_holder_concentration(
             "largest_accounts": accounts,
         },
     }
+    return finalize(result)

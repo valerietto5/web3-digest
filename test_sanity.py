@@ -9,6 +9,7 @@ import io
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
+from fastapi import HTTPException
 from api.main import (
     METEORA_DLMM_SOL_MINT,
     METEORA_DLMM_USDC_MINT,
@@ -16,6 +17,7 @@ from api.main import (
     TOKEN_META,
     SWAP_EXECUTION_PROVIDER_CAPABILITIES,
     _apply_external_token_reference_prices,
+    _attach_cost_fields,
     _build_promotion_audit_summary,
     _build_meteora_dlmm_quote_payload,
     _build_orca_whirlpool_quote_payload,
@@ -63,6 +65,7 @@ from api.main import (
     get_swap_execution_provider,
     get_swap_execution_provider_capability,
     prepare_swap_transaction_with_provider,
+    swap_inline_baseline,
     swap_execute_prepare,
     swap_execute_preflight,
     swap_execute_submit,
@@ -80,6 +83,7 @@ from providers.solana_token_metadata import fetch_solana_mint_decimals
 from providers.helius_activity import fetch_wallet_activity
 from providers.token_holder_concentration import (
     build_bubblemaps_url,
+    clear_holder_concentration_cache,
     fetch_token_holder_concentration,
     get_holder_concentration_rpc_config_status,
 )
@@ -258,6 +262,30 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(endpoint["can_quote"])
         self.assertEqual(endpoint["token"]["symbol"], "FIGURE")
         self.assertEqual(endpoint["token"]["asset_key"], "figure")
+
+    def test_inline_baseline_resolves_raw_figure_mint_without_uppercasing(self):
+        figure_mint = "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump"
+
+        with patch(
+            "api.main._resolve_quote_reference_prices_usd",
+            return_value={
+                "FIGURE": {"usd": 0.000017, "pricing_source": "dexscreener_solana"},
+                "SOL": {"usd": 77.0, "pricing_source": "jupiter_price_v3"},
+            },
+        ):
+            result = swap_inline_baseline(
+                from_token=figure_mint,
+                to_token="SOL",
+                amount=52497.317836,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["from_token"], "FIGURE")
+        self.assertEqual(result["to_token"], "SOL")
+        self.assertEqual(result["inline_baseline"]["input_token"], "FIGURE")
+        self.assertEqual(result["inline_baseline"]["output_token"], "SOL")
+        self.assertIsNotNone(result["inline_baseline"]["input_usd_value"])
+        self.assertIsNotNone(result["inline_baseline"]["ideal_output_amount"])
 
     def test_token_resolver_resolves_registry_mint_missing_decimals_via_rpc_without_mutating_registry(self):
         snp500_mint = "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
@@ -1240,7 +1268,14 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["summary"]["top_5_accounts_pct"], 20.0)
         self.assertEqual(result["summary"]["top_10_accounts_pct"], 24.0)
         self.assertEqual(result["summary"]["sampled_account_count"], 12)
+        self.assertEqual(result["summary"]["number_of_accounts_used"], 12)
+        self.assertEqual(result["summary"]["supply"], "1000000")
         self.assertEqual(result["summary"]["concentration_level"], "high")
+        self.assertEqual(result["diagnostics"]["rpc_url_source"], "explicit")
+        self.assertEqual(result["diagnostics"]["rpc_methods_attempted"], ["getTokenSupply", "getTokenLargestAccounts"])
+        self.assertFalse(result["diagnostics"]["rate_limited"])
+        self.assertFalse(result["diagnostics"]["cached"])
+        self.assertFalse(result["diagnostics"]["partial_data_available"])
         self.assertEqual(result["signals"][0]["label"], "Largest visible token account")
         self.assertEqual(result["signals"][0]["severity"], "caution")
         self.assertIn("One visible token account controls 6% of supply.", result["signals"][0]["explanation"])
@@ -1433,6 +1468,8 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(http_limited["ok"])
         self.assertEqual(http_limited["error"]["code"], "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED")
         self.assertEqual(http_limited["error"]["status_code"], 429)
+        self.assertTrue(http_limited["diagnostics"]["rate_limited"])
+        self.assertEqual(http_limited["diagnostics"]["rpc_methods_attempted"], ["getTokenSupply"])
         self.assertEqual(http_limited["links"]["bubblemaps"], build_bubblemaps_url("mint"))
         self.assertIn("concentration_is_not_safety_score", http_limited["warnings"])
 
@@ -1453,7 +1490,32 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(rpc_limited["ok"])
         self.assertEqual(rpc_limited["error"]["code"], "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED")
         self.assertEqual(rpc_limited["error"]["status_code"], 429)
+        self.assertTrue(rpc_limited["diagnostics"]["rate_limited"])
         self.assertEqual(rpc_limited["links"]["bubblemaps"], build_bubblemaps_url("mint"))
+
+    def test_token_holder_concentration_rate_limit_is_cached_for_endpoint_style_calls(self):
+        clear_holder_concentration_cache()
+
+        class RateLimitHttpResponse:
+            ok = False
+            status_code = 429
+            text = "Too many requests"
+
+        with (
+            patch.dict(os.environ, {"TOKEN_HOLDER_CONCENTRATION_RPC_URL": "https://holder.example"}, clear=True),
+            patch("providers.token_holder_concentration.requests.post", return_value=RateLimitHttpResponse()) as post,
+        ):
+            first = fetch_token_holder_concentration("mint")
+            second = fetch_token_holder_concentration("mint")
+
+        self.assertFalse(first["ok"])
+        self.assertFalse(second["ok"])
+        self.assertEqual(post.call_count, 1)
+        self.assertFalse(first["diagnostics"]["cached"])
+        self.assertTrue(second["diagnostics"]["cached"])
+        self.assertTrue(second["cached"])
+        self.assertEqual(second["error"]["code"], "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED")
+        clear_holder_concentration_cache()
 
     def test_token_holder_concentration_failures_include_bubblemaps_link(self):
         class MockResponse:
@@ -1502,6 +1564,10 @@ class TestSanity(unittest.TestCase):
             accounts_missing = fetch_token_holder_concentration("mint", rpc_url="https://rpc.example")
         self.assertFalse(accounts_missing["ok"])
         self.assertEqual(accounts_missing["error"]["code"], "TOKEN_LARGEST_ACCOUNTS_NOT_FOUND")
+        self.assertTrue(accounts_missing["partial_data_available"])
+        self.assertTrue(accounts_missing["diagnostics"]["partial_data_available"])
+        self.assertEqual(accounts_missing["diagnostics"]["rpc_methods_attempted"], ["getTokenSupply", "getTokenLargestAccounts"])
+        self.assertEqual(accounts_missing["raw"]["supply"]["amount"], "100")
 
     def test_token_holder_concentration_endpoint_calls_provider_and_preserves_registry(self):
         before_mints = {meta.get("mint") for meta in TOKEN_META.values()}
@@ -1668,7 +1734,9 @@ class TestSanity(unittest.TestCase):
             response = swap_quote(from_token="SOL", to_token=ext_mint, amount=1.0)
 
         self.assertEqual(response["to_token"], "JUP")
-        self.assertAlmostEqual(response["recommended_option"]["estimated_output_usd"], 0.4)
+        self.assertIsNone(response["recommended_option"]["estimated_output_usd"])
+        self.assertTrue(response["recommended_option"]["usd_reference_uncertain"])
+        self.assertIn("USD estimate unavailable", response["recommended_option"]["usd_reference_note"])
         self.assertEqual(response["inline_baseline"]["pricing_source"], "dexscreener_solana")
         self.assertEqual(response["inline_baseline"]["output_token"], "JUP")
         self.assertAlmostEqual(response["inline_baseline"]["output_usd_price"], 0.2)
@@ -1677,6 +1745,159 @@ class TestSanity(unittest.TestCase):
             response["inline_baseline"]["pricing_source_detail"]["to_token"]["pair_url"],
             "https://dexscreener.com/solana/pair",
         )
+
+    def test_swap_quote_jupiter_no_routes_does_not_abort_other_providers(self):
+        ext_mint = "AiXxRGmRc5oDiFXbEeRX9obPpr3Zir7rks1ef2NjddiF"
+        raydium_quote = {
+            "success": True,
+            "data": {
+                "inputMint": METEORA_DLMM_SOL_MINT,
+                "inputAmount": "1000000000",
+                "outputMint": ext_mint,
+                "outputAmount": "4200000",
+                "otherAmountThreshold": "4179000",
+                "slippageBps": 50,
+                "priceImpactPct": 0,
+                "routePlan": [],
+            },
+        }
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch(
+                "api.main.resolve_token",
+                return_value={
+                    "ok": True,
+                    "token": {
+                        "source": "dexscreener",
+                        "symbol": "AIX",
+                        "name": "AIX",
+                        "display_name": "AIX",
+                        "mint": ext_mint,
+                        "decimals": 6,
+                        "verified": False,
+                        "price_usd": 0.502,
+                    },
+                },
+            ),
+            patch(
+                "api.main._fetch_jupiter_quote",
+                side_effect=HTTPException(
+                    status_code=400,
+                    detail='Jupiter HTTP error: {"error":"No routes found","errorCode":"NO_ROUTES_FOUND"}',
+                ),
+            ),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={
+                    "ok": False,
+                    "error": {
+                        "status_code": 400,
+                        "detail": 'Jupiter HTTP error: {"error":"No routes found","errorCode":"NO_ROUTES_FOUND"}',
+                    },
+                },
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value={"ok": True, "data": raydium_quote}),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+            patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "AIX": {"usd": 0.502},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token=ext_mint, amount=1.0)
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["recommended_option"]["provider"], "raydium-trade-api")
+        self.assertEqual(response["recommended_executable_option"]["provider"], "raydium-trade-api")
+        jupiter_errors = [
+            item for item in response["debug"]["variant_errors"]
+            if item.get("provider") == "jupiter-metis"
+        ]
+        self.assertTrue(jupiter_errors)
+        self.assertEqual(jupiter_errors[0]["variant_id"], "recommended_default")
+        self.assertEqual(jupiter_errors[0]["error_code"], "NO_ROUTES_FOUND")
+        self.assertEqual(jupiter_errors[0]["message"], "No routes found")
+
+    def test_swap_quote_all_provider_no_routes_returns_structured_no_route_state(self):
+        ext_mint = "AiXxRGmRc5oDiFXbEeRX9obPpr3Zir7rks1ef2NjddiF"
+        unsupported = {
+            "ok": False,
+            "error": {"status_code": 400, "detail": "unsupported pair"},
+        }
+
+        with (
+            patch(
+                "api.main.resolve_token",
+                return_value={
+                    "ok": True,
+                    "token": {
+                        "source": "dexscreener",
+                        "symbol": "AIX",
+                        "name": "AIX",
+                        "display_name": "AIX",
+                        "mint": ext_mint,
+                        "decimals": 6,
+                        "verified": False,
+                        "price_usd": 0.502,
+                    },
+                },
+            ),
+            patch(
+                "api.main._fetch_jupiter_quote",
+                side_effect=HTTPException(
+                    status_code=400,
+                    detail='Jupiter HTTP error: {"error":"No routes found","errorCode":"NO_ROUTES_FOUND"}',
+                ),
+            ),
+            patch(
+                "api.main._try_fetch_jupiter_quote",
+                return_value={
+                    "ok": False,
+                    "error": {
+                        "status_code": 400,
+                        "detail": 'Jupiter HTTP error: {"error":"No routes found","errorCode":"NO_ROUTES_FOUND"}',
+                    },
+                },
+            ),
+            patch("api.main._try_fetch_raydium_quote", return_value=unsupported),
+            patch("api.main._try_fetch_meteora_dlmm_quote", return_value=unsupported),
+            patch("api.main._try_fetch_orca_whirlpool_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phoenix_quote", return_value=unsupported),
+            patch("api.main._try_fetch_phantom_quote", return_value=unsupported),
+            patch("api.main._try_fetch_pumpswap_quote", return_value=unsupported),
+            patch(
+                "api.main._resolve_quote_reference_prices_usd",
+                return_value={
+                    "SOL": {"usd": 84.0},
+                    "AIX": {"usd": 0.502},
+                },
+            ),
+        ):
+            response = swap_quote(from_token="SOL", to_token=ext_mint, amount=1.0)
+
+        self.assertFalse(response["ok"])
+        self.assertTrue(response["no_route"])
+        self.assertEqual(response["message"], "No executable route found for this token/amount.")
+        self.assertEqual(response["user_message"], "Reference price is available, but no live route was found.")
+        self.assertIsNone(response["recommended_option"])
+        self.assertEqual(response["other_options"], [])
+        self.assertIsNotNone(response["inline_baseline"]["ideal_output_amount"])
+        self.assertNotIn("Jupiter HTTP error", response["message"])
+        jupiter_errors = [
+            item for item in response["debug"]["variant_errors"]
+            if item.get("provider") == "jupiter-metis"
+        ]
+        self.assertEqual(jupiter_errors[0]["error_code"], "NO_ROUTES_FOUND")
 
     def test_swap_quote_accepts_external_mint_as_from_token_with_mocked_jupiter(self):
         ext_mint = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
@@ -1971,6 +2192,34 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(out["FIGURE"]["usd"], 0.000017)
         self.assertEqual(out["FIGURE"]["pricing_source"], "dexscreener_solana")
         self.assertEqual(out["FIGURE"]["pricing_source_detail"]["external_token_metadata"], True)
+        self.assertFalse(out["FIGURE"]["usd_valuation_reliable"])
+        self.assertEqual(out["FIGURE"]["reference_quality"], "external_unverified_reference")
+
+    def test_external_token_uncertain_reference_suppresses_route_usd_estimates(self):
+        option = {
+            "to_token": "GACHA",
+            "estimated_output": 123456789.0,
+        }
+        result = _attach_cost_fields(
+            option,
+            reference_output_amount=123000000.0,
+            reference_prices={
+                "GACHA": {
+                    "usd": 999.0,
+                    "pricing_source": "dexscreener_solana",
+                    "usd_valuation_reliable": False,
+                    "pricing_source_detail": {
+                        "external_token_metadata": True,
+                    },
+                }
+            },
+        )
+
+        self.assertIsNone(result["estimated_output_usd"])
+        self.assertIsNone(result["execution_cost_usd"])
+        self.assertTrue(result["usd_reference_uncertain"])
+        self.assertIn("USD estimate unavailable", result["usd_reference_note"])
+        self.assertEqual(result["estimated_output"], 123456789.0)
 
     def test_reference_baseline_delta_includes_token_and_usd_difference(self):
         baseline, delta = _build_reference_baseline_from_resolved_prices(
@@ -1999,9 +2248,9 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Compare live swap routes and approve safely in Phantom.", html)
         self.assertNotIn("Cached reference", html)
         self.assertNotIn("Best executable output vs DexScreener reference", html)
-        self.assertIn("Best live quote", html)
+        self.assertIn("Best executable quote", html)
         self.assertIn("Market reference", html)
-        self.assertIn("Best quote vs market", html)
+        self.assertIn("Route difference vs reference", html)
         self.assertNotIn(". Difference from reference:", html)
         self.assertNotIn("CoinGecko reference", html)
         self.assertNotIn("Jupiter reference", html)
@@ -2020,27 +2269,62 @@ class TestSanity(unittest.TestCase):
         html = build_ui_html()
 
         self.assertIn('return "Best quote";', html)
-        self.assertIn('if (kind === "recommended") return "Recommended route";', html)
-        self.assertIn('if (kind === "direct") return "Direct route check";', html)
+        self.assertIn('if (kind === "recommended") return "Recommended executable route";', html)
+        self.assertIn('if (kind === "direct") return "Direct/simple route check";', html)
         self.assertIn("function shouldShowSwapOptionCardTitle(opt, opts = {})", html)
         self.assertIn('return !(kind === "recommended" || kind === "direct");', html)
         self.assertIn('${shouldShowSwapOptionCardTitle(opt, opts) ? `<div><strong>${escapeHtml(title)}</strong></div>` : ""}', html)
         self.assertIn('font-weight:600;">${escapeHtml(routeLabel)}</div>', html)
-        self.assertIn("Recommended route</h4>", html)
-        self.assertIn("Direct route check</h4>", html)
+        self.assertIn("Recommended executable route</h4>", html)
+        self.assertIn("Direct/simple route check</h4>", html)
         self.assertIn("Alternatives</h4>", html)
         self.assertNotIn('title: "Best executable route"', html)
-        self.assertNotIn("Best executable route", html)
-        self.assertNotIn("Recommended executable", html)
         self.assertIn("Direct route is also the current recommendation.", html)
         self.assertIn("Estimated swap cost vs market", html)
         self.assertIn("Market gap estimate", html)
-        self.assertIn("Quote vs best route", html)
+        self.assertIn("Output vs best route", html)
+        self.assertIn("function routeReceiveUsdText(opt)", html)
+        self.assertIn("function routeVsBestOutputText(opt, bestOption)", html)
+        self.assertIn("opt?.usd_reference_uncertain", html)
+        self.assertIn("const referenceUsdPrice = Number(opt?.estimated_trade_execution_cost?.token_usd_price);", html)
+        self.assertIn('return " ≈ " + fmtUsdCost(referenceUsd) + " est.";', html)
+        self.assertIn("if (estimatedOutput > 0)", html)
+        self.assertIn(" · USD estimate unavailable / reference uncertain", html)
+        self.assertIn("Output vs best route: ~", html)
+        self.assertIn("lower", html)
+        self.assertIn("higher", html)
+        self.assertIn("Output comparison unavailable", html)
         self.assertIn("Route fee estimate", html)
         self.assertNotIn("Execution cost: ${escapeHtml(executionCostUsdText)}", html)
         self.assertNotIn("Execution cost: ${escapeHtml(executionCostText)}", html)
         self.assertIn("Route shape:", html)
-        self.assertIn("Alternative ${idx + 1} — ${escapeHtml(routeLabel)}", html)
+        self.assertIn("Ready to approve in Phantom", html)
+        self.assertIn("Best executable route found in this quote.", html)
+        self.assertIn("Benchmark-only quote", html)
+        self.assertIn("Not executable here", html)
+        self.assertIn("Alternative \" + (idx + 1)", html)
+
+    def test_swap_ui_route_card_avoids_zero_usd_for_uncertain_nonzero_output(self):
+        html = build_ui_html()
+
+        helper_start = html.index("function routeReceiveUsdText(opt)")
+        helper_end = html.index("function routeVsBestOutputText(opt, bestOption)", helper_start)
+        helper_block = html[helper_start:helper_end]
+        self.assertIn("const estimatedOutput = Number(opt?.estimated_output);", helper_block)
+        self.assertIn("const referenceUsdPrice = Number(opt?.estimated_trade_execution_cost?.token_usd_price);", helper_block)
+        self.assertIn("estimatedOutput * referenceUsdPrice", helper_block)
+        self.assertIn('" est."', helper_block)
+        self.assertIn("if (opt?.usd_reference_uncertain)", helper_block)
+        self.assertIn("!(receiveUsd === 0 && estimatedOutput > 0)", helper_block)
+        self.assertIn("if (estimatedOutput > 0)", helper_block)
+        self.assertIn("USD estimate unavailable / reference uncertain", helper_block)
+
+        alt_start = html.index("function renderCompactAlternativeCard")
+        alt_end = html.index("function compactSwapPrepareErrorText", alt_start)
+        alt_block = html[alt_start:alt_end]
+        self.assertIn("routeReceiveUsdText(opt)", alt_block)
+        self.assertIn("routeVsBestOutputText(opt, bestOption)", alt_block)
+        self.assertNotIn('Quote vs best route: ${escapeHtml(executionCostText)}', alt_block)
 
     def test_swap_ui_route_display_uses_stable_buckets_and_direct_priority(self):
         html = build_ui_html()
@@ -2303,7 +2587,7 @@ class TestSanity(unittest.TestCase):
         use_end = html.index("function resetResolvedSwapTokenSelection(side)", use_start)
         use_block = html[use_start:use_end]
         self.assertIn('resetSwapStateForTokenChange({ clearAmount: side === "from" });', use_block)
-        self.assertIn('recognized.symbol || recognized.mint', use_block)
+        self.assertIn('recognized.symbol || recognized.display_name || recognized.mint', use_block)
         self.assertIn("renderSwapFromBalance();", use_block)
         self.assertIn("renderSwapHoldingsDropdown();", use_block)
 
@@ -2483,6 +2767,94 @@ class TestSanity(unittest.TestCase):
         self.assertIn("External token metadata used: ", html)
         self.assertIn("External-token market references may be stale or incomplete.", html)
         self.assertIn("Use quoted output and wallet confirmation as source of truth.", html)
+        self.assertIn("USD estimate unavailable / reference uncertain", html)
+
+    def test_swap_ui_recognized_token_symbol_visible_but_mint_preserved_for_quotes(self):
+        html = build_ui_html()
+
+        self.assertIn("function canonicalSwapTokenQuery(side)", html)
+        self.assertIn("input.dataset.selectedMint = recognized.mint", html)
+        self.assertIn("input.dataset.selectedSymbol = recognized.symbol", html)
+        self.assertIn("const selectedValue = recognized.symbol || recognized.display_name || recognized.mint", html)
+        self.assertIn('from_token: fromToken', html)
+        self.assertIn('to_token: toToken', html)
+        self.assertIn('const fromToken = canonicalSwapTokenQuery("from");', html)
+        self.assertIn('const toToken = canonicalSwapTokenQuery("to");', html)
+        self.assertIn("delete input.dataset.selectedMint", html)
+
+    def test_swap_ui_sell_buy_live_value_and_compact_summary_copy_exists(self):
+        html = build_ui_html()
+
+        self.assertIn('id="swapSellValueEstimate"', html)
+        self.assertIn('id="swapBuyValueEstimate"', html)
+        self.assertIn("Swap summary", html)
+        self.assertIn("You sell", html)
+        self.assertIn("Market reference", html)
+        self.assertIn("Best executable quote", html)
+        self.assertIn("Route difference vs reference", html)
+        self.assertIn(".swap-summary-grid", html)
+        self.assertIn(".swap-summary-value", html)
+        self.assertIn("font-size:13px", html)
+        self.assertIn("white-space:nowrap", html)
+        self.assertIn("text-overflow:ellipsis", html)
+        self.assertIn('id="swapSpendValueHint" class="swap-summary-value"', html)
+        self.assertIn('id="swapBaselineDeltaHint" class="swap-summary-value"', html)
+        self.assertIn('id="swapIdealOutputHint" class="swap-summary-value"', html)
+        self.assertIn("Preview Quote to compare routes", html)
+        self.assertIn("Preview live routes to compare.", html)
+        self.assertIn('sellValue.textContent = "≈ " + inputUsdText;', html)
+        self.assertIn('buyValue.textContent = "≈ " + bestUsdText;', html)
+        self.assertIn('" · Reference estimate before preview"', html)
+        self.assertIn('buyEstimate.textContent = "~" + fmtNum(bestOut, 6) + " " + outputToken;', html)
+        self.assertIn('const uncertainUsdText = "USD estimate unavailable / reference uncertain";', html)
+
+        render_start = html.index("function renderSwapInlineBaseline(baseline, delta = null)")
+        render_end = html.index("function resetSwapQuoteDisplay()", render_start)
+        render_block = html[render_start:render_end]
+        delta_branch = render_block[render_block.index("if (delta && idealOut"):render_block.index("} else {", render_block.index("if (delta && idealOut"))]
+        pre_preview_branch = render_block[render_block.index("} else {", render_block.index("if (delta && idealOut")):render_block.index("if (deltaLine)", render_block.index("if (delta && idealOut"))]
+        self.assertIn("const bestOut = Number(baseline.ideal_output_amount) + Number(delta.output_diff_abs);", delta_branch)
+        self.assertIn('ideal.textContent = "~" + fmtNum(bestOut, 6) + " " + outputToken + " ≈ " + bestUsdText;', delta_branch)
+        self.assertIn('ideal.textContent = "Preview Quote to compare routes";', pre_preview_branch)
+        self.assertNotIn('ideal.textContent = idealOut', pre_preview_branch)
+
+    def test_swap_ui_no_route_state_distinguishes_reference_from_executable_route(self):
+        html = build_ui_html()
+
+        self.assertIn("No executable route found for this token/amount.", html)
+        self.assertIn("Reference price is available, but no live route was found.", html)
+        self.assertIn("Reference pricing is not an executable route.", html)
+        preview_start = html.index("async function previewSwap()")
+        preview_end = html.index("function mintLabel", preview_start)
+        preview_block = html[preview_start:preview_end]
+        self.assertIn('if (!quote?.ok || !(bestQuote || recommended))', preview_block)
+        self.assertIn('$("swapQuotePreview").textContent = JSON.stringify(quote, null, 2);', preview_block)
+        self.assertIn('showSwapStatus("warn", "No executable route found", { quote });', preview_block)
+        self.assertNotIn("Jupiter HTTP error", preview_block)
+
+    def test_swap_ui_live_baseline_updates_before_preview_from_amount_tokens_and_resolver(self):
+        html = build_ui_html()
+
+        amount_listener_start = html.index('$("swapAmount").addEventListener("input"')
+        amount_listener_end = html.index('$("swapFromToken").addEventListener("focus"', amount_listener_start)
+        amount_listener = html[amount_listener_start:amount_listener_end]
+        self.assertIn("updateLiveSwapBaseline();", amount_listener)
+
+        shortcut_start = html.index("function setSwapAmountFromHolding(fraction)")
+        shortcut_end = html.index("function defaultSwapSolReserveForMax()", shortcut_start)
+        shortcut_block = html[shortcut_start:shortcut_end]
+        self.assertIn("updateLiveSwapBaseline();", shortcut_block)
+
+        use_token_start = html.index("function useResolvedSwapToken(side)")
+        use_token_end = html.index("function resetResolvedSwapTokenSelection(side)", use_token_start)
+        use_token_block = html[use_token_start:use_token_end]
+        self.assertIn("updateLiveSwapBaseline();", use_token_block)
+
+        resolver_start = html.index("async function resolveSwapTokenInput(side)")
+        resolver_end = html.index("function scheduleSwapTokenResolve(side)", resolver_start)
+        resolver_block = html[resolver_start:resolver_end]
+        self.assertIn("setTokenResolvePreview(side, res.data.token);", resolver_block)
+        self.assertIn("updateLiveSwapBaseline();", resolver_block)
 
     def test_swap_ui_preflights_sol_requirement_before_phantom(self):
         html = build_ui_html()
@@ -2612,12 +2984,29 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Holder concentration", html)
         self.assertIn("Top visible token account", html)
         self.assertIn("Top 5 visible token accounts", html)
+        self.assertIn("Top 10 holders", html)
+        self.assertIn("number_of_accounts_used", html)
+        self.assertIn("sampled_account_count", html)
         self.assertIn("Open Bubblemaps", html)
         self.assertIn("Based on visible token accounts from Solana RPC. Separate from route ranking.", html)
         self.assertIn("Distribution only — not a safety score.", html)
         self.assertIn('code === "TOKEN_HOLDER_CONCENTRATION_RATE_LIMITED"', html)
+        self.assertIn("Holder data unavailable", html)
+        self.assertIn("Holder data partially available", html)
+        self.assertIn("partial_data_available", html)
+        self.assertIn("Holder diagnostics", html)
+        self.assertIn("holderDiagnosticsJson", html)
+        self.assertIn("rpc_url_source", html)
+        self.assertIn("rpc_methods_attempted", html)
+        self.assertIn("rate_limited", html)
+        self.assertIn("cached", html)
+        self.assertIn("Supply found; largest accounts unavailable.", html)
+        self.assertIn("const technicalMessage =", html)
+        self.assertIn('box.className = "muted";', html)
+        self.assertIn('${escapeHtml(technicalMessage)}', html)
         self.assertIn("Solana RPC is rate-limited right now. Try again later.", html)
         self.assertIn("Holder concentration unavailable right now.", html)
+        self.assertNotIn('<div style="font-weight:600;">Holder concentration unavailable right now.</div>', html)
         self.assertIn("const fallbackMint = selectedExternalTokenForHolderConcentration()?.mint", html)
         self.assertIn("holderConcentrationMint", html)
         self.assertIn("resetHolderConcentration();", html)
@@ -2681,8 +3070,8 @@ class TestSanity(unittest.TestCase):
         self.assertIn('opt.value = symbol;', html)
         self.assertIn('if (!$("swapFromToken").value) $("swapFromToken").value = "SOL";', html)
         self.assertIn('if (!$("swapToToken").value) $("swapToToken").value = "USDC";', html)
-        self.assertIn("const fromToken = $(\"swapFromToken\").value;", html)
-        self.assertIn("const toToken = $(\"swapToToken\").value;", html)
+        self.assertIn('const fromToken = canonicalSwapTokenQuery("from");', html)
+        self.assertIn('const toToken = canonicalSwapTokenQuery("to");', html)
 
     def test_swap_ui_two_hop_route_display_is_user_facing(self):
         html = build_ui_html()
@@ -2894,9 +3283,45 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Open in Solana Explorer", html)
         self.assertIn("Token received — check your Phantom wallet.", html)
         self.assertIn("Balances may have changed after the last swap — refresh balances.", html)
+        self.assertIn('id="swapSuccessModal"', html)
+        self.assertIn('id="swapSuccessModalTitle"', html)
+        self.assertIn('id="swapSuccessModalBody"', html)
+        self.assertIn('id="swapSuccessExplorerLink"', html)
+        self.assertIn('id="btnCloseSwapSuccessModal"', html)
+        self.assertIn("function showSwapSuccessModal(details)", html)
+        self.assertIn("function closeSwapSuccessModal()", html)
+        self.assertIn("Provider: \" + details.provider", html)
+        self.assertIn("Spent: \" + details.spent", html)
+        self.assertIn("Expected received: \" + details.expected", html)
+        self.assertIn('"Network: Solana mainnet"', html)
+        self.assertIn('modal.classList.add("is-open")', html)
+        self.assertIn('$("btnCloseSwapSuccessModal").addEventListener("click", closeSwapSuccessModal);', html)
         self.assertIn("Swap failed.", html)
         self.assertIn("Swap was rejected in Phantom.", html)
         self.assertIn("Quote expired. Preview again.", html)
+
+    def test_swap_success_modal_only_runs_after_successful_submit_signature(self):
+        html = build_ui_html()
+        sign_start = html.index("async function signAndSubmitPreparedSwap()")
+        sign_end = html.index("function handleSwapExecuteClick", sign_start)
+        sign_block = html[sign_start:sign_end]
+
+        self.assertIn('signature = submitResponse.data?.signature;', sign_block)
+        self.assertIn("renderSwapSubmittedSuccess(signature);", sign_block)
+        self.assertNotIn("showSwapSuccessModal(", sign_block)
+
+        success_start = html.index("function renderSwapSubmittedSuccess(signature)")
+        success_end = html.index("async function signAndSubmitPreparedSwap()", success_start)
+        success_block = html[success_start:success_end]
+        self.assertIn("showSwapSuccessModal({", success_block)
+        self.assertIn("provider: providerLabel", success_block)
+        self.assertIn("spent,", success_block)
+        self.assertIn("expected,", success_block)
+        self.assertIn("explorer,", success_block)
+
+        signing_catch = sign_block[sign_block.index("swap signing error:"):sign_block.index("if (!signedTx)")]
+        self.assertNotIn("renderSwapSubmittedSuccess", signing_catch)
+        self.assertNotIn("showSwapSuccessModal", signing_catch)
 
     def test_swap_ui_includes_runtime_error_helpers(self):
         html = build_ui_html()
@@ -4621,6 +5046,33 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("recommended_default", [opt["variant_id"] for opt in other_options])
         self.assertNotIn("orca_whirlpool_quote", [opt["variant_id"] for opt in other_options])
         self.assertGreater(len(other_options), 2)
+
+    def test_direct_route_selection_excludes_phantom_benchmark_routes(self):
+        def option(variant_id, provider, surface, output):
+            return {
+                "variant_id": variant_id,
+                "provider": provider,
+                "execution_surface_label": surface,
+                "supports_current_pair": True,
+                "estimated_output_raw": str(output),
+                "route_labels": [surface],
+                "_sort_out_amount_raw": output,
+                "route_shape": "single-pool",
+                "route_step_count": 1,
+            }
+
+        phantom = option("phantom_quote", "phantom-routing-api", "Phantom", 999)
+        phantom["route_shape"] = "wallet-routing"
+        phantom["is_comparison_only"] = True
+        phantom["is_clickable"] = False
+        orca = option("orca_whirlpool_quote", "orca-whirlpool", "Orca", 800)
+        orca["is_comparison_only"] = False
+        orca["is_clickable"] = True
+
+        selected = _select_direct_route_option([phantom, orca])
+
+        self.assertEqual(selected["provider"], "orca-whirlpool")
+        self.assertNotEqual(selected["provider"], "phantom-routing-api")
 
     def test_diverse_other_options_excludes_featured_execution_surfaces(self):
         def option(variant_id, provider, surface, output):
@@ -6361,7 +6813,7 @@ class TestSanity(unittest.TestCase):
         self.assertTrue(phoenix_option["is_comparison_only"])
         self.assertFalse(phoenix_option["is_clickable"])
         phantom_option = next(opt for opt in response["other_options"] if opt["provider"] == "phantom-routing-api")
-        self.assertEqual(phantom_option["label"], "Via Phantom")
+        self.assertEqual(phantom_option["label"], "Benchmark-only quote")
         self.assertTrue(phantom_option["is_comparison_only"])
         self.assertFalse(phantom_option["is_clickable"])
         self.assertTrue(response["summary"]["alternatives_show_all_remaining_universes"])
@@ -6548,7 +7000,7 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(response["direct_route_check"]["variant_id"], "direct_route_check")
         self.assertEqual(response["summary"]["direct_route_variant_id"], "direct_route_check")
 
-    def test_swap_quote_recommends_phantom_when_it_has_best_output(self):
+    def test_swap_quote_keeps_phantom_benchmark_only_when_it_has_best_output(self):
         jupiter_quote = {
             "inputMint": METEORA_DLMM_SOL_MINT,
             "inAmount": "1000000000",
@@ -6649,16 +7101,30 @@ class TestSanity(unittest.TestCase):
                 user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
             )
 
-        self.assertEqual(response["recommended_option"]["provider"], "phantom-routing-api")
-        self.assertEqual(response["recommended_option"]["variant_id"], "phantom_quote")
-        self.assertTrue(response["recommended_option"]["is_comparison_only"])
-        self.assertFalse(response["recommended_option"]["is_clickable"])
-        self.assertEqual(response["recommended_option"]["execution_status"], "quote_only")
-        self.assertEqual(response["recommended_option"]["estimated_output_raw"], "90000000")
-        self.assertEqual(response["summary"]["recommended_variant_id"], "phantom_quote")
-        self.assertFalse(response["summary"]["recommended_is_executable"])
+        self.assertEqual(response["best_quote_option"]["provider"], "phantom-routing-api")
+        self.assertEqual(response["best_quote_option"]["variant_id"], "phantom_quote")
+        self.assertEqual(response["best_benchmark_quote_option"]["provider"], "phantom-routing-api")
+        self.assertEqual(response["recommended_option"]["provider"], "jupiter-metis")
+        self.assertEqual(response["recommended_option"]["variant_id"], "recommended_default")
+        self.assertNotEqual(response["recommended_option"]["provider"], "phantom-routing-api")
+        self.assertFalse(response["recommended_option"]["is_comparison_only"])
+        self.assertTrue(response["recommended_option"]["is_clickable"])
+        self.assertEqual(response["recommended_option"]["execution_status"], "executable_capable")
+        self.assertEqual(response["summary"]["recommended_variant_id"], "recommended_default")
+        self.assertTrue(response["summary"]["recommended_is_executable"])
+        self.assertEqual(response["summary"]["best_benchmark_variant_id"], "phantom_quote")
         self.assertEqual(response["recommended_executable_option"]["provider"], "jupiter-metis")
+        self.assertNotEqual(response["recommended_executable_option"]["provider"], "phantom-routing-api")
         self.assertTrue(response["recommended_executable_option"]["is_clickable"])
+        self.assertNotEqual(response["direct_route_check"]["provider"], "phantom-routing-api")
+        phantom_option = next(
+            opt for opt in response["other_options"] if opt["provider"] == "phantom-routing-api"
+        )
+        self.assertEqual(phantom_option["label"], "Benchmark-only quote")
+        self.assertTrue(phantom_option["is_comparison_only"])
+        self.assertFalse(phantom_option["is_clickable"])
+        self.assertEqual(phantom_option["execution_status"], "quote_only")
+        self.assertEqual(phantom_option["estimated_output_raw"], "90000000")
         self.assertIn("phantom_quote", response["summary"]["checked_variants"])
 
     def test_swap_quote_missing_user_public_key_adds_phantom_diagnostic(self):

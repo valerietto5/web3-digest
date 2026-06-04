@@ -170,7 +170,10 @@ def _external_token_reference_price_row(meta: dict | None) -> dict | None:
             "pair_url": meta.get("pair_url"),
             "liquidity_usd": meta.get("liquidity_usd"),
             "external_token_metadata": True,
+            "verified": bool(meta.get("verified")),
         },
+        "reference_quality": "external_unverified_reference",
+        "usd_valuation_reliable": False,
     }
 
 
@@ -1137,6 +1140,7 @@ JUPITER_EXECUTION_PROVIDER_ALIASES = {
 }
 
 SUPPORTED_EXECUTION_PROVIDERS = {"jupiter-metis", "raydium-trade-api", "orca-whirlpool", "meteora-dlmm", "pumpswap"}
+BENCHMARK_ONLY_SWAP_PROVIDERS = {"phantom-routing-api"}
 
 SWAP_EXECUTION_PROVIDER_CAPABILITIES = {
     "jupiter-metis": {
@@ -4021,6 +4025,42 @@ def _try_fetch_jupiter_quote(params: dict) -> dict:
         }
 
 
+def _jupiter_quote_failure_diagnostic(variant_id: str, error: HTTPException | dict) -> dict:
+    if isinstance(error, HTTPException):
+        status_code = error.status_code
+        detail = error.detail
+    else:
+        status_code = error.get("status_code")
+        detail = error.get("detail")
+
+    detail_text = json.dumps(detail) if isinstance(detail, (dict, list)) else str(detail or "")
+    error_code = None
+    message = "Jupiter quote failed."
+
+    json_start = detail_text.find("{")
+    if json_start >= 0:
+        try:
+            parsed = json.loads(detail_text[json_start:])
+            if isinstance(parsed, dict):
+                error_code = parsed.get("errorCode") or parsed.get("code")
+                message = parsed.get("error") or parsed.get("message") or message
+        except Exception:
+            pass
+
+    if not error_code and "NO_ROUTES_FOUND" in detail_text:
+        error_code = "NO_ROUTES_FOUND"
+        message = "No routes found"
+
+    return {
+        "provider": "jupiter-metis",
+        "variant_id": variant_id,
+        "status_code": status_code,
+        "error_code": error_code,
+        "message": message,
+        "detail": detail,
+    }
+
+
 def _build_raydium_quote_params(
     *,
     input_mint: str,
@@ -5018,23 +5058,34 @@ def _attach_cost_fields(
     output_token = option.get("to_token")
     output_price_row = reference_prices.get(output_token) or {}
     output_token_usd_price = _safe_float(output_price_row.get("usd"))
+    output_reference_uncertain = (
+        output_price_row.get("usd_valuation_reliable") is False
+        or (output_price_row.get("pricing_source_detail") or {}).get("external_token_metadata") is True
+    )
     estimated_output_usd = (
         quoted_output_amount * output_token_usd_price
-        if quoted_output_amount is not None and output_token_usd_price is not None
+        if quoted_output_amount is not None and output_token_usd_price is not None and not output_reference_uncertain
         else None
     )
     execution_cost_amount = _safe_float(trade_cost.get("amount"))
     execution_cost_usd = (
         execution_cost_amount * output_token_usd_price
-        if execution_cost_amount is not None and output_token_usd_price is not None
+        if execution_cost_amount is not None and output_token_usd_price is not None and not output_reference_uncertain
         else None
     )
 
     trade_cost["amount_usd"] = execution_cost_usd
     trade_cost["token_usd_price"] = output_token_usd_price
     trade_cost["pricing_source"] = output_price_row.get("pricing_source")
+    trade_cost["usd_reference_uncertain"] = output_reference_uncertain
     option["estimated_output_usd"] = estimated_output_usd
     option["execution_cost_usd"] = execution_cost_usd
+    option["usd_reference_uncertain"] = output_reference_uncertain
+    option["usd_reference_note"] = (
+        "USD estimate unavailable / reference uncertain. External-token market references are comparison-only."
+        if output_reference_uncertain
+        else None
+    )
 
     return option
 
@@ -5877,8 +5928,30 @@ def _route_simplicity_rank(option: dict | None) -> tuple:
     return (shape_rank + route_step_count, -int(output_raw))
 
 
+def _is_benchmark_only_provider(provider: str | None) -> bool:
+    return (provider or "").strip().lower() in BENCHMARK_ONLY_SWAP_PROVIDERS
+
+
+def _is_benchmark_only_quote_option(option: dict | None) -> bool:
+    if not option:
+        return False
+    return _is_benchmark_only_provider(option.get("provider"))
+
+
+def _is_actionable_recommendation_candidate(option: dict | None) -> bool:
+    return _is_executable_quote_option(option) and not _is_benchmark_only_quote_option(option)
+
+
+def _is_direct_route_candidate(option: dict | None) -> bool:
+    return bool(option) and not _is_benchmark_only_quote_option(option)
+
+
 def _select_direct_route_option(options: list[dict]) -> dict | None:
-    candidates = [opt for opt in _dedupe_options(options) if opt.get("supports_current_pair") is not False]
+    candidates = [
+        opt
+        for opt in _dedupe_options(options)
+        if opt.get("supports_current_pair") is not False and _is_direct_route_candidate(opt)
+    ]
     if not candidates:
         return None
 
@@ -6436,24 +6509,31 @@ def swap_quote(
         "instructionVersion": "V2",
     }
 
-    # 1) Recommended/default Jupiter quote
-    recommended_raw = _fetch_jupiter_quote(base_params)
-    recommended = _normalize_quote_option(
-        variant_id="recommended_default",
-        label="Recommended",
-        kind="recommended",
-        quote=recommended_raw,
-        from_token=from_token,
-        to_token=to_token,
-        input_amount=amount,
-        input_amount_raw=raw_amount,
-        output_decimals=output_meta["decimals"],
-        checked_params=base_params,
-    )
-
     diagnostics = []
     variant_candidates = []
     external_other_options = []
+
+    # 1) Recommended/default Jupiter quote. A Jupiter no-route response is a
+    # provider miss for this preview, not a reason to skip the rest of the
+    # quote universe.
+    recommended_raw = None
+    recommended = None
+    try:
+        recommended_raw = _fetch_jupiter_quote(base_params)
+        recommended = _normalize_quote_option(
+            variant_id="recommended_default",
+            label="Recommended",
+            kind="recommended",
+            quote=recommended_raw,
+            from_token=from_token,
+            to_token=to_token,
+            input_amount=amount,
+            input_amount_raw=raw_amount,
+            output_decimals=output_meta["decimals"],
+            checked_params=base_params,
+        )
+    except HTTPException as e:
+        diagnostics.append(_jupiter_quote_failure_diagnostic("recommended_default", e))
 
     # 2) Broader search variant (relax intermediate-token restriction)
     broader_params = {
@@ -6477,10 +6557,10 @@ def swap_quote(
             )
         )
     else:
-        diagnostics.append({"variant_id": "broader_search", **broader_result["error"]})
+        diagnostics.append(_jupiter_quote_failure_diagnostic("broader_search", broader_result["error"]))
 
     # 3) Force an alternate venue mix by excluding DEX labels from the recommended route
-    recommended_labels = recommended.get("route_labels") or []
+    recommended_labels = recommended.get("route_labels") if recommended else []
     if recommended_labels:
         exclude_params = {
             **base_params,
@@ -6504,7 +6584,10 @@ def swap_quote(
             )
         else:
             diagnostics.append(
-                {"variant_id": "exclude_recommended_dexes", **exclude_result["error"]}
+                _jupiter_quote_failure_diagnostic(
+                    "exclude_recommended_dexes",
+                    exclude_result["error"],
+                )
             )
 
     # 4) Direct-route-only check
@@ -6528,7 +6611,7 @@ def swap_quote(
             checked_params=direct_params,
         )
     else:
-        diagnostics.append({"variant_id": "direct_route_check", **direct_result["error"]})
+        diagnostics.append(_jupiter_quote_failure_diagnostic("direct_route_check", direct_result["error"]))
 
     raydium_params = _build_raydium_quote_params(
         input_mint=input_meta["mint"],
@@ -6683,7 +6766,7 @@ def swap_quote(
 
     # Build the ranked Jupiter candidate pool from all successful checked variants.
     # This remains the executable universe for now.
-    ranked_jupiter_candidates = [recommended, *variant_candidates]
+    ranked_jupiter_candidates = [opt for opt in [recommended, *variant_candidates] if opt]
     if direct_route_check:
         ranked_jupiter_candidates.append(direct_route_check)
 
@@ -6696,16 +6779,92 @@ def swap_quote(
     )
     direct_route_base = _select_direct_route_option(ranked_universe_options)
 
-    best_quote_base = ranked_universe_options[0] if ranked_universe_options else recommended
+    try:
+        reference_prices = _resolve_quote_reference_prices_usd([from_token, to_token, "SOL"])
+    except Exception:
+        reference_prices = {}
+    reference_prices = _apply_external_token_reference_prices(
+        reference_prices,
+        {
+            from_token: input_meta,
+            to_token: output_meta,
+        },
+    )
+
+    if not ranked_universe_options:
+        inline_baseline, inline_baseline_vs_recommended = _build_fresh_quote_reference_baseline(
+            from_token=from_token,
+            to_token=to_token,
+            amount=amount,
+            fallback_input_usd_value=None,
+            best_output_amount=None,
+            reference_prices=reference_prices,
+        )
+        return {
+            "ok": False,
+            "no_route": True,
+            "network": network,
+            "provider": None,
+            "from_token": from_token,
+            "to_token": to_token,
+            "input_amount": amount,
+            "input_amount_raw": raw_amount,
+            "inline_baseline": inline_baseline,
+            "inline_baseline_vs_recommended": inline_baseline_vs_recommended,
+            "best_quote_option": None,
+            "best_benchmark_quote_option": None,
+            "recommended_option": None,
+            "recommended_executable_option": None,
+            "recommended": None,
+            "other_options": [],
+            "direct_route_check": None,
+            "message": "No executable route found for this token/amount.",
+            "user_message": "Reference price is available, but no live route was found.",
+            "summary": {
+                "selection_basis": "no_live_route_returned",
+                "headline_label": "No executable route found",
+                "recommended_reason": "Reference pricing is not an executable route.",
+                "checked_variants": [
+                    "recommended_default",
+                    "broader_search",
+                    "exclude_recommended_dexes",
+                    "direct_route_check",
+                    "raydium_quote",
+                    "meteora_dlmm_quote",
+                    "orca_whirlpool_quote",
+                    "phoenix_quote",
+                    "phantom_quote",
+                    "pumpswap_quote",
+                ],
+                "uses_external_tokens": bool(external_tokens),
+            },
+            "external_tokens": external_tokens,
+            "debug": {
+                "route_debug": None,
+                "ranked_jupiter_variants": [],
+                "variant_errors": diagnostics,
+                "external_tokens": external_tokens,
+                "notes": [
+                    "Reference pricing is not an executable route.",
+                    "No checked provider returned a usable live swap route for this request.",
+                ],
+            },
+        }
+
+    best_quote_base = ranked_universe_options[0]
+    best_benchmark_quote_base = next(
+        (opt for opt in ranked_universe_options if _is_benchmark_only_quote_option(opt)),
+        None,
+    )
     best_quote_variant_id = best_quote_base.get("variant_id")
     best_quote_option = _with_quote_role(
         best_quote_base,
-        kind="recommended",
-        label="Recommended",
+        kind="benchmark" if _is_benchmark_only_quote_option(best_quote_base) else "recommended",
+        label="Best benchmark quote" if _is_benchmark_only_quote_option(best_quote_base) else "Best quote",
     )
 
     executable_candidates = [
-        opt for opt in ranked_universe_options if _is_executable_quote_option(opt)
+        opt for opt in ranked_universe_options if _is_actionable_recommendation_candidate(opt)
     ]
     recommended_executable_base = executable_candidates[0] if executable_candidates else None
     recommended_executable_variant_id = (
@@ -6715,10 +6874,14 @@ def swap_quote(
         recommended_executable_base,
         kind="recommended",
         label=(
-            "Recommended executable"
+            "Recommended executable route"
             if not _same_quote_option(recommended_executable_base, best_quote_base)
-            else "Recommended"
+            else "Recommended executable route"
         ),
+    )
+    recommended_base = recommended_executable_base or next(
+        (opt for opt in ranked_universe_options if not _is_benchmark_only_quote_option(opt)),
+        best_quote_base,
     )
 
     # Other options = meaningful remaining normalized universe options. Prefer
@@ -6728,7 +6891,7 @@ def swap_quote(
     ranked_other_options = []
     diverse_other_options = _select_diverse_other_options(
         ranked_universe_options,
-        best_quote=best_quote_base,
+        best_quote=best_quote_base if _is_actionable_recommendation_candidate(best_quote_base) else None,
         recommended=recommended_executable_base,
         direct=direct_route_base,
     )
@@ -6747,7 +6910,7 @@ def swap_quote(
         elif variant_id == "phoenix_quote":
             alt_label = "Via Phoenix"
         elif variant_id == "phantom_quote":
-            alt_label = "Via Phantom"
+            alt_label = "Benchmark-only quote"
         elif variant_id == "pumpswap_quote":
             alt_label = "Via PumpSwap"
         elif variant_id == "exclude_recommended_dexes":
@@ -6777,7 +6940,7 @@ def swap_quote(
         "meteora_dlmm_quote": "Meteora DLMM produced the best checked quote for this request and can be prepared for Phantom signing when the route is single-pool.",
         "orca_whirlpool_quote": "Orca Whirlpool produced the best checked quote for this request and can be prepared for Phantom signing when the route is single-pool.",
         "phoenix_quote": "Phoenix CLOB produced the best checked quote for this request, but it is comparison-only in this preview path.",
-        "phantom_quote": "Phantom routing API produced the best checked quote for this request, but it is comparison-only in this preview path.",
+        "phantom_quote": "Phantom routing API produced the best checked benchmark quote, but the recommended route is the best executable route available in this app.",
         "pumpswap_quote": "PumpSwap produced the best checked quote for this request, but it is comparison-only in this preview path.",
     }.get(
         best_quote_variant_id,
@@ -6785,23 +6948,11 @@ def swap_quote(
     )
 
     best_output_amount = _safe_float(best_quote_option.get("estimated_output"))
-    try:
-        reference_prices = _resolve_quote_reference_prices_usd([from_token, to_token, "SOL"])
-    except Exception:
-        reference_prices = {}
-    reference_prices = _apply_external_token_reference_prices(
-        reference_prices,
-        {
-            from_token: input_meta,
-            to_token: output_meta,
-        },
-    )
-
     inline_baseline, inline_baseline_vs_recommended = _build_fresh_quote_reference_baseline(
         from_token=from_token,
         to_token=to_token,
         amount=amount,
-        fallback_input_usd_value=_safe_float(recommended_raw.get("swapUsdValue")),
+        fallback_input_usd_value=_safe_float((recommended_raw or {}).get("swapUsdValue")),
         best_output_amount=best_output_amount,
         reference_prices=reference_prices,
     )
@@ -6906,7 +7057,6 @@ def swap_quote(
 
     best_quote_option = _strip_internal_sort_key(best_quote_option)
     recommended_executable_option = _strip_internal_sort_key(recommended_executable_option)
-    recommended_option = best_quote_option
     ranked_other_options = [_strip_internal_sort_key(x) for x in ranked_other_options]
     direct_route_output = _strip_internal_sort_key(direct_route_output)
 
@@ -6925,7 +7075,16 @@ def swap_quote(
             output_meta=output_meta,
             network=network,
         )
-    recommended_option = best_quote_option
+    recommended_option = recommended_executable_option or _with_execution_readiness(
+        _strip_internal_sort_key(_with_quote_role(
+            recommended_base,
+            kind="recommended",
+            label="Recommended route",
+        )),
+        input_meta=input_meta,
+        output_meta=output_meta,
+        network=network,
+    )
     ranked_other_options = [
         _with_execution_readiness(
             opt,
@@ -6945,7 +7104,7 @@ def swap_quote(
     return {
         "ok": True,
         "network": network,
-        "provider": best_quote_option.get("provider") or "jupiter-metis",
+        "provider": recommended_option.get("provider") or best_quote_option.get("provider") or "jupiter-metis",
         "from_token": from_token,
         "to_token": to_token,
         "input_amount": amount,
@@ -6953,6 +7112,15 @@ def swap_quote(
         "inline_baseline_vs_recommended": inline_baseline_vs_recommended,
         "input_amount_raw": raw_amount,
         "best_quote_option": best_quote_option,
+        "best_benchmark_quote_option": (
+            _strip_internal_sort_key(_with_quote_role(
+                best_benchmark_quote_base,
+                kind="benchmark",
+                label="Best benchmark quote",
+            ))
+            if best_benchmark_quote_base
+            else None
+        ),
         "recommended_option": recommended_option,
         "recommended_executable_option": recommended_executable_option,
         "recommended": recommended_option,
@@ -6964,8 +7132,11 @@ def swap_quote(
             "cost_scope": "benchmark_shortfall_vs_fresh_reference",
             "recommended_reason": recommended_reason,
             "best_quote_variant_id": best_quote_variant_id,
-            "recommended_variant_id": best_quote_variant_id,
+            "recommended_variant_id": recommended_option.get("variant_id") if recommended_option else None,
             "recommended_executable_variant_id": recommended_executable_variant_id,
+            "best_benchmark_variant_id": (
+                best_benchmark_quote_base.get("variant_id") if best_benchmark_quote_base else None
+            ),
             "direct_route_variant_id": direct_route_variant_id,
             "best_quote_is_executable": _is_executable_quote_option(best_quote_option),
             "recommended_is_executable": _is_executable_quote_option(recommended_option),
@@ -6993,7 +7164,7 @@ def swap_quote(
         },
         "external_tokens": external_tokens,
         "debug": {
-            "route_debug": recommended_raw.get("mostReliableAmmsQuoteReport"),
+            "route_debug": (recommended_raw or {}).get("mostReliableAmmsQuoteReport"),
             "ranked_jupiter_variants": ranked_jupiter_variant_debug,
             "variant_errors": diagnostics,
             "external_tokens": external_tokens,
@@ -7014,8 +7185,8 @@ def swap_quote(
 
 @app.get("/swap/inline-baseline")
 def swap_inline_baseline(from_token: str, to_token: str, amount: float, network: str = "solana"):
-    from_token = from_token.upper().strip()
-    to_token = to_token.upper().strip()
+    raw_from_token = (from_token or "").strip()
+    raw_to_token = (to_token or "").strip()
 
     if network != "solana":
         raise HTTPException(status_code=400, detail="only solana is supported for now")
@@ -7023,27 +7194,43 @@ def swap_inline_baseline(from_token: str, to_token: str, amount: float, network:
     if amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be greater than 0")
 
-    if from_token == to_token:
+    if raw_from_token.lower() == raw_to_token.lower():
         raise HTTPException(status_code=400, detail="from_token and to_token must be different")
 
-    input_meta = _resolve_swap_token_meta(from_token)
-    output_meta = _resolve_swap_token_meta(to_token)
-    if not input_meta or not output_meta:
+    input_meta = _resolve_swap_token_for_quote(raw_from_token)
+    output_meta = _resolve_swap_token_for_quote(raw_to_token)
+    if (
+        not input_meta
+        or not output_meta
+        or input_meta.get("resolution_error")
+        or output_meta.get("resolution_error")
+    ):
         raise HTTPException(status_code=400, detail="unsupported token for now")
 
-    inline_baseline, _ = _build_inline_baseline(
-        from_token=from_token,
-        to_token=to_token,
+    input_label = (input_meta.get("quote_label") or input_meta.get("symbol") or raw_from_token).strip()
+    output_label = (output_meta.get("quote_label") or output_meta.get("symbol") or raw_to_token).strip()
+    reference_prices = _resolve_quote_reference_prices_usd([input_label, output_label, "SOL"])
+    reference_prices = _apply_external_token_reference_prices(
+        reference_prices,
+        {
+            input_label: input_meta,
+            output_label: output_meta,
+        },
+    )
+    inline_baseline, _ = _build_fresh_quote_reference_baseline(
+        from_token=input_label,
+        to_token=output_label,
         amount=amount,
         fallback_input_usd_value=None,
         best_output_amount=None,
+        reference_prices=reference_prices,
     )
 
     return {
         "ok": True,
         "network": network,
-        "from_token": from_token,
-        "to_token": to_token,
+        "from_token": input_label,
+        "to_token": output_label,
         "input_amount": amount,
         "inline_baseline": inline_baseline,
     }
