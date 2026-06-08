@@ -25,6 +25,12 @@ def build_ui_html() -> str:
     .swap-amount-actions { display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end; }
     .swap-summary-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:6px; }
     .swap-summary-value { font-size:13px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .route-flow { margin-top:8px; padding-right:220px; font-size:15px; line-height:1.35; }
+    .route-flow.compact { padding-right:180px; font-size:14px; }
+    .route-flow-row { display:flex; align-items:baseline; gap:6px; }
+    .route-flow-symbol { font-weight:600; display:inline-block; min-width:12px; }
+    .route-flow-minus { color:#b42318; }
+    .route-flow-plus { color:#067647; }
     @media (max-width: 760px) { .swap-token-card-main { grid-template-columns: 1fr; } }
     .token-preview { margin-top: 4px; font-size: 12px; line-height: 1.35; min-height: 18px; }
     @media (max-width: 760px) { .swap-input-grid { grid-template-columns: 1fr; } }
@@ -45,6 +51,15 @@ def build_ui_html() -> str:
     .modal-backdrop.is-open { display: flex; }
     .modal-panel { width: min(480px, 100%); background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 14px; box-shadow: 0 16px 42px rgba(0,0,0,.18); }
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+    .token-modal-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.42); z-index: 60; }
+    .token-modal-backdrop.is-open { display: flex; }
+    .token-modal { width: min(520px, 100%); max-height: min(720px, 92vh); overflow: auto; background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 14px; box-shadow: 0 16px 42px rgba(0,0,0,.18); }
+    .token-modal-search { width: 100%; box-sizing: border-box; margin-top: 8px; }
+    .token-modal-section { margin-top: 12px; }
+    .token-modal-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; text-align: left; margin-top: 6px; padding: 8px; border: 1px solid #eee; border-radius: 8px; background: #fff; color: #111; }
+    .token-modal-row-main { font-weight: 600; }
+    .token-modal-row-sub { font-size: 12px; color: #666; margin-top: 2px; overflow-wrap: anywhere; }
+    .token-modal-action { padding: 6px 8px; border-radius: 8px; font-size: 12px; white-space: nowrap; }
   </style>
 </head>
 <body>
@@ -188,10 +203,10 @@ def build_ui_html() -> str:
     </div>
     <div class="muted" id="swapBalanceFreshnessHint" style="display:none; margin-top:6px; font-size:12px;"></div>
     <button id="btnSwapRefreshBalances" type="button" class="secondary" style="display:none; margin-top:6px; padding:6px 8px;">Refresh balances</button>
-    <div class="card" id="swapBalanceRefreshDebugWrap" style="display:none; margin-top:8px; font-size:12px;">
-      <div class="muted" style="font-weight:600;">LATEST BALANCE REFRESH DIAGNOSTICS JSON</div>
+    <details class="card" id="swapBalanceRefreshDebugWrap" style="display:none; margin-top:8px; font-size:12px;">
+      <summary class="muted" style="cursor:pointer; font-weight:600;">Balance refresh diagnostics</summary>
       <pre id="swapBalanceRefreshDebug" style="margin-top:8px;">No balance refresh yet.</pre>
-    </div>
+    </details>
 
     <div class="swap-input-grid">
       <div class="swap-token-card" id="swapSellCard">
@@ -281,10 +296,10 @@ def build_ui_html() -> str:
       <div class="muted" id="swapCoverageDepth" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
       <div class="muted" id="swapExternalTokenNotice" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
       <div class="muted" id="swapExecutionStatus" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;">Ready to prepare a swap route.</div>
-      <div class="card" id="swapVisiblePreflightDebugWrap" style="margin-top:8px; font-size:12px;">
-        <div class="muted" style="font-weight:600;">LATEST PREFLIGHT DIAGNOSTICS JSON</div>
+      <details class="card" id="swapVisiblePreflightDebugWrap" style="margin-top:8px; font-size:12px;">
+        <summary class="muted" style="cursor:pointer; font-weight:600;">Latest preflight diagnostics</summary>
         <pre id="swapVisiblePreflightDebug" style="margin-top:8px;">No preflight check yet.</pre>
-      </div>
+      </details>
       <div class="muted" id="swapQuoteFreshness" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;"></div>
       <div id="swapPreparedAction" style="display:none; margin-top:8px;">
         <div id="swapPreparedSummary" class="muted" style="font-size:12px; line-height:1.45;"></div>
@@ -331,6 +346,17 @@ def build_ui_html() -> str:
           <a id="swapSuccessExplorerLink" class="secondary" href="#" target="_blank" style="display:none; padding:10px 12px; border-radius:10px; border:1px solid #aaa; color:#111; text-decoration:none;">Open in Solana Explorer</a>
           <button id="btnCloseSwapSuccessModal" type="button" class="secondary">Close</button>
         </div>
+      </div>
+    </div>
+
+    <div id="swapTokenModalBackdrop" class="token-modal-backdrop" aria-hidden="true">
+      <div class="token-modal" role="dialog" aria-modal="true" aria-labelledby="swapTokenModalTitle">
+        <div class="row" style="align-items:center; justify-content:space-between;">
+          <h3 id="swapTokenModalTitle" style="margin:0;">Select token</h3>
+          <button id="btnCloseSwapTokenModal" type="button" class="secondary" aria-label="Close token selector">Close</button>
+        </div>
+        <input id="swapTokenModalSearch" class="token-modal-search" placeholder="Search symbol or paste Solana mint" autocomplete="off" />
+        <div id="swapTokenModalBody"></div>
       </div>
     </div>
 
@@ -434,6 +460,10 @@ def build_ui_html() -> str:
   let swapQuoteExpiresAt = null;
   let swapQuoteTimerId = null;
   let swapBalancesStaleAfterSubmit = false;
+  let activeTokenSide = "from";
+  let tokenSearchQuery = "";
+  let tokenModalResolvedExternalToken = null;
+  let tokenModalResolveTimerId = null;
 
   function nowTimeLabel() {
     return new Date().toLocaleTimeString();
@@ -863,6 +893,253 @@ function openSwapHoldingsDropdown() {
   if (!box) return;
   renderSwapHoldingsDropdown();
   box.style.display = "block";
+}
+
+function looksLikeSolanaMint(value) {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(value || "").trim());
+}
+
+function currentTokenDisplay(side) {
+  const input = $(side === "from" ? "swapFromToken" : "swapToToken");
+  return (input?.value || "").trim();
+}
+
+function tokenModalRowHtml({label, sub, amount, action="Select", tokenValue="", tokenInputValue="", mint="", symbol="", source=""}) {
+  return `
+    <button
+      type="button"
+      class="token-modal-row"
+      data-token-modal-select="true"
+      data-token-value="${escapeHtml(tokenValue || label || symbol || mint)}"
+      data-token-input-value="${escapeHtml(tokenInputValue || tokenValue || symbol || mint || label)}"
+      data-token-mint="${escapeHtml(mint || "")}"
+      data-token-symbol="${escapeHtml(symbol || label || "")}"
+      data-token-source="${escapeHtml(source || "")}"
+    >
+      <span>
+        <span class="token-modal-row-main">${escapeHtml(label || symbol || tokenValue || "Token")}</span>
+        ${sub ? `<span class="token-modal-row-sub">${escapeHtml(sub)}</span>` : ""}
+      </span>
+      <span class="muted">${escapeHtml(amount || action)}</span>
+    </button>
+  `;
+}
+
+function tokenModalCommonRows(query) {
+  const q = normalizeSwapAssetKey(query);
+  const seen = new Set();
+  return swapTokenList
+    .filter((token) => {
+      const symbol = String(token?.symbol || "").trim();
+      if (!symbol) return false;
+      const haystack = [
+        symbol,
+        token?.display_name,
+        token?.name,
+        token?.mint,
+        token?.asset_key,
+        token?.asset
+      ].map((item) => normalizeSwapAssetKey(item)).join(" ");
+      return !q || haystack.includes(q);
+    })
+    .filter((token) => {
+      const key = normalizeSwapAssetKey(token?.mint || token?.symbol);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 12)
+    .map((token) => tokenModalRowHtml({
+      label: token.symbol || token.display_name,
+      sub: token.mint ? shortenMiddle(String(token.mint), 6, 6) : (token.display_name || token.name || ""),
+      tokenValue: token.symbol || token.mint,
+      tokenInputValue: token.symbol || token.mint,
+      mint: token.mint || "",
+      symbol: token.symbol || "",
+      source: token.source || "saved"
+    }))
+    .join("");
+}
+
+function tokenModalBalanceRows(query) {
+  const q = normalizeSwapAssetKey(query);
+  const rows = portfolioBalanceRows().filter((row) => row.amount > 0.0000000001).filter((row) => {
+    if (!q) return true;
+    return [
+      row.label,
+      row.asset,
+      row.mint,
+      row.token_input_value,
+      row.token_value
+    ].map((item) => normalizeSwapAssetKey(item)).some((value) => value.includes(q));
+  });
+  if (!rows.length) return "<div class='muted token-modal-row-sub'>No non-zero wallet balances found.</div>";
+  return rows.slice(0, 12).map((row) => tokenModalRowHtml({
+    label: row.label || row.token_value,
+    sub: row.mint ? shortenMiddle(String(row.mint), 6, 6) : row.asset,
+    amount: fmtNum(row.amount, 6),
+    tokenValue: row.token_value,
+    tokenInputValue: row.token_input_value,
+    mint: row.mint || "",
+    symbol: row.label || "",
+    source: "balance"
+  })).join("");
+}
+
+function renderTokenModalExternalResult(query) {
+  const value = String(query || "").trim();
+  if (!looksLikeSolanaMint(value)) return "";
+
+  if (tokenModalResolvedExternalToken?.mint === value) {
+    const token = tokenModalResolvedExternalToken;
+    const symbol = token.symbol || token.display_name || "External token";
+    const mint = shortenMiddle(String(token.mint), 6, 6);
+    return `
+      <div class="token-modal-section">
+        <div class="muted" style="font-weight:600;">External token found</div>
+        <div class="token-modal-row" style="cursor:default;">
+          <span>
+            <span class="token-modal-row-main">${escapeHtml(symbol)}</span>
+            <span class="token-modal-row-sub">${escapeHtml(mint)} · Unverified token metadata</span>
+          </span>
+          <button type="button" class="secondary token-modal-action" data-token-modal-import="true">Import token</button>
+        </div>
+      </div>
+    `;
+  }
+
+  if (tokenModalResolvedExternalToken === false) {
+    return `
+      <div class="token-modal-section">
+        <div class="muted" style="font-weight:600;">External token found</div>
+        <div class="muted token-modal-row-sub">Token metadata unavailable.</div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="token-modal-section">
+      <div class="muted" style="font-weight:600;">External token found</div>
+      <div class="muted token-modal-row-sub">Resolving token metadata...</div>
+    </div>
+  `;
+}
+
+function renderSwapTokenModal() {
+  const body = $("swapTokenModalBody");
+  if (!body) return;
+  const sideLabel = activeTokenSide === "from" ? "You sell" : "You buy";
+  const isMintSearch = looksLikeSolanaMint(tokenSearchQuery);
+  const externalResultHtml = renderTokenModalExternalResult(tokenSearchQuery);
+  const balancesHtml = `
+    <div class="token-modal-section">
+      <div class="muted" style="font-weight:600;">Your balances</div>
+      ${tokenModalBalanceRows(tokenSearchQuery)}
+    </div>
+  `;
+  const commonHtml = isMintSearch
+    ? ""
+    : `
+    <div class="token-modal-section">
+      <div class="muted" style="font-weight:600;">Common tokens / Saved tokens</div>
+      ${tokenModalCommonRows(tokenSearchQuery) || "<div class='muted token-modal-row-sub'>No saved tokens match this search.</div>"}
+    </div>
+  `;
+
+  body.innerHTML = `
+    <div class="muted" style="margin-top:8px;">Selecting for ${escapeHtml(sideLabel)}</div>
+    ${isMintSearch ? externalResultHtml + balancesHtml : balancesHtml + commonHtml}
+  `;
+}
+
+async function resolveTokenModalQuery() {
+  const query = tokenSearchQuery;
+  tokenModalResolvedExternalToken = null;
+  if (!looksLikeSolanaMint(query)) {
+    renderSwapTokenModal();
+    return;
+  }
+  renderSwapTokenModal();
+  let res;
+  try {
+    res = await fetchMaybeJson("/tokens/resolve?" + qs({ query, allow_external: true }));
+  } catch (err) {
+    tokenModalResolvedExternalToken = false;
+    renderSwapTokenModal();
+    return;
+  }
+  if (query !== tokenSearchQuery) return;
+  tokenModalResolvedExternalToken = res.ok && res.data?.ok && res.data?.token
+    ? res.data.token
+    : false;
+  renderSwapTokenModal();
+}
+
+function scheduleTokenModalResolve() {
+  clearTimeout(tokenModalResolveTimerId);
+  tokenModalResolveTimerId = setTimeout(resolveTokenModalQuery, 350);
+}
+
+function openSwapTokenModal(side) {
+  activeTokenSide = side === "to" ? "to" : "from";
+  tokenSearchQuery = "";
+  tokenModalResolvedExternalToken = null;
+  const backdrop = $("swapTokenModalBackdrop");
+  const search = $("swapTokenModalSearch");
+  if (!backdrop || !search) return;
+  search.value = "";
+  renderSwapTokenModal();
+  backdrop.classList.add("is-open");
+  backdrop.setAttribute("aria-hidden", "false");
+  setTimeout(() => search.focus(), 0);
+}
+
+function closeSwapTokenModal() {
+  const backdrop = $("swapTokenModalBackdrop");
+  if (!backdrop) return;
+  backdrop.classList.remove("is-open");
+  backdrop.setAttribute("aria-hidden", "true");
+}
+
+function applySwapTokenSelection(side, token) {
+  const input = $(side === "from" ? "swapFromToken" : "swapToToken");
+  if (!input) return;
+
+  const mint = String(token?.mint || "").trim();
+  const symbol = String(token?.symbol || token?.label || "").trim();
+  const inputValue = String(token?.tokenInputValue || token?.tokenValue || symbol || mint || "").trim();
+  const displayValue = symbol || inputValue;
+
+  input.value = displayValue;
+  if (mint && symbol) {
+    input.dataset.selectedMint = mint;
+    input.dataset.selectedSymbol = symbol;
+  } else {
+    delete input.dataset.selectedMint;
+    delete input.dataset.selectedSymbol;
+  }
+
+  resetSwapStateForTokenChange({ clearAmount: side === "from" });
+  if (mint) {
+    swapSelectedRecognizedTokenMint[side] = mint;
+  } else {
+    resetResolvedSwapTokenSelection(side);
+  }
+  resolveSwapTokenInput(side);
+  if (side === "from") {
+    renderSwapFromBalance();
+    renderSwapHoldingsDropdown();
+  }
+  updateLiveSwapBaseline();
+  closeSwapTokenModal();
+}
+
+function importTokenModalExternalToken() {
+  const token = tokenModalResolvedExternalToken;
+  if (!token || token === false) return;
+  swapTokenResolveState[activeTokenSide] = token;
+  useResolvedSwapToken(activeTokenSide);
+  closeSwapTokenModal();
 }
 
 
@@ -1518,14 +1795,6 @@ const SWAP_EXECUTABLE_VARIANTS = {
   "pumpswap": new Set(["pumpswap_quote"])
 };
 
-const SWAP_EXECUTION_READY_LABELS = {
-  "jupiter-metis": "Execution-ready via Jupiter",
-  "raydium-trade-api": "Execution-ready via Raydium",
-  "orca-whirlpool": "Execution-ready via Orca",
-  "meteora-dlmm": "Execution-ready via Meteora",
-  "pumpswap": "Execution-ready via PumpSwap"
-};
-
 function isExecutableRouteOption(opt) {
   const provider = opt?.provider || "";
   const supportedVariants = SWAP_EXECUTABLE_VARIANTS[provider];
@@ -1583,21 +1852,14 @@ function swapExecutionReadinessReasonLabel(reason) {
 function renderSwapExecutionReadinessLine(opt) {
   const readiness = opt?.execution_readiness || null;
   if (readiness?.execution_ready === true) {
-    const readyLabel =
-      SWAP_EXECUTION_READY_LABELS[readiness?.execution_provider] ||
-      ("Execution-ready via " + (readiness?.provider_label || "provider"));
-    return `
-      <div class="muted" style="margin-top:4px;">
-        ${escapeHtml(readyLabel)}
-      </div>
-    `;
+    return "";
   }
 
   const providerStatus = readiness?.provider_status || "";
   const statusLabels = {
-    execution_research: "Quote-only · Execution research planned",
-    benchmark_quote_only: "Quote-only · Benchmark route",
-    advanced_research: "Quote-only · Advanced research route"
+    execution_research: "Quote-only",
+    benchmark_quote_only: "Benchmark",
+    advanced_research: "Quote-only"
   };
   if (statusLabels[providerStatus]) {
     return `
@@ -1628,7 +1890,7 @@ function swapOptionCardTitle(opt, opts = {}) {
 
   const kind = String(opt?.kind || "");
 
-  if (opt?.provider === "phantom-routing-api") return "Benchmark-only quote";
+  if (opt?.provider === "phantom-routing-api") return "Benchmark";
   if (kind === "recommended" && opt?.is_comparison_only === true) return "Best quote";
   if (kind === "recommended") return "Recommended executable route";
   if (kind === "direct") return "Direct/simple route check";
@@ -1712,10 +1974,10 @@ function renderRouteShapeLine(opt, compact = false) {
   if (cleanRoutePath) {
     return `
       <div class="muted" style="margin-top:${margin};">
-        Route: ${escapeHtml(cleanRoutePath)}
+        ${escapeHtml(cleanRoutePath)}
       </div>
       <div class="muted" style="margin-top:2px;">
-        Shape: two-hop · Steps: ${escapeHtml(String(routeSteps))}
+        two-hop · Steps: ${escapeHtml(String(routeSteps))}
       </div>
     `;
   }
@@ -1730,14 +1992,14 @@ function renderRouteShapeLine(opt, compact = false) {
 
     return `
       <div class="muted" style="margin-top:2px;">
-        Shape: ${escapeHtml(shapeText)}
+        ${escapeHtml(shapeText)}
       </div>
     `;
   }
 
   return `
     <div class="muted" style="margin-top:4px;">
-      Route shape: ${escapeHtml(routeShape)} · Steps: ${escapeHtml(String(routeSteps))}
+      ${escapeHtml(routeShape)} · Steps: ${escapeHtml(String(routeSteps))}
     </div>
   `;
 }
@@ -1984,10 +2246,9 @@ function renderSwapOptionCard(opt, opts = {}) {
   const compactDirect = !!opts.compactDirect;
   const showRecommendedAction = !!opts.showRecommendedAction;
   const showDirectAction = !!opts.showDirectAction;
+  const showCostSummary = !!opts.showCostSummary;
   const isExecutableRoute = isExecutableRouteOption(opt);
   const isComparisonOnly = opt.is_comparison_only === true && !isExecutableRoute;
-  const estOut = fmtNum(Number(opt.estimated_output || 0), 6);
-  const receiveUsdText = routeReceiveUsdText(opt);
   const minReceived = opt.min_received == null ? "n/a" : fmtNum(Number(opt.min_received), 6);
   const impact = formatImpactPct(opt.price_impact_pct);
   const slippage = formatSettingPctFromBps(opt?.protections?.slippage_bps ?? opt?.slippage_bps);
@@ -2095,34 +2356,7 @@ function renderSwapOptionCard(opt, opts = {}) {
     <div class="card" style="margin-top:8px; position:relative;">
       ${shouldShowSwapOptionCardTitle(opt, opts) ? `<div><strong>${escapeHtml(title)}</strong></div>` : ""}
       <div style="margin-top:3px; font-weight:600;">${escapeHtml(routeLabel)}</div>
-      ${
-        isRecommendedCard && isExecutableRoute
-          ? `
-            <div class="muted" style="margin-top:4px;">
-              Ready to approve in Phantom · Best executable route found in this quote.
-            </div>
-          `
-          : ""
-      }
-      ${
-        opt?.provider === "phantom-routing-api"
-          ? `
-            <div class="muted" style="margin-top:4px;">
-              <strong>Not executable here.</strong> Used for comparison only. No swap action available from this app.
-            </div>
-          `
-          : ""
-      }
-      ${
-        isComparisonOnly
-          ? `
-            <div class="muted" style="margin-top:4px;">
-              Comparison-only - no swap action available yet.
-            </div>
-          `
-          : ""
-      }
-      ${renderSwapExecutionReadinessLine(opt)}
+      ${isComparisonOnly && opt?.provider !== "phantom-routing-api" ? renderSwapExecutionReadinessLine(opt) : ""}
       ${
         isRecommendedCard && showRecommendedAction && isExecutableRoute
           ? `
@@ -2138,15 +2372,13 @@ function renderSwapOptionCard(opt, opts = {}) {
               `
               : "")
       }
-      <div class="muted" style="margin-top:6px; padding-right:220px;">
-        You receive: ${escapeHtml(estOut)} ${escapeHtml(opt.to_token || "")}${escapeHtml(receiveUsdText)}
-      </div>
+      ${renderRouteFlowRows(opt)}
       ${renderRouteShapeLine(opt)}
       ${
-  isRecommendedCard
+  isRecommendedCard || showCostSummary
     ? `
       <div class="muted" style="margin-top:4px;">
-        <strong>Estimated swap cost vs market: ${escapeHtml(estimatedTotalSwapCostUsdText)}</strong>
+        <strong>Swap cost: ${escapeHtml(estimatedTotalSwapCostUsdText)}</strong>
       </div>
       <details style="margin-top:6px;">
         <summary class="muted" style="cursor:pointer;">Show cost breakdown</summary>
@@ -2240,6 +2472,59 @@ function routeReceiveUsdText(opt) {
   return "";
 }
 
+function routeInputUsdText(opt) {
+  const inputAmount = Number(opt?.input_amount);
+  const directInputUsd = Number(opt?.input_usd_value ?? opt?.estimated_input_usd);
+  if (Number.isFinite(directInputUsd) && !(directInputUsd === 0 && inputAmount > 0)) {
+    return " ≈ " + fmtUsdCost(directInputUsd);
+  }
+
+  const baseline = latestSwapQuoteResponse?.inline_baseline || null;
+  const baselineInput = Number(baseline?.input_amount);
+  const baselineUsd = Number(baseline?.input_usd_value);
+  const sameToken =
+    !baseline?.input_token ||
+    !opt?.from_token ||
+    String(baseline.input_token).toLowerCase() === String(opt.from_token).toLowerCase();
+  const sameAmount =
+    Number.isFinite(inputAmount) &&
+    Number.isFinite(baselineInput) &&
+    Math.abs(inputAmount - baselineInput) <= Math.max(1e-12, Math.abs(baselineInput) * 1e-9);
+
+  if (sameToken && sameAmount && Number.isFinite(baselineUsd) && !(baselineUsd === 0 && inputAmount > 0)) {
+    return " ≈ " + fmtUsdCost(baselineUsd);
+  }
+
+  return "";
+}
+
+function renderRouteFlowRows(opt, compact = false) {
+  const inputAmount = Number(opt?.input_amount);
+  const inputText =
+    (Number.isFinite(inputAmount) ? fmtNum(inputAmount, 6) : "n/a") +
+    " " +
+    (opt?.from_token || "") +
+    routeInputUsdText(opt);
+  const outputText =
+    fmtNum(Number(opt?.estimated_output || 0), 6) +
+    " " +
+    (opt?.to_token || "") +
+    routeReceiveUsdText(opt);
+
+  return `
+    <div class="route-flow${compact ? " compact" : ""}">
+      <div class="route-flow-row">
+        <span class="route-flow-symbol route-flow-minus">−</span>
+        <span>${escapeHtml(inputText)}</span>
+      </div>
+      <div class="route-flow-row">
+        <span class="route-flow-symbol route-flow-plus">+</span>
+        <span>${escapeHtml(outputText)}</span>
+      </div>
+    </div>
+  `;
+}
+
 function routeVsBestOutputText(opt, bestOption) {
   const output = Number(opt?.estimated_output);
   const bestOutput = Number(bestOption?.estimated_output);
@@ -2253,8 +2538,11 @@ function routeVsBestOutputText(opt, bestOption) {
   }
   const pct = (diff / bestOutput) * 100;
   const direction = pct >= 0 ? "higher" : "lower";
-  return "Output vs best route: ~" + fmtNum(Math.abs(pct), 2) + "% " + direction +
-    " (" + fmtNum(Math.abs(diff), 6) + " " + token + ")";
+  const absPct = Math.abs(pct);
+  const pctText = absPct < 0.01
+    ? "<0.01%"
+    : "~" + Number(absPct).toFixed(2) + "%";
+  return "Output vs best route: " + pctText + " " + direction;
 }
 
 function renderCompactAlternativeCard(opt, idx = 0, bestOption = null) {
@@ -2263,9 +2551,6 @@ function renderCompactAlternativeCard(opt, idx = 0, bestOption = null) {
   const routeLabel = surfaceRouteLabel(opt);
   const isExecutableRoute = isExecutableRouteOption(opt);
   const isComparisonOnly = opt.is_comparison_only === true && !isExecutableRoute;
-  const estOut = fmtNum(Number(opt?.estimated_output || 0), 6);
-  const receiveUsdText = routeReceiveUsdText(opt);
-  const outToken = opt?.to_token || "";
   const executionCostUsd = Number(opt?.execution_cost_usd);
   const executionCostText = routeVsBestOutputText(opt, bestOption) ||
     (Number.isFinite(executionCostUsd) && executionCostUsd !== 0
@@ -2274,26 +2559,8 @@ function renderCompactAlternativeCard(opt, idx = 0, bestOption = null) {
 
   return `
     <div class="card" style="margin-top:8px; position:relative;">
-      <div><strong>${opt?.provider === "phantom-routing-api" ? "Benchmark-only quote" : "Alternative " + (idx + 1)} — ${escapeHtml(routeLabel)}</strong></div>
-      ${
-        opt?.provider === "phantom-routing-api"
-          ? `
-            <div class="muted" style="margin-top:4px;">
-              <strong>Not executable here.</strong> Used for comparison only. No swap action available from this app.
-            </div>
-          `
-          : ""
-      }
-      ${
-        isComparisonOnly
-          ? `
-            <div class="muted" style="margin-top:4px;">
-              Comparison-only - no swap action available yet.
-            </div>
-          `
-          : ""
-      }
-      ${renderSwapExecutionReadinessLine(opt)}
+      <div><strong>${opt?.provider === "phantom-routing-api" ? "Benchmark" : "Alternative " + (idx + 1)} — ${escapeHtml(routeLabel)}</strong></div>
+      ${isComparisonOnly && opt?.provider !== "phantom-routing-api" ? renderSwapExecutionReadinessLine(opt) : ""}
       ${
         isExecutableRoute
           ? `
@@ -2303,13 +2570,20 @@ function renderCompactAlternativeCard(opt, idx = 0, bestOption = null) {
           `
           : ""
       }
-      <div class="muted" style="margin-top:4px;">
-        Receive: ${escapeHtml(estOut)} ${escapeHtml(outToken)}${escapeHtml(receiveUsdText)}
-      </div>
+      ${renderRouteFlowRows(opt, true)}
+      ${renderRouteShapeLine(opt, true)}
       <div class="muted" style="margin-top:2px;">
         ${escapeHtml(executionCostText)}
       </div>
-      ${renderRouteShapeLine(opt, true)}
+      ${
+        opt?.provider === "phantom-routing-api"
+          ? `
+            <div class="muted" style="margin-top:4px;">
+              Not executable here
+            </div>
+          `
+          : ""
+      }
     </div>
   `;
 }
@@ -2828,6 +3102,7 @@ function showSwapSuccessModal(details) {
     details.provider ? "Provider: " + details.provider : "",
     details.spent ? "Spent: " + details.spent : "",
     details.expected ? "Expected received: " + details.expected : "",
+    details.swapCost ? "Swap cost: " + details.swapCost : "",
     "Network: Solana mainnet"
   ].filter(Boolean);
 
@@ -2845,6 +3120,21 @@ function showSwapSuccessModal(details) {
   modal.setAttribute("aria-hidden", "false");
 }
 
+function appendUsdEstimateText(baseText, usdValue) {
+  const usd = Number(usdValue);
+  if (!baseText || !Number.isFinite(usd) || usd <= 0) return baseText || "";
+  return baseText + " ≈ " + fmtUsdCost(usd);
+}
+
+function preparedSwapDisplayCost(summary) {
+  const cost = Number(
+    summary?.estimated_total_swap_cost_usd ??
+    summary?.execution_cost_usd ??
+    summary?.estimated_trade_execution_cost?.amount_usd
+  );
+  return Number.isFinite(cost) && cost > 0 ? fmtUsdCost(cost) : "";
+}
+
 function renderSwapSubmittedSuccess(signature) {
   const box = $("swapExecutionStatus");
   if (!box) return;
@@ -2859,18 +3149,28 @@ function renderSwapSubmittedSuccess(signature) {
   const expected = summary.estimated_output != null
     ? fmtNum(Number(summary.estimated_output), 6) + (toToken ? " " + toToken : "")
     : "";
+  const spentWithUsd = appendUsdEstimateText(
+    spent,
+    summary.input_usd_value ?? summary.swap_usd_value ?? summary.spend_usd
+  );
+  const expectedWithUsd = appendUsdEstimateText(
+    expected,
+    summary.estimated_output_usd ?? summary.output_usd_value
+  );
+  const swapCostText = preparedSwapDisplayCost(summary);
   const explorer = mainnetExplorerLink(signature);
   const tokenText = toToken ? toToken + " received — check your Phantom wallet." : "Token received — check your Phantom wallet.";
 
   const lines = [
     `<div style="font-weight:600; color:#e5eefb;">Swap submitted successfully</div>`,
     `<div>Provider: ${escapeHtml(providerLabel)}</div>`,
-    spent ? `<div>Spent: ${escapeHtml(spent)}</div>` : "",
-    expected ? `<div>Expected received: ${escapeHtml(expected)}</div>` : "",
+    spentWithUsd ? `<div>Spent: ${escapeHtml(spentWithUsd)}</div>` : "",
+    expectedWithUsd ? `<div>Expected received: ${escapeHtml(expectedWithUsd)}</div>` : "",
+    swapCostText ? `<div>Swap cost: ${escapeHtml(swapCostText)}</div>` : "",
     `<div>Network: Solana mainnet</div>`,
     `<div><a href="${escapeHtml(explorer)}" target="_blank">Open in Solana Explorer</a></div>`,
     `<div style="margin-top:4px;">${escapeHtml(tokenText)}</div>`,
-    `<div class="muted" style="margin-top:4px;">Balances may have changed after the last swap — refresh balances.</div>`
+    `<div class="muted" id="swapPostSuccessBalanceStatus" style="margin-top:4px;">Refreshing balances…</div>`
   ].filter(Boolean);
 
   swapExecutionState = "submitted";
@@ -2880,12 +3180,14 @@ function renderSwapSubmittedSuccess(signature) {
   box.style.display = "block";
   showSwapSuccessModal({
     provider: providerLabel,
-    spent,
-    expected,
+    spent: spentWithUsd,
+    expected: expectedWithUsd,
+    swapCost: swapCostText,
     explorer,
   });
   renderSwapBalanceFreshnessHint(selectedFromHolding());
   renderSwapFromBalance();
+  refreshBalancesAfterSwap(summary);
 }
 
 async function signAndSubmitPreparedSwap() {
@@ -3342,8 +3644,15 @@ async function previewSwap() {
       });
 
       if (directMatchesRecommended) {
-        $("swapDirectBox").innerHTML =
-          "<div class='muted'>Direct route is also the current recommendation.</div>";
+        directNote = "Direct route is also the current recommendation.";
+        $("swapDirectBox").innerHTML = renderSwapOptionCard({...displayRec, ...displayDirectRoute, ...displayRec, kind: "direct"}, {
+          note: directNote,
+          compactDirect: true,
+          showDirectAction: true,
+          showCostSummary: true,
+          cardRole: "direct",
+          bestOption: displayRec
+        });
       } else {
         if (displayDirectRoute?.is_comparison_only === true && !isExecutableRouteOption(displayDirectRoute)) {
           directNote = "Quote-only direct check. No swap action is available for this provider yet.";
@@ -3359,6 +3668,7 @@ async function previewSwap() {
           note: directNote,
           compactDirect: true,
           showDirectAction: true,
+          showCostSummary: true,
           cardRole: "direct",
           bestOption: displayRec
         });
@@ -4327,7 +4637,7 @@ function qs(params) {
   }
 
   async function resolveSwapTokenInput(side) {
-    const value = tokenInputValue(side);
+    const value = canonicalSwapTokenQuery(side);
     if (!value) {
       setTokenResolvePreview(side, null, "");
       return;
@@ -4765,16 +5075,59 @@ function fmtUsdCost(x) {
     return true;
   }
 
-  async function refreshBalances() {
+  function swapAssetRefreshKeyForToken(tokenValue) {
+    const raw = String(tokenValue || "").trim();
+    if (!raw) return "";
+    if (normalizeSwapAssetKey(raw) === "SOL") return "sol";
+
+    const token = swapTokenList.find((item) => {
+      const symbol = normalizeSwapAssetKey(item?.symbol);
+      const mint = normalizeSwapAssetKey(item?.mint);
+      const asset = normalizeSwapAssetKey(item?.asset_key || item?.asset);
+      const query = normalizeSwapAssetKey(raw);
+      return query === symbol || query === mint || query === asset;
+    });
+    if (token?.asset_key || token?.asset) return String(token.asset_key || token.asset).trim();
+    if (token?.mint) return "spl:" + String(token.mint).trim();
+
+    const recognized = recognizedSwapTokenForAsset(raw) || Object.values(swapRecognizedTokenMap).find((item) => {
+      const query = normalizeSwapAssetKey(raw);
+      return query === normalizeSwapAssetKey(item?.symbol) ||
+        query === normalizeSwapAssetKey(item?.mint) ||
+        query === normalizeSwapAssetKey(item?.asset_key || item?.asset);
+    });
+    if (recognized) return recognizedSwapTokenAssetKey(recognized);
+    if (looksLikeSolanaMint(raw)) return "spl:" + raw;
+    return raw;
+  }
+
+  function swapPostSuccessRefreshAssets(summary) {
+    const seen = new Set();
+    const assets = [];
+    const add = (value) => {
+      const key = swapAssetRefreshKeyForToken(value);
+      if (!key) return;
+      const normalized = normalizeSwapAssetKey(key);
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      assets.push(key);
+    };
+    add("SOL");
+    add(summary?.from_token || canonicalSwapTokenQuery("from"));
+    add(summary?.to_token || canonicalSwapTokenQuery("to"));
+    return assets.join(",");
+  }
+
+  async function refreshBalances(options = {}) {
     const account = $("accountSelect").value;
     const force = "true";
-    const assets = swapPortfolioAssetRequestValue();
+    const assets = options.assetsOverride || swapPortfolioAssetRequestValue();
     const r = await fetchMaybeJson("/refresh/balances?" + qs({ account, force, assets }), { method: "POST" });
     if (!r.ok) {
-      showStatus("err", "POST /refresh/balances failed", r.data || r.text);
-      return;
+      if (!options.silent) showStatus("err", "POST /refresh/balances failed", r.data || r.text);
+      return false;
     }
-    showStatus("ok", "Balances refreshed", r.data);
+    if (!options.silent) showStatus("ok", "Balances refreshed", r.data);
     const loaded = await loadReportAndHistory();
     latestSwapBalanceRefreshDiagnostics = {
       requested_assets_sent_by_ui: assets,
@@ -4791,6 +5144,24 @@ function fmtUsdCost(x) {
       swapBalancesStaleAfterSubmit = false;
       renderSwapBalanceFreshnessHint(selectedFromHolding());
       renderSwapFromBalance();
+    }
+    return Boolean(loaded);
+  }
+
+  async function refreshBalancesAfterSwap(summary) {
+    const status = $("swapPostSuccessBalanceStatus");
+    if (status) status.textContent = "Refreshing balances…";
+    const assets = swapPostSuccessRefreshAssets(summary);
+    const ok = await refreshBalances({ assetsOverride: assets || null, silent: true, afterSwap: true });
+    if (ok) {
+      swapBalancesStaleAfterSubmit = false;
+      if (status) status.textContent = "Balances updated just now.";
+      renderSwapBalanceFreshnessHint(selectedFromHolding());
+      renderSwapFromBalance();
+      renderSwapWalletStrip();
+    } else {
+      if (status) status.textContent = "Swap confirmed. Balance refresh failed — refresh manually.";
+      renderSwapBalanceFreshnessHint(selectedFromHolding());
     }
   }
 
@@ -4838,15 +5209,45 @@ function fmtUsdCost(x) {
   $("swapSignAcknowledgement").addEventListener("change", updateSwapSignButtonState);
   $("btnClearSwap").addEventListener("click", clearSwapUi);
   $("btnCloseSwapSuccessModal").addEventListener("click", closeSwapSuccessModal);
+  $("btnCloseSwapTokenModal").addEventListener("click", closeSwapTokenModal);
   $("swapSuccessModal").addEventListener("click", (event) => {
     if (event.target?.id === "swapSuccessModal") closeSwapSuccessModal();
   });
+  $("swapTokenModalBackdrop").addEventListener("click", (event) => {
+    if (event.target?.id === "swapTokenModalBackdrop") closeSwapTokenModal();
+  });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeSwapSuccessModal();
+    if (event.key === "Escape") {
+      closeSwapSuccessModal();
+      closeSwapTokenModal();
+    }
   });
   $("btnSwapAmountHalf").addEventListener("click", () => setSwapAmountFromHolding(0.5));
   $("btnSwapAmountMax").addEventListener("click", () => setSwapAmountFromHolding(1));
-  $("swapFromTokenSelector").addEventListener("click", () => openSwapHoldingsDropdown());
+  $("swapFromTokenSelector").addEventListener("click", () => openSwapTokenModal("from"));
+  $("swapToToken").addEventListener("click", () => openSwapTokenModal("to"));
+  $("swapTokenModalSearch").addEventListener("input", (event) => {
+    tokenSearchQuery = String(event.target?.value || "");
+    tokenModalResolvedExternalToken = null;
+    renderSwapTokenModal();
+    scheduleTokenModalResolve();
+  });
+  $("swapTokenModalBody").addEventListener("click", (event) => {
+    const importButton = event.target?.closest?.("[data-token-modal-import]");
+    if (importButton) {
+      importTokenModalExternalToken();
+      return;
+    }
+    const row = event.target?.closest?.("[data-token-modal-select]");
+    if (!row) return;
+    applySwapTokenSelection(activeTokenSide, {
+      tokenValue: row.dataset.tokenValue || "",
+      tokenInputValue: row.dataset.tokenInputValue || "",
+      mint: row.dataset.tokenMint || "",
+      symbol: row.dataset.tokenSymbol || "",
+      source: row.dataset.tokenSource || ""
+    });
+  });
   $("swapHoldingsDropdown").addEventListener("click", (event) => {
     const button = event.target?.closest?.("[data-swap-holding-token]");
     if (!button) return;
@@ -4867,7 +5268,7 @@ function fmtUsdCost(x) {
     updateLiveSwapBaseline();
   });
   $("swapFromToken").addEventListener("focus", () => {
-    openSwapHoldingsDropdown();
+    openSwapTokenModal("from");
   });
   $("swapFromToken").addEventListener("input", () => {
     resetSwapStateForTokenChange({ clearAmount: true });
