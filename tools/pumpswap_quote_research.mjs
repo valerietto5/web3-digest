@@ -3,6 +3,7 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import {
   OnlinePumpAmmSdk,
+  PUMP_AMM_PROGRAM_ID,
   buyQuoteInput,
   sellBaseInput,
   canonicalPumpPoolPda,
@@ -147,6 +148,29 @@ function discoverableCanonicalMint(request) {
   return null;
 }
 
+function canonicalPoolNotFoundError({ mint, poolKey, accountInfo, knownPoolDiagnostics = [], message }) {
+  const details = {
+    mint,
+    discovery_mode: "canonical_pumpswap_pool",
+    candidate_pool_address: poolKey.toString(),
+    candidate_pool_addresses: [poolKey.toString()],
+    account_exists: accountInfo !== null,
+    account_owner: accountInfo?.owner?.toString?.() || null,
+    expected_program_id: PUMP_AMM_PROGRAM_ID.toString(),
+    rejection_reason: accountInfo === null ? "ACCOUNT_NOT_FOUND" : "UNSUPPORTED_POOL_LAYOUT",
+    pair_constraint: "direct SOL <-> pump-token canonical pool",
+    message,
+    note: "No direct canonical PumpSwap pool was found for this token. Jupiter may still route through Pump.fun Amm as one leg of a multi-hop route.",
+  };
+  if (knownPoolDiagnostics.length > 0) {
+    details.known_pool_diagnostics = knownPoolDiagnostics;
+  }
+  if (accountInfo !== null && !accountInfo.owner.equals(PUMP_AMM_PROGRAM_ID)) {
+    details.rejection_reason = "NOT_CANONICAL_POOL";
+  }
+  return structuredError("NO_PUMPSWAP_POOL", "No direct canonical PumpSwap pool was found for this token.", details);
+}
+
 function validateRequest(request) {
   if (request === null || typeof request !== "object" || Array.isArray(request)) {
     return structuredError("INVALID_REQUEST", "Quote request must be a JSON object.");
@@ -177,6 +201,17 @@ function validateRequest(request) {
     return structuredError("INVALID_POOL_CANDIDATES", "pool_candidates must be an array.");
   }
 
+  const knownPoolAddresses = [];
+  if (Array.isArray(request.known_amm_pool_addresses)) {
+    for (const [index, address] of request.known_amm_pool_addresses.entries()) {
+      const validated = validatePublicKey(address, `known_amm_pool_addresses[${index}]`);
+      if (!validated.ok) {
+        return validated;
+      }
+      knownPoolAddresses.push(validated.value);
+    }
+  }
+
   if (request.pool_candidates.length === 0) {
     if (request.discover_canonical_pool === true && discoverableCanonicalMint(request)) {
       return {
@@ -187,6 +222,7 @@ function validateRequest(request) {
           slippageBps: slippage.value,
           match: null,
           discoverCanonicalMint: discoverableCanonicalMint(request),
+          knownPoolAddresses,
         },
       };
     }
@@ -230,6 +266,7 @@ function validateRequest(request) {
       amountRaw: amount.value,
       slippageBps: slippage.value,
       match: matches[0],
+      knownPoolAddresses,
     },
   };
 }
@@ -253,15 +290,99 @@ function assertOnchainPoolMatchesCandidate(swapState, candidate) {
   return { ok: true };
 }
 
+async function inspectKnownPumpAmmPools({ request, sdk, knownPoolAddresses }) {
+  const diagnostics = [];
+  for (const [index, poolKey] of knownPoolAddresses.entries()) {
+    const item = {
+      candidate_index: index,
+      address: poolKey.toString(),
+      source: "known_amm_pool_addresses",
+    };
+    try {
+      const pool = await sdk.fetchPool(poolKey);
+      const candidate = {
+        address: poolKey.toString(),
+        name: "known-pump-amm-pool",
+        base_mint: pool.baseMint.toString(),
+        quote_mint: pool.quoteMint.toString(),
+        discovery_mode: "known_amm_pool_address",
+      };
+      const direction = directionForCandidate(request, candidate);
+      const includesInput = candidate.base_mint === request.input_mint || candidate.quote_mint === request.input_mint;
+      const includesOutput = candidate.base_mint === request.output_mint || candidate.quote_mint === request.output_mint;
+      const includesEitherRequestedMint = includesInput || includesOutput;
+      diagnostics.push({
+        ...item,
+        account_exists: true,
+        account_owner: PUMP_AMM_PROGRAM_ID.toString(),
+        decode_ok: true,
+        base_mint: candidate.base_mint,
+        quote_mint: candidate.quote_mint,
+        direction,
+        matches_requested_pair: direction !== null,
+        rejection_reason: direction
+          ? null
+          : includesEitherRequestedMint
+            ? "TOKEN_NOT_DIRECT_SOL_PAIR"
+            : "POOL_DOES_NOT_MATCH_REQUESTED_PAIR",
+      });
+      if (direction) {
+        return {
+          match: {
+            candidate,
+            index,
+            direction,
+          },
+          diagnostics,
+        };
+      }
+    } catch (err) {
+      diagnostics.push({
+        ...item,
+        account_exists: null,
+        decode_ok: false,
+        rejection_reason: "UNSUPPORTED_POOL_LAYOUT",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { match: null, diagnostics };
+}
+
 async function quotePumpSwap(validated) {
   const { request, amountRaw, slippageBps } = validated;
   const connection = new Connection(request.rpc_url);
   const sdk = new OnlinePumpAmmSdk(connection);
   let match = validated.match;
+  let knownPoolDiagnostics = [];
+
+  if (!match && Array.isArray(validated.knownPoolAddresses) && validated.knownPoolAddresses.length > 0) {
+    const knownPoolResult = await inspectKnownPumpAmmPools({
+      request,
+      sdk,
+      knownPoolAddresses: validated.knownPoolAddresses,
+    });
+    knownPoolDiagnostics = knownPoolResult.diagnostics;
+    if (knownPoolResult.match) {
+      match = knownPoolResult.match;
+    }
+  }
 
   if (!match && validated.discoverCanonicalMint) {
     const baseMint = new PublicKey(validated.discoverCanonicalMint);
     const poolKey = canonicalPumpPoolPda(baseMint);
+    const accountInfo = await connection.getAccountInfo(poolKey);
+    if (accountInfo === null || !accountInfo.owner.equals(PUMP_AMM_PROGRAM_ID)) {
+      return canonicalPoolNotFoundError({
+        mint: validated.discoverCanonicalMint,
+        poolKey,
+        accountInfo,
+        knownPoolDiagnostics,
+        message: accountInfo === null
+          ? "Canonical PumpSwap pool account does not exist."
+          : "Canonical PumpSwap pool account is not owned by the PumpSwap AMM program.",
+      });
+    }
     try {
       const pool = await sdk.fetchPool(poolKey);
       match = {
@@ -279,9 +400,11 @@ async function quotePumpSwap(validated) {
         }),
       };
     } catch (err) {
-      return structuredError("NO_PUMPSWAP_POOL", "No canonical PumpSwap pool was found for this token mint.", {
+      return canonicalPoolNotFoundError({
         mint: validated.discoverCanonicalMint,
-        discovery_mode: "canonical_pumpswap_pool",
+        poolKey,
+        accountInfo,
+        knownPoolDiagnostics,
         message: err instanceof Error ? err.message : String(err),
       });
     }
@@ -291,6 +414,7 @@ async function quotePumpSwap(validated) {
     return structuredError("NO_PUMPSWAP_POOL", "No PumpSwap pool matches the requested pair.", {
       input_mint: request.input_mint,
       output_mint: request.output_mint,
+      known_pool_diagnostics: knownPoolDiagnostics,
     });
   }
 

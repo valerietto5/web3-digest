@@ -453,6 +453,7 @@ def build_ui_html() -> str:
   let latestPortfolioReport = null;
   let latestPortfolioAccount = "";
   let latestSwapQuoteResponse = null;
+  let latestHolderConcentrationData = null;
   let latestPreparedSwap = null;
   let latestSwapPreflightResponse = null;
   let latestSwapBalanceRefreshDiagnostics = null;
@@ -2096,6 +2097,7 @@ function resetHolderConcentration(opts = {}) {
   const card = $("holderConcentrationCard");
   const box = $("holderConcentrationBox");
   holderConcentrationMint = null;
+  latestHolderConcentrationData = null;
   if (box) {
     box.className = "muted";
     box.textContent = "No holder concentration check yet.";
@@ -2112,10 +2114,85 @@ function formatHolderPct(value) {
   return n.toFixed(2) + "%";
 }
 
+function formatCompactUsd(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n >= 1_000_000_000) return "$" + (n / 1_000_000_000).toFixed(n >= 10_000_000_000 ? 0 : 1) + "B";
+  if (n >= 1_000_000) return "$" + (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + "M";
+  if (n >= 1_000) return "$" + (n / 1_000).toFixed(n >= 10_000 ? 0 : 1) + "K";
+  return fmtUsdCost(n);
+}
+
+function tokenMintMatchesMarketStatsSource(token, source) {
+  if (!token?.mint || !source) return false;
+  const sourceMint = source?.mint || source?.address || source?.token_mint || source?.tokenMint;
+  return !!sourceMint && String(sourceMint).toLowerCase() === String(token.mint).toLowerCase();
+}
+
+function tokenMarketStatsValues(source = {}) {
+  return {
+    liquidity: source?.liquidity_usd ?? source?.liquidity?.usd,
+    volume24h: source?.volume_24h ?? source?.volume_h24 ?? source?.volume?.h24,
+    fdv: source?.fdv ?? source?.fully_diluted_valuation,
+    marketCap: source?.market_cap ?? source?.marketCap
+  };
+}
+
+function mergeTokenMarketStats(sources = []) {
+  const merged = {};
+  for (const source of sources) {
+    const stats = tokenMarketStatsValues(source || {});
+    if (merged.liquidity == null && stats.liquidity != null) merged.liquidity = stats.liquidity;
+    if (merged.volume24h == null && stats.volume24h != null) merged.volume24h = stats.volume24h;
+    if (merged.fdv == null && stats.fdv != null) merged.fdv = stats.fdv;
+    if (merged.marketCap == null && stats.marketCap != null) merged.marketCap = stats.marketCap;
+  }
+  return merged;
+}
+
+function selectedTokenMarketStats() {
+  const token = selectedExternalTokenForHolderConcentration();
+  const externalTokens = Array.isArray(latestSwapQuoteResponse?.external_tokens)
+    ? latestSwapQuoteResponse.external_tokens
+    : [];
+  const pricingSourceDetail = latestSwapQuoteResponse?.inline_baseline?.pricing_source_detail || {};
+  const toTokenDetail = pricingSourceDetail?.to_token || {};
+  const fromTokenDetail = pricingSourceDetail?.from_token || {};
+  const matchedExternalToken = externalTokens.find((item) => tokenMintMatchesMarketStatsSource(token, item));
+  const singleExternalToken = externalTokens.length === 1 ? externalTokens[0] : null;
+  const matchedToToken = tokenMintMatchesMarketStatsSource(token, toTokenDetail) ? toTokenDetail : null;
+  const matchedFromToken = tokenMintMatchesMarketStatsSource(token, fromTokenDetail) ? fromTokenDetail : null;
+
+  return mergeTokenMarketStats([
+    matchedExternalToken,
+    !matchedExternalToken ? singleExternalToken : null,
+    matchedToToken,
+    matchedFromToken,
+    token
+  ]);
+}
+
+function renderTokenMarketStatsLine() {
+  const stats = selectedTokenMarketStats();
+  const bits = [];
+  const liquidity = formatCompactUsd(stats.liquidity);
+  const volume = formatCompactUsd(stats.volume24h);
+  const fdv = formatCompactUsd(stats.fdv);
+  const marketCap = formatCompactUsd(stats.marketCap);
+  if (liquidity) bits.push("Liquidity " + liquidity);
+  if (volume) bits.push("24h volume " + volume);
+  if (fdv) bits.push("FDV " + fdv);
+  if (marketCap) bits.push("Mkt cap " + marketCap);
+  return bits.length
+    ? `<div style="margin-top:6px;">${escapeHtml(bits.join(" · "))}</div>`
+    : "";
+}
+
 function renderHolderConcentration(data) {
   const card = $("holderConcentrationCard");
   const box = $("holderConcentrationBox");
   if (!card || !box) return;
+  latestHolderConcentrationData = data || null;
 
   const fallbackMint = selectedExternalTokenForHolderConcentration()?.mint || "";
   const fallbackBubblemaps = fallbackMint
@@ -2161,7 +2238,9 @@ function renderHolderConcentration(data) {
       : "Holder concentration unavailable right now.";
     box.className = "muted";
     box.innerHTML = `
-      <div style="font-weight:600;">${partial ? "Holder data partially available" : "Holder data unavailable"}</div>
+      <div style="font-weight:600;">Token stats & holder concentration</div>
+      ${renderTokenMarketStatsLine()}
+      <div style="margin-top:6px;">${partial ? "Holder data partially available" : "Holder data unavailable"}</div>
       ${partial ? `<div class="muted" style="margin-top:6px; font-size:12px;">Supply found; largest accounts unavailable.</div>` : ""}
       <div style="margin-top:6px;">${linkHtml}</div>
       <div class="muted" style="margin-top:6px; font-size:12px;">${escapeHtml(technicalMessage)}</div>
@@ -2178,15 +2257,15 @@ function renderHolderConcentration(data) {
   const top10 = formatHolderPct(summary.top_10_accounts_pct);
   const accountCount = Number(summary.number_of_accounts_used || summary.sampled_account_count);
   const accountCountText = Number.isFinite(accountCount) && accountCount > 0
-    ? " · " + String(accountCount) + " accounts sampled"
+    ? String(accountCount) + " accounts sampled"
     : "";
 
   box.className = "muted";
   box.innerHTML = `
-    <div style="font-weight:600; color:#e5eefb;">Holder concentration</div>
-    <div style="margin-top:6px;">Top visible token account: ${escapeHtml(topAccount)}</div>
-    <div>Top 5 visible token accounts: ${escapeHtml(top5)}</div>
-    <div>Top 10 holders: ${escapeHtml(top10)}${escapeHtml(accountCountText)}</div>
+    <div style="font-weight:600; color:#e5eefb;">Token stats & holder concentration</div>
+    ${renderTokenMarketStatsLine()}
+    <div style="margin-top:6px;">Top holder ${escapeHtml(topAccount)} · Top 5 ${escapeHtml(top5)} · Top 10 ${escapeHtml(top10)}</div>
+    ${accountCountText ? `<div>${escapeHtml(accountCountText)}</div>` : ""}
     <div class="muted" style="margin-top:6px; font-size:12px;">Based on visible token accounts from Solana RPC. Separate from route ranking.</div>
     <div style="margin-top:6px;">${linkHtml}</div>
     ${holderDiagnosticsHtml}
@@ -2205,6 +2284,7 @@ async function runHolderConcentration() {
   }
 
   holderConcentrationMint = token.mint;
+  latestHolderConcentrationData = null;
   card.style.display = "block";
   box.className = "muted";
   box.textContent = "Checking holder concentration...";
@@ -2278,6 +2358,7 @@ function renderSwapOptionCard(opt, opts = {}) {
     Number.isFinite(estimatedTotalSwapCostUsd)
       ? fmtUsdCost(estimatedTotalSwapCostUsd)
       : "n/a";
+  const routeReferenceDifference = routeReferenceDifferenceText(opt);
   
       const tradeCostAmount = Number(opt?.estimated_trade_execution_cost?.amount);
     const tradeCostUsd = Number(opt?.estimated_trade_execution_cost?.amount_usd);
@@ -2380,8 +2461,17 @@ function renderSwapOptionCard(opt, opts = {}) {
       <div class="muted" style="margin-top:4px;">
         <strong>Swap cost: ${escapeHtml(estimatedTotalSwapCostUsdText)}</strong>
       </div>
+      <div class="muted" style="margin-top:2px;">
+        ${escapeHtml(routeReferenceDifference || "Reference unavailable")}
+      </div>
+      <div class="muted" style="margin-top:2px;">
+        App fee: $0.00
+      </div>
       <details style="margin-top:6px;">
         <summary class="muted" style="cursor:pointer;">Show cost breakdown</summary>
+        <div class="muted" style="margin-top:6px;">
+          Swap cost is estimated as the value gap between the reference market price and the route’s expected output. It may reflect price impact, spread, route quality, quote movement, or reference-price uncertainty. It is not a separate Web3 Digest fee.
+        </div>
         <div class="muted" style="margin-top:6px;">
           Market gap estimate: ${escapeHtml(executionCostUsdText)}
         </div>
@@ -2543,6 +2633,23 @@ function routeVsBestOutputText(opt, bestOption) {
     ? "<0.01%"
     : "~" + Number(absPct).toFixed(2) + "%";
   return "Output vs best route: " + pctText + " " + direction;
+}
+
+function routeReferenceDifferenceText(opt) {
+  const gap = Number(opt?.estimated_trade_execution_cost?.amount);
+  const output = Number(opt?.estimated_output);
+  if (!Number.isFinite(gap) || !Number.isFinite(output)) return "";
+  const referenceOutput = output + gap;
+  if (!Number.isFinite(referenceOutput) || referenceOutput <= 0) return "";
+  const pct = (output - referenceOutput) / referenceOutput * 100;
+  if (!Number.isFinite(pct)) return "";
+  if (Math.abs(pct) < 0.0001) return "Matches reference";
+  const direction = pct >= 0 ? "above reference" : "below reference";
+  const absPct = Math.abs(pct);
+  const pctText = absPct < 0.01
+    ? "<0.01%"
+    : "~" + Number(absPct).toFixed(2) + "%";
+  return pctText + " " + direction;
 }
 
 function renderCompactAlternativeCard(opt, idx = 0, bestOption = null) {
@@ -3438,6 +3545,9 @@ async function previewSwap() {
 
   const quote = res.data || {};
   latestSwapQuoteResponse = quote;
+  if (latestHolderConcentrationData) {
+    renderHolderConcentration(latestHolderConcentrationData);
+  }
   renderSwapInlineBaseline(
     quote.inline_baseline,
     quote.inline_baseline_vs_recommended

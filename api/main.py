@@ -4487,6 +4487,22 @@ PUMPSWAP_DOCS_POOL_CANDIDATE = {
 }
 
 
+def _known_pumpswap_amm_pool_addresses_from_meta(*metas: dict | None) -> list[str]:
+    addresses: list[str] = []
+    for meta in metas:
+        if not isinstance(meta, dict):
+            continue
+        for candidate in (
+            meta.get("pair_address"),
+            (meta.get("pricing_source_detail") or {}).get("pair_address")
+            if isinstance(meta.get("pricing_source_detail"), dict)
+            else None,
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                addresses.append(candidate.strip())
+    return sorted(set(addresses))
+
+
 def _build_pumpswap_quote_payload(
     *,
     input_mint: str,
@@ -4495,6 +4511,7 @@ def _build_pumpswap_quote_payload(
     slippage_bps: int = 50,
     rpc_url: str | None = None,
     user_public_key: str | None = None,
+    known_amm_pool_addresses: list[str] | None = None,
 ) -> dict:
     mint_pair = {input_mint, output_mint}
     supported_pair = mint_pair == {PUMPSWAP_SOL_MINT, PUMPSWAP_DOCS_TOKEN_MINT}
@@ -4510,6 +4527,13 @@ def _build_pumpswap_quote_payload(
         "user_public_key": user_public_key,
         "pool_candidates": pool_candidates,
     }
+    known_addresses = [
+        str(address).strip()
+        for address in (known_amm_pool_addresses or [])
+        if str(address or "").strip()
+    ]
+    if known_addresses:
+        payload["known_amm_pool_addresses"] = sorted(set(known_addresses))
 
     if not supported_pair and is_sol_pair:
         payload["discover_canonical_pool"] = True
@@ -6745,6 +6769,7 @@ def swap_quote(
         slippage_bps=50,
         rpc_url=SOLANA_MAINNET_RPC_URL,
         user_public_key=user_public_key,
+        known_amm_pool_addresses=_known_pumpswap_amm_pool_addresses_from_meta(input_meta, output_meta),
     )
     pumpswap_result = _try_fetch_pumpswap_quote(pumpswap_payload)
     if pumpswap_result["ok"]:

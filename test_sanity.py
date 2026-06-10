@@ -24,6 +24,7 @@ from api.main import (
     _build_phantom_quote_payload,
     _build_phoenix_quote_payload,
     _build_pumpswap_quote_payload,
+    _known_pumpswap_amm_pool_addresses_from_meta,
     _fetch_meteora_dlmm_quote,
     _fetch_orca_whirlpool_quote,
     _fetch_phantom_quote,
@@ -2295,8 +2296,21 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn('title: "Best executable route"', html)
         self.assertIn("Direct route is also the current recommendation.", html)
         self.assertIn("Swap cost:", html)
+        self.assertIn("App fee: $0.00", html)
         self.assertNotIn("Estimated swap cost vs market:", html)
+        self.assertIn("function routeReferenceDifferenceText(opt)", html)
+        self.assertIn('const direction = pct >= 0 ? "above reference" : "below reference";', html)
+        self.assertIn('return pctText + " " + direction;', html)
+        self.assertIn('Matches reference', html)
+        self.assertIn('Reference unavailable', html)
+        self.assertIn(
+            "Swap cost is estimated as the value gap between the reference market price and the route’s expected output.",
+            html,
+        )
+        self.assertIn("It is not a separate Web3 Digest fee.", html)
         self.assertIn("Market gap estimate", html)
+        self.assertIn("Network cost", html)
+        self.assertIn("Route fee estimate", html)
         self.assertIn("const showCostSummary = !!opts.showCostSummary;", html)
         self.assertIn("isRecommendedCard || showCostSummary", html)
         self.assertIn("Output vs best route", html)
@@ -2314,7 +2328,6 @@ class TestSanity(unittest.TestCase):
         self.assertIn("lower", html)
         self.assertIn("higher", html)
         self.assertIn("Output comparison unavailable", html)
-        self.assertIn("Route fee estimate", html)
         self.assertNotIn("Execution cost: ${escapeHtml(executionCostUsdText)}", html)
         self.assertNotIn("Execution cost: ${escapeHtml(executionCostText)}", html)
         self.assertNotIn("Route shape:", html)
@@ -3101,10 +3114,13 @@ class TestSanity(unittest.TestCase):
         self.assertIn("function runHolderConcentration()", html)
         self.assertIn('fetchMaybeJson("/tokens/holder-concentration?" + qs({', html)
         self.assertIn("https://v2.bubblemaps.io/map?address=", html)
-        self.assertIn("Holder concentration", html)
-        self.assertIn("Top visible token account", html)
-        self.assertIn("Top 5 visible token accounts", html)
-        self.assertIn("Top 10 holders", html)
+        self.assertIn("Token stats & holder concentration", html)
+        self.assertNotIn('<div style="font-weight:600;">Holder concentration</div>', html)
+        self.assertNotIn('color:#e5eefb;">Holder concentration</div>', html)
+        self.assertIn("Top holder", html)
+        self.assertIn("Top 5", html)
+        self.assertIn("Top 10", html)
+        self.assertIn("accounts sampled", html)
         self.assertIn("number_of_accounts_used", html)
         self.assertIn("sampled_account_count", html)
         self.assertIn("Open Bubblemaps", html)
@@ -3114,6 +3130,35 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Holder data unavailable", html)
         self.assertIn("Holder data partially available", html)
         self.assertIn("partial_data_available", html)
+        self.assertIn("function renderTokenMarketStatsLine()", html)
+        self.assertIn("function selectedTokenMarketStats()", html)
+        self.assertIn("function formatCompactUsd(value)", html)
+        self.assertIn("function tokenMintMatchesMarketStatsSource(token, source)", html)
+        self.assertIn("function tokenMarketStatsValues(source = {})", html)
+        self.assertIn("function mergeTokenMarketStats(sources = [])", html)
+        self.assertIn("if (!Number.isFinite(n) || n <= 0) return \"\";", html)
+        self.assertIn("latestSwapQuoteResponse?.external_tokens", html)
+        self.assertIn("latestSwapQuoteResponse?.inline_baseline?.pricing_source_detail", html)
+        self.assertIn("pricingSourceDetail?.to_token", html)
+        self.assertIn("pricingSourceDetail?.from_token", html)
+        self.assertIn("externalTokens.length === 1 ? externalTokens[0] : null", html)
+        self.assertIn("matchedExternalToken", html)
+        self.assertIn("matchedToToken", html)
+        self.assertIn("matchedFromToken", html)
+        self.assertIn("liquidity: source?.liquidity_usd ?? source?.liquidity?.usd", html)
+        self.assertIn("Liquidity ", html)
+        self.assertIn("24h volume ", html)
+        self.assertIn("FDV ", html)
+        self.assertIn("Mkt cap ", html)
+        self.assertIn('return bits.length', html)
+        self.assertIn(': "";', html)
+        self.assertIn("liquidity_usd", html)
+        self.assertIn("volume_24h", html)
+        self.assertIn("marketCap", html)
+        self.assertIn("let latestHolderConcentrationData = null;", html)
+        self.assertIn("latestHolderConcentrationData = data || null;", html)
+        self.assertIn("if (latestHolderConcentrationData) {", html)
+        self.assertIn("renderHolderConcentration(latestHolderConcentrationData);", html)
         self.assertIn("Holder diagnostics", html)
         self.assertIn("holderDiagnosticsJson", html)
         self.assertIn("rpc_url_source", html)
@@ -4263,6 +4308,46 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(payload["discovery_mode"], "canonical_pumpswap_pool")
         self.assertNotIn("unsupported_pair", payload)
 
+    def test_build_pumpswap_quote_payload_includes_known_amm_pool_addresses_for_audit(self):
+        payload = _build_pumpswap_quote_payload(
+            input_mint=METEORA_DLMM_SOL_MINT,
+            output_mint="CvPrreLgpZ9tjjoyk8qAwiAFvuEXooU7wL25hanApump",
+            amount_raw=1000000000,
+            slippage_bps=50,
+            rpc_url="https://example.invalid",
+            user_public_key="EUaGMYfk7KFfCn8XPdRNVPNC4pvg3vyGYXovkyuWitUL",
+            known_amm_pool_addresses=[
+                "Gc5npgagnWZonKjkuRqMLMxyYbJzirRAw7fFn6jJnwe8",
+                "Gc5npgagnWZonKjkuRqMLMxyYbJzirRAw7fFn6jJnwe8",
+            ],
+        )
+
+        self.assertEqual(
+            payload["known_amm_pool_addresses"],
+            ["Gc5npgagnWZonKjkuRqMLMxyYbJzirRAw7fFn6jJnwe8"],
+        )
+        self.assertTrue(payload["discover_canonical_pool"])
+        self.assertEqual(payload["discovery_mode"], "canonical_pumpswap_pool")
+
+    def test_known_pumpswap_amm_pool_addresses_from_meta_reads_pair_address(self):
+        addresses = _known_pumpswap_amm_pool_addresses_from_meta(
+            {"pair_address": "Gc5npgagnWZonKjkuRqMLMxyYbJzirRAw7fFn6jJnwe8"},
+            {
+                "pricing_source_detail": {
+                    "pair_address": "AnotherPumpAmmPool11111111111111111111111"
+                }
+            },
+            None,
+        )
+
+        self.assertEqual(
+            addresses,
+            [
+                "AnotherPumpAmmPool11111111111111111111111",
+                "Gc5npgagnWZonKjkuRqMLMxyYbJzirRAw7fFn6jJnwe8",
+            ],
+        )
+
     def test_build_pumpswap_quote_payload_enables_new_meme_sol_pair_discovery(self):
         for mint in [
             "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
@@ -4356,6 +4441,31 @@ class TestSanity(unittest.TestCase):
             )
 
         self.assertEqual(result, helper_output)
+
+    def test_pumpswap_quote_helper_reports_canonical_pool_discovery_diagnostics(self):
+        source = Path("tools/pumpswap_quote_research.mjs").read_text()
+
+        self.assertIn("PUMP_AMM_PROGRAM_ID", source)
+        self.assertIn("function canonicalPoolNotFoundError", source)
+        self.assertIn("connection.getAccountInfo(poolKey)", source)
+        self.assertIn("candidate_pool_address", source)
+        self.assertIn("candidate_pool_addresses", source)
+        self.assertIn("account_exists", source)
+        self.assertIn("account_owner", source)
+        self.assertIn("expected_program_id", source)
+        self.assertIn("rejection_reason", source)
+        self.assertIn('"ACCOUNT_NOT_FOUND"', source)
+        self.assertIn('"NOT_CANONICAL_POOL"', source)
+        self.assertIn("direct SOL <-> pump-token canonical pool", source)
+        self.assertIn("No direct canonical PumpSwap pool was found for this token.", source)
+        self.assertIn("Jupiter may still route through Pump.fun Amm as one leg of a multi-hop route.", source)
+        self.assertIn("known_amm_pool_addresses", source)
+        self.assertIn("function inspectKnownPumpAmmPools", source)
+        self.assertIn('"known-pump-amm-pool"', source)
+        self.assertIn('"TOKEN_NOT_DIRECT_SOL_PAIR"', source)
+        self.assertIn('"POOL_DOES_NOT_MATCH_REQUESTED_PAIR"', source)
+        self.assertIn("matches_requested_pair", source)
+        self.assertIn("known_pool_diagnostics", source)
 
     def test_try_fetch_pumpswap_quote_handles_timeout(self):
         with patch("api.main.subprocess.run", side_effect=subprocess.TimeoutExpired("node", 20)):
