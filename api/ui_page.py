@@ -7,21 +7,102 @@ def build_ui_html() -> str:
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Web3 Digest — Swap Terminal</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; }
+    :root {
+      --bg-primary: #07111f;
+      --bg-surface: #0b1829;
+      --bg-elevated: #10233a;
+      --bg-card: #0d1d31;
+      --bg-card-soft: #132944;
+      --text-primary: #edf7ff;
+      --text-secondary: #b8c7d9;
+      --text-muted: #7f91aa;
+      --border-default: rgba(161, 190, 220, 0.18);
+      --border-strong: rgba(127, 255, 213, 0.36);
+      --accent-emerald: #34f5a3;
+      --accent-emerald-soft: rgba(52, 245, 163, 0.14);
+      --accent-purple: #9b7cff;
+      --accent-cyan: #63e6ff;
+      --semantic-success: #22c55e;
+      --semantic-warning: #f59e0b;
+      --semantic-danger: #f04438;
+      --radius-sm: 8px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --radius-xl: 20px;
+      --shadow-card: 0 18px 48px rgba(1, 9, 20, 0.32);
+      --shadow-glow: 0 0 0 1px rgba(52, 245, 163, 0.14), 0 0 28px rgba(52, 245, 163, 0.08);
+      --font-xs: 12px;
+      --font-sm: 13px;
+      --font-md: 15px;
+      --font-lg: 18px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(99, 230, 255, 0.12), transparent 34%),
+        radial-gradient(circle at 92% 8%, rgba(155, 124, 255, 0.13), transparent 30%),
+        linear-gradient(180deg, #07111f 0%, #081424 48%, #050b16 100%);
+      color: var(--text-primary);
+    }
+    h2, h3, h4 { color: var(--text-primary); letter-spacing: 0; }
+    a { color: var(--accent-cyan); }
     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
-    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin-top: 12px; }
-    .muted { color: #666; }
-    label { display: block; font-size: 12px; color: #333; margin-bottom: 4px; }
-    input, select { padding: 8px; border-radius: 8px; border: 1px solid #ccc; min-width: 220px; }
+    .card {
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      padding: 12px;
+      margin-top: 12px;
+      background: linear-gradient(180deg, rgba(16, 35, 58, 0.92), rgba(10, 24, 41, 0.92));
+      box-shadow: var(--shadow-card);
+    }
+    #swapCard {
+      border-color: rgba(99, 230, 255, 0.18);
+      background: linear-gradient(180deg, rgba(14, 31, 52, 0.96), rgba(8, 20, 36, 0.96));
+      box-shadow: var(--shadow-card), var(--shadow-glow);
+    }
+    .muted { color: var(--text-muted); }
+    label { display: block; font-size: var(--font-xs); color: var(--text-secondary); margin-bottom: 4px; }
+    input, select {
+      padding: 8px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-default);
+      min-width: 220px;
+      background: rgba(5, 14, 26, 0.82);
+      color: var(--text-primary);
+      outline: none;
+    }
+    input:focus, select:focus {
+      border-color: var(--border-strong);
+      box-shadow: 0 0 0 3px rgba(52, 245, 163, 0.11);
+    }
+    input::placeholder { color: var(--text-muted); }
     .swap-input-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; margin-top: 10px; }
     .swap-input-grid input { width: 100%; min-width: 0; box-sizing: border-box; }
-    .swap-token-card { border: 1px solid #ddd; border-radius: 10px; padding: 10px; background: #fafafa; }
+    .swap-token-card {
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      padding: 10px;
+      background: rgba(19, 41, 68, 0.72);
+    }
     .swap-token-card-main { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(120px, 1fr); gap: 10px; align-items: start; }
-    .swap-token-card input { background: #fff; }
+    .swap-token-card input { background: rgba(7, 17, 31, 0.86); }
     .swap-token-card .amount-side input { text-align: right; font-size: 18px; }
-    .swap-token-selector { display: flex; gap: 6px; align-items: center; border: 1px solid #ccc; border-radius: 8px; background: #fff; padding: 0 8px 0 0; }
+    .swap-token-selector {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      background: rgba(7, 17, 31, 0.86);
+      padding: 0 8px 0 0;
+    }
+    .swap-token-selector:hover { border-color: var(--border-strong); }
     .swap-token-selector input { border: 0; min-width: 0; flex: 1 1 auto; box-shadow: none; }
-    .swap-token-selector-arrow { color: #666; font-size: 12px; line-height: 1; flex: 0 0 auto; }
+    .swap-token-selector-arrow { color: var(--accent-purple); font-size: 12px; line-height: 1; flex: 0 0 auto; }
     .swap-amount-actions { display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end; }
     .swap-summary-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:6px; }
     .swap-summary-value { font-size:13px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -29,36 +110,78 @@ def build_ui_html() -> str:
     .route-flow.compact { padding-right:180px; font-size:14px; }
     .route-flow-row { display:flex; align-items:baseline; gap:6px; }
     .route-flow-symbol { font-weight:600; display:inline-block; min-width:12px; }
-    .route-flow-minus { color:#b42318; }
-    .route-flow-plus { color:#067647; }
+    .route-flow-minus { color: var(--semantic-danger); }
+    .route-flow-plus { color: var(--semantic-success); }
     @media (max-width: 760px) { .swap-token-card-main { grid-template-columns: 1fr; } }
     .token-preview { margin-top: 4px; font-size: 12px; line-height: 1.35; min-height: 18px; }
     @media (max-width: 760px) { .swap-input-grid { grid-template-columns: 1fr; } }
-    button { padding: 10px 12px; border-radius: 10px; border: 1px solid #333; background: #111; color: #fff; cursor: pointer; }
-    button.secondary { background: #fff; color: #111; border-color: #aaa; }
+    button {
+      padding: 10px 12px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(52, 245, 163, 0.35);
+      background: linear-gradient(180deg, #39f7a8, #21d98c);
+      color: #04111f;
+      cursor: pointer;
+      font-weight: 650;
+      box-shadow: 0 10px 28px rgba(52, 245, 163, 0.16);
+    }
+    button.secondary,
+    a.secondary {
+      background: rgba(155, 124, 255, 0.08);
+      color: var(--text-primary);
+      border-color: var(--border-default);
+      box-shadow: none;
+    }
+    button.secondary:hover,
+    a.secondary:hover {
+      border-color: rgba(155, 124, 255, 0.46);
+      background: rgba(155, 124, 255, 0.14);
+    }
+    #btnPreviewSwap {
+      background: linear-gradient(180deg, #4cffb3, var(--accent-emerald));
+      color: #031423;
+      border-color: rgba(52, 245, 163, 0.62);
+      box-shadow: 0 0 0 1px rgba(52, 245, 163, 0.18), 0 14px 34px rgba(52, 245, 163, 0.24);
+    }
     button:disabled { opacity: .6; cursor: not-allowed; }
     .token-resolve-use { padding: 3px 7px; border-radius: 7px; font-size: 11px; margin-left: 6px; vertical-align: middle; }
-    .token-resolve-use-added { background: #fff; color: #333; border-color: #ccc; }
+    .token-resolve-use-added { background: var(--accent-emerald-soft); color: var(--accent-emerald); border-color: var(--border-strong); }
     table { border-collapse: collapse; width: 100%; margin-top: 10px; }
-    th, td { border-bottom: 1px solid #eee; padding: 8px; text-align: left; font-size: 13px; }
-    th { background: #fafafa; position: sticky; top: 0; }
-    pre { background: #0b1020; color: #d6deeb; padding: 10px; border-radius: 10px; overflow: auto; }
-    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #ddd; }
-    .ok { background: #e8fff0; }
-    .warn { background: #fff4e5; }
-    .err { background: #ffecec; }
-    .modal-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.42); z-index: 50; }
+    th, td { border-bottom: 1px solid var(--border-default); padding: 8px; text-align: left; font-size: 13px; }
+    th { background: rgba(19, 41, 68, 0.94); color: var(--text-secondary); position: sticky; top: 0; }
+    pre {
+      background: rgba(3, 10, 20, 0.82);
+      color: #c7d7eb;
+      padding: 10px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(127, 145, 170, 0.14);
+      overflow: auto;
+    }
+    details > summary { color: var(--text-secondary); }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid var(--border-default);
+      background: rgba(99, 230, 255, 0.08);
+      color: var(--accent-cyan);
+    }
+    .ok { background: rgba(34, 197, 94, 0.14); color: #bff7d1; border-color: rgba(34, 197, 94, 0.26); }
+    .warn { background: rgba(245, 158, 11, 0.15); color: #ffd899; border-color: rgba(245, 158, 11, 0.28); }
+    .err { background: rgba(240, 68, 56, 0.14); color: #ffc7c2; border-color: rgba(240, 68, 56, 0.28); }
+    .modal-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.62); z-index: 50; }
     .modal-backdrop.is-open { display: flex; }
-    .modal-panel { width: min(480px, 100%); background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 14px; box-shadow: 0 16px 42px rgba(0,0,0,.18); }
+    .modal-panel { width: min(480px, 100%); background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow-card); }
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
-    .token-modal-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.42); z-index: 60; }
+    .token-modal-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.62); z-index: 60; }
     .token-modal-backdrop.is-open { display: flex; }
-    .token-modal { width: min(520px, 100%); max-height: min(720px, 92vh); overflow: auto; background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 14px; box-shadow: 0 16px 42px rgba(0,0,0,.18); }
+    .token-modal { width: min(520px, 100%); max-height: min(720px, 92vh); overflow: auto; background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow-card), var(--shadow-glow); }
     .token-modal-search { width: 100%; box-sizing: border-box; margin-top: 8px; }
     .token-modal-section { margin-top: 12px; }
-    .token-modal-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; text-align: left; margin-top: 6px; padding: 8px; border: 1px solid #eee; border-radius: 8px; background: #fff; color: #111; }
+    .token-modal-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; text-align: left; margin-top: 6px; padding: 8px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: rgba(11, 24, 41, 0.76); color: var(--text-primary); }
     .token-modal-row-main { font-weight: 600; }
-    .token-modal-row-sub { font-size: 12px; color: #666; margin-top: 2px; overflow-wrap: anywhere; }
+    .token-modal-row-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; overflow-wrap: anywhere; }
     .token-modal-action { padding: 6px 8px; border-radius: 8px; font-size: 12px; white-space: nowrap; }
   </style>
 </head>
@@ -343,7 +466,7 @@ def build_ui_html() -> str:
         <h3 id="swapSuccessModalTitle" style="margin:0 0 8px 0;">Swap submitted successfully</h3>
         <div id="swapSuccessModalBody" class="muted" style="line-height:1.45;"></div>
         <div class="modal-actions">
-          <a id="swapSuccessExplorerLink" class="secondary" href="#" target="_blank" style="display:none; padding:10px 12px; border-radius:10px; border:1px solid #aaa; color:#111; text-decoration:none;">Open in Solana Explorer</a>
+          <a id="swapSuccessExplorerLink" class="secondary" href="#" target="_blank" style="display:none; padding:10px 12px; border-radius:10px; text-decoration:none;">Open in Solana Explorer</a>
           <button id="btnCloseSwapSuccessModal" type="button" class="secondary">Close</button>
         </div>
       </div>

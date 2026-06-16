@@ -2280,8 +2280,8 @@ class TestSanity(unittest.TestCase):
         self.assertIn(".route-flow.compact { padding-right:180px; font-size:14px;", html)
         self.assertIn(".route-flow-row { display:flex; align-items:baseline; gap:6px; }", html)
         self.assertIn(".route-flow-symbol { font-weight:600; display:inline-block; min-width:12px; }", html)
-        self.assertIn(".route-flow-minus { color:#b42318; }", html)
-        self.assertIn(".route-flow-plus { color:#067647; }", html)
+        self.assertIn(".route-flow-minus { color: var(--semantic-danger); }", html)
+        self.assertIn(".route-flow-plus { color: var(--semantic-success); }", html)
         self.assertIn("function renderRouteFlowRows(opt, compact = false)", html)
         self.assertIn('<span class="route-flow-symbol route-flow-minus">−</span>', html)
         self.assertIn('<span class="route-flow-symbol route-flow-plus">+</span>', html)
@@ -2347,6 +2347,48 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Not executable here", html)
         self.assertIn("Alternative \" + (idx + 1)", html)
         self.assertIn("Show cost breakdown", html)
+
+    def test_swap_ui_has_option_ag_design_tokens_and_dark_shell(self):
+        html = build_ui_html()
+
+        for token in [
+            "--bg-primary",
+            "--bg-surface",
+            "--bg-elevated",
+            "--bg-card",
+            "--bg-card-soft",
+            "--text-primary",
+            "--text-secondary",
+            "--text-muted",
+            "--border-default",
+            "--border-strong",
+            "--accent-emerald",
+            "--accent-emerald-soft",
+            "--accent-purple",
+            "--accent-cyan",
+            "--semantic-success",
+            "--semantic-warning",
+            "--semantic-danger",
+            "--radius-sm",
+            "--radius-md",
+            "--radius-lg",
+            "--radius-xl",
+            "--shadow-card",
+            "--shadow-glow",
+        ]:
+            self.assertIn(token, html)
+
+        self.assertIn("background:", html)
+        self.assertIn("linear-gradient(180deg, #07111f 0%, #081424 48%, #050b16 100%)", html)
+        self.assertIn("#btnPreviewSwap", html)
+        self.assertIn("var(--accent-emerald)", html)
+        self.assertIn("button.secondary,", html)
+        self.assertIn("rgba(155, 124, 255, 0.08)", html)
+        self.assertIn("#swapCard", html)
+        self.assertIn("var(--shadow-glow)", html)
+        self.assertIn("pre {\n      background: rgba(3, 10, 20, 0.82);", html)
+        self.assertIn(".token-modal {", html)
+        self.assertIn("background: var(--bg-elevated);", html)
 
     def test_swap_ui_route_card_avoids_zero_usd_for_uncertain_nonzero_output(self):
         html = build_ui_html()
@@ -2575,7 +2617,10 @@ class TestSanity(unittest.TestCase):
         self.assertIn('id="btnSwapAmountMax"', sell_block)
         self.assertIn('id="swapFromTokenSelector"', sell_block)
         self.assertIn('class="swap-token-selector-arrow"', sell_block)
-        self.assertIn(".swap-token-selector { display: flex;", html)
+        self.assertIn(".swap-token-selector {", html)
+        self.assertIn("display: flex;", html)
+        self.assertIn("border: 1px solid var(--border-default);", html)
+        self.assertIn("background: rgba(7, 17, 31, 0.86);", html)
         self.assertIn(".swap-token-selector input { border: 0; min-width: 0; flex: 1 1 auto;", html)
         self.assertNotIn('id="btnSwapHoldings"', html)
         self.assertNotIn(">Holdings</button>", html)
