@@ -40,7 +40,7 @@ def build_ui_html() -> str:
     body {
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       margin: 0;
-      padding: 20px;
+      padding: 18px;
       min-height: 100vh;
       background:
         radial-gradient(circle at 18% 0%, rgba(99, 230, 255, 0.12), transparent 34%),
@@ -50,6 +50,59 @@ def build_ui_html() -> str:
     }
     h2, h3, h4 { color: var(--text-primary); letter-spacing: 0; }
     a { color: var(--accent-cyan); }
+    .app-shell {
+      width: min(100%, 980px);
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+    }
+    .app-header {
+      order: 1;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin: 2px 0 10px;
+    }
+    .app-title {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 9px;
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.12;
+    }
+    .brand-mark {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border: 1px solid rgba(52, 245, 163, 0.26);
+      border-radius: 999px;
+      background: rgba(52, 245, 163, 0.1);
+      color: var(--accent-emerald);
+      box-shadow: 0 0 0 1px rgba(52, 245, 163, 0.08), 0 0 22px rgba(52, 245, 163, 0.08);
+    }
+    .app-title-sub {
+      color: var(--text-secondary);
+      font-size: 20px;
+      font-weight: 650;
+    }
+    .app-confidence {
+      max-width: 600px;
+      margin-top: 7px;
+      color: var(--text-secondary);
+      font-size: var(--font-sm);
+      line-height: 1.4;
+    }
+    .shell-detail {
+      order: 3;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      background: rgba(11, 24, 41, 0.62);
+      box-shadow: none;
+    }
+    #advancedPortfolioTools { order: 4; }
     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
     .card {
       border: 1px solid var(--border-default);
@@ -60,9 +113,69 @@ def build_ui_html() -> str:
       box-shadow: var(--shadow-card);
     }
     #swapCard {
+      order: 2;
       border-color: rgba(99, 230, 255, 0.18);
-      background: linear-gradient(180deg, rgba(14, 31, 52, 0.96), rgba(8, 20, 36, 0.96));
+      padding: 14px;
+      margin-top: 0;
+      background:
+        linear-gradient(180deg, rgba(14, 31, 52, 0.98), rgba(8, 20, 36, 0.98));
       box-shadow: var(--shadow-card), var(--shadow-glow);
+    }
+    .swap-card-header {
+      display: none;
+    }
+    .swap-card-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 5px 0;
+      font-size: 18px;
+      line-height: 1.25;
+    }
+    .swap-card-subtitle {
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .swap-wallet-panel {
+      min-width: min(240px, 100%);
+      padding: 9px;
+      border: 1px solid rgba(161, 190, 220, 0.14);
+      border-radius: var(--radius-md);
+      background: rgba(5, 14, 26, 0.28);
+      text-align: right;
+    }
+    .swap-wallet-panel .row {
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+      margin-top: 0;
+    }
+    .swap-wallet-panel button {
+      min-height: 34px;
+      padding: 7px 9px;
+      font-size: 12px;
+    }
+    #swapWalletStrip {
+      margin-top: 6px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    #swapWalletConnectHint {
+      display: none;
+    }
+    #btnSwapRefreshBalances {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 8px;
+      min-height: 32px;
+      padding: 7px 10px;
+      font-size: 12px;
+      border-radius: 999px;
+      color: var(--text-secondary);
+      background: rgba(99, 230, 255, 0.06);
     }
     .muted { color: var(--text-muted); }
     label { display: block; font-size: var(--font-xs); color: var(--text-secondary); margin-bottom: 4px; }
@@ -80,31 +193,163 @@ def build_ui_html() -> str:
       box-shadow: 0 0 0 3px rgba(52, 245, 163, 0.11);
     }
     input::placeholder { color: var(--text-muted); }
-    .swap-input-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; margin-top: 10px; }
+    .swap-setup-panel {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid rgba(161, 190, 220, 0.1);
+      border-radius: var(--radius-xl);
+      background:
+        linear-gradient(180deg, rgba(5, 14, 26, 0.42), rgba(3, 10, 20, 0.26));
+    }
+    .swap-input-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: start; }
     .swap-input-grid input { width: 100%; min-width: 0; box-sizing: border-box; }
     .swap-token-card {
-      border: 1px solid var(--border-default);
-      border-radius: var(--radius-lg);
-      padding: 10px;
-      background: rgba(19, 41, 68, 0.72);
+      position: relative;
+      min-height: 164px;
+      border: 1px solid rgba(161, 190, 220, 0.14);
+      border-radius: 24px;
+      padding: 18px;
+      background:
+        linear-gradient(180deg, rgba(17, 34, 54, 0.96), rgba(8, 18, 32, 0.94));
+      box-shadow:
+        inset 0 1px 0 rgba(237, 247, 255, 0.04),
+        0 14px 32px rgba(1, 9, 20, 0.24);
     }
-    .swap-token-card-main { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(120px, 1fr); gap: 10px; align-items: start; }
-    .swap-token-card input { background: rgba(7, 17, 31, 0.86); }
-    .swap-token-card .amount-side input { text-align: right; font-size: 18px; }
+    .swap-token-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .swap-token-card-title {
+      color: var(--text-primary);
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.15;
+    }
+    .swap-token-card-main {
+      display: grid;
+      grid-template-columns: minmax(150px, 0.48fr) minmax(180px, 1fr);
+      gap: 18px;
+      align-items: center;
+    }
+    .token-side,
+    .amount-side {
+      min-width: 0;
+    }
+    .token-side {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 104px;
+    }
+    .amount-side {
+      text-align: right;
+    }
+    .swap-field-label {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .swap-token-card input { min-height: 42px; background: rgba(7, 17, 31, 0.86); }
+    .swap-token-card .amount-side input {
+      min-height: 54px;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      text-align: right;
+      font-size: 40px;
+      font-weight: 700;
+      line-height: 1.1;
+      box-shadow: none;
+    }
+    .swap-token-card .amount-side input:focus { box-shadow: none; }
     .swap-token-selector {
       display: flex;
       gap: 6px;
       align-items: center;
-      border: 1px solid var(--border-default);
-      border-radius: var(--radius-md);
-      background: rgba(7, 17, 31, 0.86);
-      padding: 0 8px 0 0;
+      width: fit-content;
+      max-width: 100%;
+      min-height: 54px;
+      border: 1px solid rgba(161, 190, 220, 0.14);
+      border-radius: 999px;
+      background: rgba(3, 10, 20, 0.52);
+      padding: 0 12px 0 6px;
+      box-shadow: inset 0 1px 0 rgba(237, 247, 255, 0.03);
     }
     .swap-token-selector:hover { border-color: var(--border-strong); }
-    .swap-token-selector input { border: 0; min-width: 0; flex: 1 1 auto; box-shadow: none; }
-    .swap-token-selector-arrow { color: var(--accent-purple); font-size: 12px; line-height: 1; flex: 0 0 auto; }
-    .swap-amount-actions { display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end; }
-    .swap-summary-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:6px; }
+    .swap-token-selector input {
+      width: 92px;
+      min-height: 48px;
+      border: 0;
+      min-width: 0;
+      flex: 0 1 92px;
+      box-shadow: none;
+      background: transparent;
+      font-size: 18px;
+      font-weight: 750;
+    }
+    .swap-token-selector-arrow { color: var(--accent-emerald); font-size: 12px; line-height: 1; flex: 0 0 auto; }
+    #swapToToken {
+      width: min(180px, 100%);
+      min-height: 48px;
+      border-radius: 999px;
+      background: rgba(3, 10, 20, 0.52);
+      font-size: 18px;
+      font-weight: 750;
+      box-shadow: inset 0 1px 0 rgba(237, 247, 255, 0.03);
+    }
+    #swapBuyEstimate {
+      min-height: 54px;
+      padding: 0;
+      color: var(--text-secondary);
+      font-size: 40px;
+      font-weight: 700;
+      line-height: 1.1;
+      text-align: right;
+    }
+    #swapBuyCard { margin-top: 8px; }
+    .swap-amount-actions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
+    .swap-amount-actions button {
+      min-height: 30px;
+      padding: 6px 10px;
+      font-size: 11px;
+      border-radius: 999px;
+    }
+    .swap-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      margin-top: 10px;
+      align-items: center;
+    }
+    .swap-actions button {
+      min-height: 44px;
+    }
+    #btnClearSwap {
+      color: var(--text-secondary);
+      background: rgba(161, 190, 220, 0.06);
+    }
+    #swapInlineBaselineRow {
+      margin-top: 10px;
+      background: rgba(7, 17, 31, 0.54);
+      box-shadow: none;
+    }
+    .swap-summary-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px; }
+    .swap-summary-item {
+      padding: 8px;
+      border: 1px solid rgba(161, 190, 220, 0.11);
+      border-radius: var(--radius-md);
+      background: rgba(11, 24, 41, 0.56);
+    }
     .swap-summary-value { font-size:13px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .route-flow { margin-top:8px; padding-right:220px; font-size:15px; line-height:1.35; }
     .route-flow.compact { padding-right:180px; font-size:14px; }
@@ -112,9 +357,14 @@ def build_ui_html() -> str:
     .route-flow-symbol { font-weight:600; display:inline-block; min-width:12px; }
     .route-flow-minus { color: var(--semantic-danger); }
     .route-flow-plus { color: var(--semantic-success); }
-    @media (max-width: 760px) { .swap-token-card-main { grid-template-columns: 1fr; } }
-    .token-preview { margin-top: 4px; font-size: 12px; line-height: 1.35; min-height: 18px; }
-    @media (max-width: 760px) { .swap-input-grid { grid-template-columns: 1fr; } }
+    .token-preview { margin-top: 6px; font-size: 12px; line-height: 1.35; min-height: 18px; }
+    .token-side .token-preview {
+      color: var(--text-secondary);
+      overflow-wrap: anywhere;
+    }
+    .amount-side .token-preview {
+      color: var(--text-muted);
+    }
     button {
       padding: 10px 12px;
       border-radius: var(--radius-md);
@@ -142,6 +392,47 @@ def build_ui_html() -> str:
       color: #031423;
       border-color: rgba(52, 245, 163, 0.62);
       box-shadow: 0 0 0 1px rgba(52, 245, 163, 0.18), 0 14px 34px rgba(52, 245, 163, 0.24);
+    }
+    @media (max-width: 760px) {
+      body { padding: 12px; }
+      .app-header {
+        display: block;
+      }
+      .app-title { font-size: 21px; }
+      .app-title-sub { font-size: 18px; }
+      .app-confidence { font-size: 12px; }
+      .swap-wallet-panel {
+        margin-top: 10px;
+        text-align: left;
+      }
+      .swap-wallet-panel .row { justify-content: flex-start; }
+      .swap-token-card {
+        min-height: 152px;
+        padding: 16px;
+      }
+      .swap-token-card-title { font-size: 17px; }
+      .swap-token-card-main {
+        grid-template-columns: minmax(112px, 0.48fr) minmax(0, 1fr);
+        gap: 10px;
+      }
+      .swap-token-selector input {
+        width: 76px;
+        flex-basis: 76px;
+        font-size: 16px;
+      }
+      .token-side { min-height: 92px; }
+      #swapToToken {
+        width: min(148px, 100%);
+        font-size: 16px;
+      }
+      .swap-actions { grid-template-columns: 1fr; }
+      .swap-actions button { width: 100%; }
+      .swap-token-card .amount-side input,
+      #swapBuyEstimate {
+        text-align: right;
+        font-size: 30px;
+      }
+      input, select { min-width: 0; }
     }
     button:disabled { opacity: .6; cursor: not-allowed; }
     .token-resolve-use { padding: 3px 7px; border-radius: 7px; font-size: 11px; margin-left: 6px; vertical-align: middle; }
@@ -186,10 +477,23 @@ def build_ui_html() -> str:
   </style>
 </head>
 <body>
-  <h2>Web3 Digest — Swap Terminal</h2>
-  <div class="muted">Compare live Solana swap routes, then approve safely in Phantom.</div>
+  <main class="app-shell">
+  <header class="app-header">
+    <div>
+      <h2 class="app-title"><span class="brand-mark">Web3 Digest</span><span class="app-title-sub">Swap Terminal</span></h2>
+      <div class="app-confidence">Compare Solana swap routes, understand costs, and approve safely through Phantom.</div>
+    </div>
+    <div class="swap-wallet-panel">
+      <div class="row" id="swapWalletControls">
+        <button id="btnSwapConnectPhantom" type="button" class="secondary">Connect Phantom</button>
+        <button id="btnSwapDisconnectPhantom" type="button" class="secondary" style="display:none;">Disconnect</button>
+      </div>
+      <div class="muted" id="swapWalletStrip">Connected: not connected</div>
+      <div class="muted" id="swapWalletConnectHint">Connect Phantom to prepare and approve swaps.</div>
+    </div>
+  </header>
 
-  <details id="advancedDeveloperTools" class="card" style="margin-top:12px;">
+  <details id="advancedDeveloperTools" class="card shell-detail" style="margin-top:12px;">
     <summary class="muted" style="cursor:pointer;">Advanced / Developer tools</summary>
 
   <div class="card">
@@ -316,39 +620,40 @@ def build_ui_html() -> str:
 
 
   <div class="card" id="swapCard">
-    <h3 style="margin: 0 0 6px 0;">Swap <span class="pill warn">SOLANA-FIRST</span></h3>
-    <div class="muted">Compare live swap routes and approve safely in Phantom.</div>
-    <div class="muted" id="swapWalletStrip" style="margin-top:6px; font-size:12px;">Wallet-aware swap input: connect Phantom and load balances.</div>
-    <div class="row" id="swapWalletControls" style="margin-top:8px; align-items:center;">
-      <button id="btnSwapConnectPhantom" type="button" class="secondary">Connect Phantom</button>
-      <button id="btnSwapDisconnectPhantom" type="button" class="secondary" style="display:none;">Disconnect</button>
-      <div class="muted" id="swapWalletConnectHint" style="font-size:12px;">Connect Phantom to prepare and approve swaps.</div>
+    <div class="swap-card-header">
+      <div>
+        <h3 class="swap-card-title">Swap <span class="pill warn">SOLANA-FIRST</span></h3>
+        <div class="swap-card-subtitle">Wallet-aware route preview</div>
+      </div>
     </div>
     <div class="muted" id="swapBalanceFreshnessHint" style="display:none; margin-top:6px; font-size:12px;"></div>
-    <button id="btnSwapRefreshBalances" type="button" class="secondary" style="display:none; margin-top:6px; padding:6px 8px;">Refresh balances</button>
+    <button id="btnSwapRefreshBalances" type="button" class="secondary">Refresh balances</button>
     <details class="card" id="swapBalanceRefreshDebugWrap" style="display:none; margin-top:8px; font-size:12px;">
       <summary class="muted" style="cursor:pointer; font-weight:600;">Balance refresh diagnostics</summary>
       <pre id="swapBalanceRefreshDebug" style="margin-top:8px;">No balance refresh yet.</pre>
     </details>
 
+    <div class="swap-setup-panel">
     <div class="swap-input-grid">
       <div class="swap-token-card" id="swapSellCard">
-        <div class="muted" style="font-weight:600; margin-bottom:8px;">You sell</div>
+        <div class="swap-token-card-header">
+          <div class="swap-token-card-title">You sell</div>
+        </div>
         <div class="swap-token-card-main">
           <div class="token-side">
-            <label>Token</label>
+            <label class="swap-field-label" for="swapFromToken">Token</label>
             <div class="swap-token-selector" id="swapFromTokenSelector" title="Choose from wallet holdings or type a token mint">
               <input id="swapFromToken" list="swapTokenChoices" value="SOL" placeholder="SOL or token mint" autocomplete="off" />
               <span class="swap-token-selector-arrow" aria-hidden="true">▼</span>
             </div>
             <div id="swapHoldingsDropdown" class="card" style="display:none; margin-top:6px; max-height:180px; overflow:auto; font-size:12px;"></div>
             <div class="muted token-preview" id="swapFromTokenPreview"></div>
+            <div class="muted token-preview" id="swapFromBalanceHint">Available: load wallet balances.</div>
           </div>
           <div class="amount-side">
-            <label>Amount</label>
+            <label class="swap-field-label" for="swapAmount">Amount</label>
             <input id="swapAmount" placeholder="0.0" />
             <div class="muted token-preview" id="swapSellValueEstimate" style="text-align:right;">USD estimate: —</div>
-            <div class="muted token-preview" id="swapFromBalanceHint">Available: load wallet balances.</div>
             <div class="swap-amount-actions">
               <button id="btnSwapAmountHalf" type="button" class="secondary" disabled style="padding:6px 8px;">50%</button>
               <button id="btnSwapAmountMax" type="button" class="secondary" disabled style="padding:6px 8px;">MAX</button>
@@ -359,16 +664,18 @@ def build_ui_html() -> str:
       </div>
 
       <div class="swap-token-card" id="swapBuyCard">
-        <div class="muted" style="font-weight:600; margin-bottom:8px;">You buy</div>
+        <div class="swap-token-card-header">
+          <div class="swap-token-card-title">You buy</div>
+        </div>
         <div class="swap-token-card-main">
           <div class="token-side">
-            <label>Token</label>
+            <label class="swap-field-label" for="swapToToken">Token</label>
             <input id="swapToToken" list="swapTokenChoices" value="USDC" placeholder="USDC or token mint" autocomplete="off" />
             <div class="muted token-preview" id="swapToTokenPreview"></div>
           </div>
           <div class="amount-side">
-            <label>Estimated receive</label>
-            <div id="swapBuyEstimate" class="muted" style="text-align:right; font-size:18px; padding:8px 0;">Preview quote</div>
+            <label class="swap-field-label" for="swapBuyEstimate">Estimated receive</label>
+            <div id="swapBuyEstimate" class="muted">Preview quote</div>
             <div class="muted token-preview" id="swapBuyValueEstimate" style="text-align:right;">Estimated receive after preview.</div>
           </div>
         </div>
@@ -379,7 +686,7 @@ def build_ui_html() -> str:
       <option value="USDC">USDC - USD Coin</option>
     </datalist>
 
-    <div class="row" style="margin-top: 10px;">
+    <div class="swap-actions">
       <button id="btnPreviewSwap" type="button" class="secondary">Preview Quote</button>
       <button id="btnClearSwap" class="secondary">Clear</button>
     </div>
@@ -388,27 +695,28 @@ def build_ui_html() -> str:
       <div id="holderConcentrationBox" class="muted">No holder concentration check yet.</div>
     </div>
 
-    <div class="card" id="swapInlineBaselineRow" style="margin-top: 10px;">
+    <div class="card" id="swapInlineBaselineRow">
       <h4 style="margin: 0 0 8px 0;">Swap summary</h4>
       <div class="swap-summary-grid">
-        <div>
+        <div class="swap-summary-item">
           <div class="muted" style="font-size:12px;">You sell</div>
           <div id="swapSpendValueHint" class="swap-summary-value">—</div>
         </div>
-        <div>
+        <div class="swap-summary-item">
           <div class="muted" style="font-size:12px;">Market reference</div>
           <div id="swapBaselineDeltaHint" class="swap-summary-value">—</div>
         </div>
-        <div>
+        <div class="swap-summary-item">
           <div class="muted" style="font-size:12px;">Best executable quote</div>
           <div id="swapIdealOutputHint" class="swap-summary-value">Preview Quote</div>
         </div>
-        <div>
+        <div class="swap-summary-item">
           <div class="muted" style="font-size:12px;">Route difference vs reference</div>
           <div id="swapMarketCompareHint" class="swap-summary-value">—</div>
         </div>
       </div>
       <div class="muted" id="swapBaselineNote" style="margin-top:8px; font-size:12px; opacity:0.78;">Reference pricing is used only to compare route quality — not an executable route.</div>
+    </div>
     </div>
 
     <div class="card" id="swapQuoteCard" style="margin-top:10px;">
@@ -485,7 +793,7 @@ def build_ui_html() -> str:
 
     </div>
 
-  <details id="advancedPortfolioTools" class="card" style="margin-top:12px;">
+  <details id="advancedPortfolioTools" class="card shell-detail" style="margin-top:12px;">
     <summary class="muted" style="cursor:pointer;">Advanced / Portfolio and debug tools</summary>
 
     <div class="card" id="summaryCard">
@@ -540,6 +848,7 @@ def build_ui_html() -> str:
   </div>
 
   </details>
+  </main>
 
 <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
 <script>
@@ -682,7 +991,7 @@ function renderSwapBalanceFreshnessHint(holding=null) {
 
   hint.textContent = "";
   hint.style.display = "none";
-  if (button) button.style.display = "none";
+  if (button) button.style.display = "inline-flex";
 }
 
 function portfolioBalanceRows() {
@@ -850,11 +1159,9 @@ function renderSwapWalletStrip() {
   const box = $("swapWalletStrip");
   if (!box) return;
 
-  const wallet = phantomPubkey ? "Wallet: " + shortenMiddle(phantomPubkey, 6, 6) : "Wallet: not connected";
-  const account = latestPortfolioAccount ? "Saved profile: " + latestPortfolioAccount : "Saved profile: not loaded";
-  const held = swapWalletAssetLabels(4);
-  const assets = held.length ? "Assets: " + held.join(" / ") : "Assets: load balances";
-  box.textContent = wallet + " · " + account + " · " + assets;
+  box.textContent = phantomPubkey
+    ? "Connected: " + shortenMiddle(phantomPubkey, 6, 6)
+    : "Connected: not connected";
 }
 
 function renderSwapWalletControls() {
