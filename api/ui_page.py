@@ -220,7 +220,7 @@ def build_ui_html() -> str:
       justify-content: space-between;
       align-items: baseline;
       gap: 10px;
-      margin-bottom: 16px;
+      margin-bottom: 10px;
     }
     .swap-token-card-title {
       color: var(--text-primary);
@@ -232,7 +232,7 @@ def build_ui_html() -> str:
       display: grid;
       grid-template-columns: minmax(150px, 0.48fr) minmax(180px, 1fr);
       gap: 18px;
-      align-items: center;
+      align-items: start;
     }
     .token-side,
     .amount-side {
@@ -241,8 +241,10 @@ def build_ui_html() -> str:
     .token-side {
       display: flex;
       flex-direction: column;
-      justify-content: center;
-      min-height: 104px;
+      justify-content: flex-start;
+      min-height: 84px;
+      padding-top: 0;
+      margin-top: 3px;
     }
     .amount-side {
       text-align: right;
@@ -274,38 +276,80 @@ def build_ui_html() -> str:
     .swap-token-card .amount-side input:focus { box-shadow: none; }
     .swap-token-selector {
       display: flex;
-      gap: 6px;
+      gap: 3px;
       align-items: center;
       width: fit-content;
       max-width: 100%;
-      min-height: 54px;
+      min-height: 50px;
       border: 1px solid rgba(161, 190, 220, 0.14);
       border-radius: 999px;
       background: rgba(3, 10, 20, 0.52);
-      padding: 0 12px 0 6px;
+      padding: 0 10px 0 10px;
       box-shadow: inset 0 1px 0 rgba(237, 247, 255, 0.03);
     }
     .swap-token-selector:hover { border-color: var(--border-strong); }
     .swap-token-selector input {
-      width: 92px;
-      min-height: 48px;
+      width: 68px;
+      min-height: 46px;
       border: 0;
       min-width: 0;
-      flex: 0 1 92px;
+      flex: 0 1 68px;
       box-shadow: none;
       background: transparent;
       font-size: 18px;
       font-weight: 750;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
+    .token-pill-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 29px;
+      height: 29px;
+      border: 1px solid rgba(237, 247, 255, 0.14);
+      border-radius: 999px;
+      background-color: rgba(11, 24, 41, 0.9);
+      background-position: center;
+      background-repeat: no-repeat;
+      background-size: cover;
+      color: var(--text-primary);
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1;
+      overflow: hidden;
+      flex: 0 0 auto;
+    }
+    .token-pill-icon.has-image { color: transparent; }
+    .token-pill-icon-sol {
+      background:
+        linear-gradient(135deg, #14f195 0%, #80ecff 45%, #9945ff 100%);
+      color: #031423;
+    }
+    .token-pill-icon-usdc {
+      background: linear-gradient(135deg, #2775ca 0%, #63e6ff 100%);
+      color: #ffffff;
+    }
+    .token-pill-icon-fallback {
+      background: linear-gradient(135deg, rgba(155, 124, 255, 0.82), rgba(99, 230, 255, 0.72));
+      color: #031423;
+    }
+    .token-pill-arrow,
     .swap-token-selector-arrow { color: var(--accent-emerald); font-size: 12px; line-height: 1; flex: 0 0 auto; }
     #swapToToken {
-      width: min(180px, 100%);
-      min-height: 48px;
-      border-radius: 999px;
-      background: rgba(3, 10, 20, 0.52);
+      width: 68px;
+      min-height: 46px;
+      border: 0;
+      min-width: 0;
+      flex: 0 1 68px;
+      background: transparent;
       font-size: 18px;
       font-weight: 750;
-      box-shadow: inset 0 1px 0 rgba(237, 247, 255, 0.03);
+      box-shadow: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     #swapBuyEstimate {
       min-height: 54px;
@@ -316,7 +360,37 @@ def build_ui_html() -> str:
       line-height: 1.1;
       text-align: right;
     }
-    #swapBuyCard { margin-top: 8px; }
+    .swap-direction-row {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      justify-content: center;
+      height: 0;
+      pointer-events: none;
+    }
+    .swap-direction-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 38px;
+      height: 38px;
+      margin-top: -19px;
+      padding: 0;
+      border: 1px solid rgba(99, 230, 255, 0.22);
+      border-radius: 999px;
+      background: linear-gradient(180deg, rgba(16, 35, 58, 0.98), rgba(7, 17, 31, 0.96));
+      color: var(--accent-cyan);
+      font-size: 21px;
+      font-weight: 800;
+      box-shadow: 0 10px 24px rgba(1, 9, 20, 0.34), 0 0 0 5px rgba(3, 10, 20, 0.72);
+      cursor: pointer;
+      pointer-events: auto;
+    }
+    .swap-direction-button:hover {
+      border-color: rgba(52, 245, 163, 0.34);
+      color: var(--accent-emerald);
+    }
+    #swapBuyCard { margin-top: 10px; }
     .swap-amount-actions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
     .swap-amount-actions button {
       min-height: 30px;
@@ -416,13 +490,17 @@ def build_ui_html() -> str:
         gap: 10px;
       }
       .swap-token-selector input {
-        width: 76px;
-        flex-basis: 76px;
+        width: 62px;
+        flex-basis: 62px;
         font-size: 16px;
       }
-      .token-side { min-height: 92px; }
+      .token-side {
+        min-height: 82px;
+        padding-top: 0;
+      }
       #swapToToken {
-        width: min(148px, 100%);
+        width: 62px;
+        flex-basis: 62px;
         font-size: 16px;
       }
       .swap-actions { grid-template-columns: 1fr; }
@@ -644,7 +722,8 @@ def build_ui_html() -> str:
             <label class="swap-field-label" for="swapFromToken">Token</label>
             <div class="swap-token-selector" id="swapFromTokenSelector" title="Choose from wallet holdings or type a token mint">
               <input id="swapFromToken" list="swapTokenChoices" value="SOL" placeholder="SOL or token mint" autocomplete="off" />
-              <span class="swap-token-selector-arrow" aria-hidden="true">▼</span>
+              <span class="token-pill-icon token-pill-icon-sol" id="swapFromTokenIcon" aria-hidden="true">SOL</span>
+              <span class="token-pill-arrow swap-token-selector-arrow" aria-hidden="true">▼</span>
             </div>
             <div id="swapHoldingsDropdown" class="card" style="display:none; margin-top:6px; max-height:180px; overflow:auto; font-size:12px;"></div>
             <div class="muted token-preview" id="swapFromTokenPreview"></div>
@@ -663,6 +742,10 @@ def build_ui_html() -> str:
         </div>
       </div>
 
+      <div class="swap-direction-row">
+        <button id="btnSwapDirection" class="swap-direction-button" type="button" aria-label="Swap sell and buy tokens">⇅</button>
+      </div>
+
       <div class="swap-token-card" id="swapBuyCard">
         <div class="swap-token-card-header">
           <div class="swap-token-card-title">You buy</div>
@@ -670,7 +753,11 @@ def build_ui_html() -> str:
         <div class="swap-token-card-main">
           <div class="token-side">
             <label class="swap-field-label" for="swapToToken">Token</label>
-            <input id="swapToToken" list="swapTokenChoices" value="USDC" placeholder="USDC or token mint" autocomplete="off" />
+            <div class="swap-token-selector" id="swapToTokenSelector" title="Choose a token to receive or type a token mint">
+              <input id="swapToToken" list="swapTokenChoices" value="USDC" placeholder="USDC or token mint" autocomplete="off" />
+              <span class="token-pill-icon token-pill-icon-usdc" id="swapToTokenIcon" aria-hidden="true">USDC</span>
+              <span class="token-pill-arrow swap-token-selector-arrow" aria-hidden="true">▼</span>
+            </div>
             <div class="muted token-preview" id="swapToTokenPreview"></div>
           </div>
           <div class="amount-side">
@@ -5062,6 +5149,7 @@ function qs(params) {
       delete input.dataset.selectedMint;
       delete input.dataset.selectedSymbol;
     }
+    renderSwapTokenPillIcon(side);
   }
 
   function selectedFromRecognizedToken() {
@@ -5097,6 +5185,161 @@ function qs(params) {
     renderSwapTokenChoices();
     if (!$("swapFromToken").value) $("swapFromToken").value = "SOL";
     if (!$("swapToToken").value) $("swapToToken").value = "USDC";
+    renderSwapTokenPillIcons();
+  }
+
+  function tokenLogoUri(token) {
+    return String(
+      token?.logo_uri ||
+      token?.logoURI ||
+      token?.icon_uri ||
+      token?.iconUrl ||
+      token?.image ||
+      token?.image_url ||
+      ""
+    ).trim();
+  }
+
+  function safeTokenLogoUri(value) {
+    const uri = String(value || "").trim();
+    if (!uri) return "";
+    const lower = uri.toLowerCase();
+    return lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("data:image/")
+      ? uri
+      : "";
+  }
+
+  function tokenDisplaySymbolForSide(side) {
+    const input = $(side === "from" ? "swapFromToken" : "swapToToken");
+    return String(input?.dataset?.selectedSymbol || input?.value || "").trim();
+  }
+
+  function tokenForPillIcon(side) {
+    const input = $(side === "from" ? "swapFromToken" : "swapToToken");
+    const value = normalizeSwapAssetKey(input?.value);
+    const selectedMint = normalizeSwapAssetKey(input?.dataset?.selectedMint);
+    const resolved = swapTokenResolveState[side];
+    const resolvedMint = normalizeSwapAssetKey(resolved?.mint);
+    const recognizedMint = normalizeSwapAssetKey(swapSelectedRecognizedTokenMint[side]);
+    const candidates = [
+      resolved,
+      ...swapTokenList,
+      ...Object.values(swapRecognizedTokenMap)
+    ].filter(Boolean);
+
+    return candidates.find((token) => {
+      const symbol = normalizeSwapAssetKey(token?.symbol);
+      const displayName = normalizeSwapAssetKey(token?.display_name || token?.name);
+      const mint = normalizeSwapAssetKey(token?.mint);
+      const asset = normalizeSwapAssetKey(token?.asset_key || token?.asset);
+      return (
+        (value && (value === symbol || value === displayName || value === mint || value === asset)) ||
+        (selectedMint && selectedMint === mint) ||
+        (resolvedMint && resolvedMint === mint) ||
+        (recognizedMint && recognizedMint === mint)
+      );
+    }) || null;
+  }
+
+  function renderSwapTokenPillIcon(side) {
+    const icon = $(side === "from" ? "swapFromTokenIcon" : "swapToTokenIcon");
+    if (!icon) return;
+
+    const token = tokenForPillIcon(side);
+    const rawSymbol = token?.symbol || tokenDisplaySymbolForSide(side) || (side === "from" ? "SOL" : "USDC");
+    const symbol = normalizeSwapAssetKey(rawSymbol).replace(/^SPL:/, "") || "?";
+    const logoUri = safeTokenLogoUri(tokenLogoUri(token));
+    const initials = symbol.slice(0, symbol.length >= 4 ? 4 : 3);
+
+    icon.className = "token-pill-icon";
+    icon.style.backgroundImage = "";
+    icon.textContent = initials;
+
+    if (logoUri) {
+      icon.classList.add("has-image");
+      icon.style.backgroundImage = "url(" + JSON.stringify(logoUri) + ")";
+      return;
+    }
+
+    if (symbol === "SOL") {
+      icon.classList.add("token-pill-icon-sol");
+      icon.textContent = "SOL";
+      return;
+    }
+    if (symbol === "USDC") {
+      icon.classList.add("token-pill-icon-usdc");
+      icon.textContent = "$";
+      return;
+    }
+    icon.classList.add("token-pill-icon-fallback");
+  }
+
+  function renderSwapTokenPillIcons() {
+    renderSwapTokenPillIcon("from");
+    renderSwapTokenPillIcon("to");
+  }
+
+  function selectedTokenDataset(side) {
+    const input = $(side === "from" ? "swapFromToken" : "swapToToken");
+    return {
+      mint: String(input?.dataset?.selectedMint || ""),
+      symbol: String(input?.dataset?.selectedSymbol || "")
+    };
+  }
+
+  function applySelectedTokenDataset(side, data) {
+    const input = $(side === "from" ? "swapFromToken" : "swapToToken");
+    if (!input) return;
+    if (data?.mint) input.dataset.selectedMint = data.mint;
+    else delete input.dataset.selectedMint;
+    if (data?.symbol) input.dataset.selectedSymbol = data.symbol;
+    else delete input.dataset.selectedSymbol;
+  }
+
+  function parseSwapReceiveAmountText(value) {
+    const text = String(value || "").trim();
+    if (!text || text === "—" || /preview quote/i.test(text) || text.includes("$")) return null;
+    const match = text.match(/~?[ \t]*([0-9][0-9,]*(?:[.][0-9]+)?|[.][0-9]+)/);
+    if (!match) return null;
+    const amountText = match[1].replace(/,/g, "");
+    const amount = Number(amountText);
+    return Number.isFinite(amount) && amount > 0 ? amountText : null;
+  }
+
+  function currentSwapReceiveAmountText() {
+    return parseSwapReceiveAmountText($("swapBuyEstimate")?.textContent);
+  }
+
+  function swapSellBuyTokens() {
+    const fromInput = $("swapFromToken");
+    const toInput = $("swapToToken");
+    if (!fromInput || !toInput) return;
+
+    const fromValue = fromInput.value;
+    const toValue = toInput.value;
+    const amountInput = $("swapAmount");
+    const currentAmount = amountInput?.value || "";
+    const receiveAmount = currentSwapReceiveAmountText();
+    const fromDataset = selectedTokenDataset("from");
+    const toDataset = selectedTokenDataset("to");
+    const fromSelectedMint = swapSelectedRecognizedTokenMint.from;
+    const toSelectedMint = swapSelectedRecognizedTokenMint.to;
+
+    fromInput.value = toValue;
+    toInput.value = fromValue;
+    applySelectedTokenDataset("from", toDataset);
+    applySelectedTokenDataset("to", fromDataset);
+    swapSelectedRecognizedTokenMint.from = toSelectedMint;
+    swapSelectedRecognizedTokenMint.to = fromSelectedMint;
+
+    resetSwapStateForTokenChange({ clearAmount: false });
+    if (amountInput) amountInput.value = receiveAmount || currentAmount;
+    resolveSwapTokenInput("from");
+    resolveSwapTokenInput("to");
+    renderSwapFromBalance();
+    renderSwapHoldingsDropdown();
+    renderSwapTokenPillIcons();
+    updateLiveSwapBaseline();
   }
 
   function tokenSourceLabel(token) {
@@ -5122,6 +5365,7 @@ function qs(params) {
     if (!token) {
       box.textContent = message || "";
       swapTokenResolveState[side] = null;
+      renderSwapTokenPillIcon(side);
       if (side === "from") renderSwapFromBalance();
       if (holderConcentrationMint) resetHolderConcentration();
       return;
@@ -5152,6 +5396,7 @@ function qs(params) {
 
     const previousExternalMint = selectedExternalTokenForHolderConcentration()?.mint || null;
     swapTokenResolveState[side] = token;
+    renderSwapTokenPillIcon(side);
     if (side === "from") renderSwapFromBalance();
     const nextExternalMint = selectedExternalTokenForHolderConcentration()?.mint || null;
     if (holderConcentrationMint && previousExternalMint !== nextExternalMint) {
@@ -5764,7 +6009,9 @@ function fmtUsdCost(x) {
   });
   $("btnSwapAmountHalf").addEventListener("click", () => setSwapAmountFromHolding(0.5));
   $("btnSwapAmountMax").addEventListener("click", () => setSwapAmountFromHolding(1));
+  $("btnSwapDirection").addEventListener("click", swapSellBuyTokens);
   $("swapFromTokenSelector").addEventListener("click", () => openSwapTokenModal("from"));
+  $("swapToTokenSelector").addEventListener("click", () => openSwapTokenModal("to"));
   $("swapToToken").addEventListener("click", () => openSwapTokenModal("to"));
   $("swapTokenModalSearch").addEventListener("input", (event) => {
     tokenSearchQuery = String(event.target?.value || "");
@@ -5796,6 +6043,7 @@ function fmtUsdCost(x) {
     resetSwapStateForTokenChange({ clearAmount: true });
     resolveSwapTokenInput("from");
     renderSwapFromBalance();
+    renderSwapTokenPillIcon("from");
   });
   $("swapCard").addEventListener("click", handleSwapExecuteClick);
   $("swapCard").addEventListener("click", (event) => {
@@ -5814,11 +6062,13 @@ function fmtUsdCost(x) {
     resetSwapStateForTokenChange({ clearAmount: true });
     resetResolvedSwapTokenSelection("from");
     renderSwapFromBalance();
+    renderSwapTokenPillIcon("from");
     scheduleSwapTokenResolve("from");
   });
   $("swapToToken").addEventListener("input", () => {
     resetSwapStateForTokenChange({ clearAmount: false });
     resetResolvedSwapTokenSelection("to");
+    renderSwapTokenPillIcon("to");
     scheduleSwapTokenResolve("to");
   });
   $("swapFromToken").addEventListener("change", () => {
@@ -5826,10 +6076,12 @@ function fmtUsdCost(x) {
     resolveSwapTokenInput("from");
     updateLiveSwapBaseline();
     renderSwapFromBalance();
+    renderSwapTokenPillIcon("from");
   });
   $("swapToToken").addEventListener("change", () => {
     resetSwapStateForTokenChange({ clearAmount: false });
     resolveSwapTokenInput("to");
+    renderSwapTokenPillIcon("to");
     updateLiveSwapBaseline();
   });
 
