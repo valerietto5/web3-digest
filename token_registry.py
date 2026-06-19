@@ -15,6 +15,7 @@ class TokenMeta(TypedDict, total=False):
     display_name: str   # UI display name
     mint: str           # Solana mint address used by quote APIs
     decimals: int       # SPL/native token decimals
+    logo_uri: str       # optional token logo/image URL
     coingecko_id: str   # CoinGecko "id" for /simple/price, e.g. "usd-coin"
     dexscreener: bool
     dexscreener_chain_id: str
@@ -33,6 +34,8 @@ POPCAT_MINT = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr"
 CHAD_MINT = "8i93CHmhcqtCWMvaAdiTngwbQMQRKFW6g2ojnyhUpump"
 SPX6900_MINT = "J3NKxxXZcnNiMjKw9hYb2K4LUxgwB6t1FtPtQVsv3KFr"
 DOCS_PUMP_MINT = "7LSsEoJGhLeZzGvDofTdNg7M3JttxQqGWNLo6vWMpump"
+SOL_LOGO_URI = "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png"
+USDC_LOGO_URI = "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png"
 
 NATIVE_TOKENS: Dict[str, TokenMeta] = {
     "SOL": {
@@ -42,6 +45,7 @@ NATIVE_TOKENS: Dict[str, TokenMeta] = {
         "display_name": "Solana",
         "mint": SOL_MINT,
         "decimals": 9,
+        "logo_uri": SOL_LOGO_URI,
         "coingecko_id": "solana",
         "dexscreener_chain_id": "solana",
         "tags": ["native", "blue_chip"],
@@ -74,6 +78,7 @@ TOKENS: Dict[str, TokenMeta] = {
         "display_name": "USD Coin",
         "mint": USDC_MINT,
         "decimals": 6,
+        "logo_uri": USDC_LOGO_URI,
         "coingecko_id": "usd-coin",
         "dexscreener_chain_id": "solana",
         "tags": ["stablecoin"],

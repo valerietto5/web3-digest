@@ -34,6 +34,7 @@ def _public_token(meta: dict[str, Any], *, source: str) -> dict[str, Any]:
         "logo_uri": meta.get("logo_uri") or meta.get("image") or meta.get("image_url"),
         "verified": bool(meta.get("verified")),
         "default_enabled": bool(meta.get("default_enabled")),
+        "dexscreener": bool(meta.get("dexscreener")),
         "tags": meta.get("tags") or [],
         "coingecko_id": meta.get("coingecko_id"),
         "dexscreener_chain_id": meta.get("dexscreener_chain_id"),
@@ -233,6 +234,47 @@ def _with_decimals_lookup(token: dict[str, Any]) -> dict[str, Any]:
         warnings.append("decimals_unresolved")
     token["warnings"] = warnings
     return token
+
+
+def maybe_enrich_token_logo_uri_from_dexscreener(token: dict[str, Any]) -> dict[str, Any]:
+    """
+    Fail-soft metadata enrichment for registry tokens that explicitly opt into
+    DexScreener metadata. This never changes token identity or quote metadata.
+    """
+    if not isinstance(token, dict):
+        return token
+
+    out = dict(token)
+    if out.get("source") != "registry":
+        return out
+    if out.get("logo_uri"):
+        return out
+    if not out.get("dexscreener"):
+        return out
+    if (out.get("dexscreener_chain_id") or "solana") != "solana":
+        return out
+
+    mint = (out.get("mint") or "").strip()
+    if not _is_probable_solana_mint(mint):
+        return out
+
+    try:
+        external = fetch_dexscreener_token_metadata(mint)
+    except Exception:
+        return out
+
+    if external.get("ok") is not True:
+        return out
+
+    external_token = external.get("token")
+    if not isinstance(external_token, dict):
+        return out
+
+    logo_uri = external_token.get("logo_uri")
+    if logo_uri:
+        out["logo_uri"] = logo_uri
+        out["logo_source"] = "dexscreener"
+    return out
 
 
 def _unresolved_mint_response(mint: str, *, code: str = "TOKEN_METADATA_LOOKUP_NOT_IMPLEMENTED") -> dict[str, Any]:

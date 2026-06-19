@@ -56,6 +56,7 @@ from api.main import (
     _fetch_solana_simulate_transaction,
     _decode_solana_transaction_diagnostics,
     _build_swap_setup_cost_estimate,
+    _external_token_response_meta,
     _fetch_jupiter_swap_transaction,
     _fetch_orca_whirlpool_swap_transaction,
     _fetch_raydium_swap_transaction,
@@ -79,7 +80,7 @@ from api.main import (
     wallet_activity,
 )
 from api.ui_page import build_ui_html
-from providers.token_resolver import resolve_token
+from providers.token_resolver import maybe_enrich_token_logo_uri_from_dexscreener, resolve_token
 from providers.solana_token_metadata import fetch_solana_mint_decimals
 from providers.helius_activity import fetch_wallet_activity
 from providers.token_holder_concentration import (
@@ -99,6 +100,7 @@ from tools.token_promotion_audit import (
     standard_pairs_for_mint,
     visible_live_surfaces as token_promotion_visible_live_surfaces,
 )
+from token_registry import NATIVE_TOKENS, SOL_LOGO_URI, TOKENS, USDC_LOGO_URI, USDC_MINT
 from run_balances_to_db import (
     apply_requested_zero_balances,
     normalize_solana_requested_asset,
@@ -258,7 +260,18 @@ class TestSanity(unittest.TestCase):
                 self.assertEqual(result["token"]["decimals"], 6)
                 fetch_external.assert_not_called()
 
-        endpoint = token_resolve(query="spl:" + figure_mint_upper_variant, allow_external=True)
+        with patch(
+            "providers.token_resolver.fetch_dexscreener_token_metadata",
+            return_value={
+                "ok": True,
+                "token": {
+                    "source": "dexscreener",
+                    "mint": figure_mint,
+                    "logo_uri": None,
+                },
+            },
+        ):
+            endpoint = token_resolve(query="spl:" + figure_mint_upper_variant, allow_external=True)
         self.assertTrue(endpoint["ok"])
         self.assertTrue(endpoint["can_quote"])
         self.assertEqual(endpoint["token"]["symbol"], "FIGURE")
@@ -313,6 +326,96 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("decimals_unresolved", result["token"]["warnings"])
         fetch_decimals.assert_called_once_with(snp500_mint)
         self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
+    def test_registry_token_logo_enrichment_uses_dexscreener_image_without_changing_source(self):
+        snp500_mint = "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
+        token = {
+            "source": "registry",
+            "symbol": "SNP500",
+            "mint": snp500_mint,
+            "logo_uri": None,
+            "dexscreener": True,
+            "dexscreener_chain_id": "solana",
+        }
+        with patch(
+            "providers.token_resolver.fetch_dexscreener_token_metadata",
+            return_value={
+                "ok": True,
+                "token": {
+                    "source": "dexscreener",
+                    "mint": snp500_mint,
+                    "logo_uri": "https://example.invalid/snp500.png",
+                },
+            },
+        ) as fetch_external:
+            result = maybe_enrich_token_logo_uri_from_dexscreener(token)
+
+        self.assertEqual(result["source"], "registry")
+        self.assertEqual(result["symbol"], "SNP500")
+        self.assertEqual(result["logo_uri"], "https://example.invalid/snp500.png")
+        self.assertEqual(result["logo_source"], "dexscreener")
+        fetch_external.assert_called_once_with(snp500_mint)
+
+    def test_registry_token_logo_enrichment_keeps_null_when_dexscreener_has_no_image(self):
+        snp500_mint = "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
+        token = {
+            "source": "registry",
+            "symbol": "SNP500",
+            "mint": snp500_mint,
+            "logo_uri": None,
+            "dexscreener": True,
+            "dexscreener_chain_id": "solana",
+        }
+        with patch(
+            "providers.token_resolver.fetch_dexscreener_token_metadata",
+            return_value={
+                "ok": True,
+                "token": {
+                    "source": "dexscreener",
+                    "mint": snp500_mint,
+                    "logo_uri": None,
+                },
+            },
+        ):
+            result = maybe_enrich_token_logo_uri_from_dexscreener(token)
+
+        self.assertEqual(result["source"], "registry")
+        self.assertIsNone(result["logo_uri"])
+        self.assertNotIn("logo_source", result)
+
+    def test_registry_token_logo_enrichment_is_fail_soft_on_dexscreener_error(self):
+        snp500_mint = "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
+        token = {
+            "source": "registry",
+            "symbol": "SNP500",
+            "mint": snp500_mint,
+            "logo_uri": None,
+            "dexscreener": True,
+            "dexscreener_chain_id": "solana",
+        }
+        with patch(
+            "providers.token_resolver.fetch_dexscreener_token_metadata",
+            return_value={
+                "ok": False,
+                "error": {
+                    "code": "EXTERNAL_TOKEN_LOOKUP_FAILED",
+                    "message": "timeout",
+                },
+            },
+        ):
+            result = maybe_enrich_token_logo_uri_from_dexscreener(token)
+
+        self.assertEqual(result["source"], "registry")
+        self.assertIsNone(result["logo_uri"])
+
+    def test_quote_token_resolution_does_not_enrich_registry_logo_metadata(self):
+        with patch("providers.token_resolver.fetch_dexscreener_token_metadata") as fetch_external:
+            result = _resolve_swap_token_for_quote("FIGURE")
+
+        self.assertEqual(result["source"], "registry")
+        self.assertEqual(result["symbol"], "FIGURE")
+        self.assertNotIn("logo_source", result)
+        fetch_external.assert_not_called()
 
     def test_token_resolver_rejects_empty_query(self):
         result = resolve_token("  ")
@@ -461,6 +564,10 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["error"]["provider"], "dexscreener")
         self.assertEqual(result["error"]["failures"][0]["error"], "timeout")
 
+    def test_core_registry_tokens_include_curated_logo_uri(self):
+        self.assertEqual(NATIVE_TOKENS["SOL"]["logo_uri"], SOL_LOGO_URI)
+        self.assertEqual(TOKENS[USDC_MINT]["logo_uri"], USDC_LOGO_URI)
+
     def test_token_resolve_endpoint_returns_expected_shape(self):
         result = token_resolve(query="USDC", allow_external=True)
 
@@ -470,18 +577,124 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(result["token"]["symbol"], "USDC")
         self.assertEqual(result["token"]["mint"], "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
         self.assertEqual(result["token"]["decimals"], 6)
+        self.assertEqual(result["token"]["logo_uri"], USDC_LOGO_URI)
+
+    def test_token_resolve_endpoint_returns_curated_sol_logo_uri(self):
+        result = token_resolve(query="SOL", allow_external=True)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["can_quote"])
+        self.assertEqual(result["token"]["symbol"], "SOL")
+        self.assertEqual(result["token"]["logo_uri"], SOL_LOGO_URI)
+
+    def test_token_resolve_endpoint_preserves_logo_uri_from_resolver(self):
+        mint = "11111111111111111111111111111112"
+        with patch(
+            "api.main.resolve_token",
+            return_value={
+                "ok": True,
+                "token": {
+                    "source": "dexscreener",
+                    "symbol": "EXT",
+                    "name": "External Token",
+                    "display_name": "External Token",
+                    "mint": mint,
+                    "decimals": 6,
+                    "logo_uri": "https://example.invalid/logo.png",
+                },
+            },
+        ):
+            result = token_resolve(query=mint, allow_external=True)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["can_quote"])
+        self.assertEqual(result["token"]["logo_uri"], "https://example.invalid/logo.png")
+
+    def test_token_resolve_endpoint_preserves_registry_logo_uri_when_present(self):
+        mint = "11111111111111111111111111111112"
+        with (
+            patch(
+                "api.main.resolve_token",
+                return_value={
+                    "ok": True,
+                    "token": {
+                        "source": "registry",
+                        "symbol": "LOGO",
+                        "name": "Logo Token",
+                        "display_name": "Logo Token",
+                        "mint": mint,
+                        "decimals": 6,
+                        "logo_uri": "https://example.invalid/registry-logo.png",
+                    },
+                },
+            ),
+            patch("api.main.maybe_enrich_token_logo_uri_from_dexscreener") as enrich_logo,
+        ):
+            enrich_logo.side_effect = lambda token: token
+            result = token_resolve(query="LOGO", allow_external=True)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["can_quote"])
+        self.assertEqual(result["token"]["source"], "registry")
+        self.assertEqual(result["token"]["logo_uri"], "https://example.invalid/registry-logo.png")
+        enrich_logo.assert_called_once()
+
+    def test_token_resolve_endpoint_enriches_registry_logo_uri_from_dexscreener(self):
+        snp500_mint = "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
+        with (
+            patch(
+                "providers.token_resolver.fetch_solana_mint_decimals",
+                return_value={
+                    "ok": True,
+                    "decimals": 6,
+                    "source": "solana_rpc_mint_account",
+                    "mint": snp500_mint,
+                },
+            ),
+            patch(
+                "providers.token_resolver.fetch_dexscreener_token_metadata",
+                return_value={
+                    "ok": True,
+                    "token": {
+                        "source": "dexscreener",
+                        "mint": snp500_mint,
+                        "logo_uri": "https://example.invalid/snp500.png",
+                    },
+                },
+            ) as fetch_external,
+        ):
+            result = token_resolve(query=snp500_mint, allow_external=True)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["can_quote"])
+        self.assertEqual(result["token"]["source"], "registry")
+        self.assertEqual(result["token"]["logo_uri"], "https://example.invalid/snp500.png")
+        self.assertEqual(result["token"]["logo_source"], "dexscreener")
+        fetch_external.assert_called_once_with(snp500_mint)
 
     def test_token_resolve_endpoint_marks_unresolved_decimals_not_quote_safe(self):
         snp500_mint = "3yr17ZEE6wvCG7e3qD51XsfeSoSSKuCKptVissoopump"
-        with patch(
-            "providers.token_resolver.fetch_solana_mint_decimals",
-            return_value={
-                "ok": False,
-                "error": {
-                    "code": "TOKEN_DECIMALS_NOT_FOUND",
-                    "message": "missing decimals",
+        with (
+            patch(
+                "providers.token_resolver.fetch_solana_mint_decimals",
+                return_value={
+                    "ok": False,
+                    "error": {
+                        "code": "TOKEN_DECIMALS_NOT_FOUND",
+                        "message": "missing decimals",
+                    },
                 },
-            },
+            ),
+            patch(
+                "providers.token_resolver.fetch_dexscreener_token_metadata",
+                return_value={
+                    "ok": False,
+                    "error": {
+                        "code": "TOKEN_METADATA_NOT_FOUND",
+                        "message": "not found",
+                    },
+                },
+            ),
         ):
             result = token_resolve(query=snp500_mint, allow_external=True)
 
@@ -2045,7 +2258,9 @@ class TestSanity(unittest.TestCase):
 
         by_symbol = {token["symbol"]: token for token in response["tokens"]}
         self.assertEqual(by_symbol["SOL"]["decimals"], 9)
+        self.assertEqual(by_symbol["SOL"]["logo_uri"], SOL_LOGO_URI)
         self.assertEqual(by_symbol["USDC"]["decimals"], 6)
+        self.assertEqual(by_symbol["USDC"]["logo_uri"], USDC_LOGO_URI)
         self.assertEqual(by_symbol["BONK"]["mint"], "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263")
         self.assertEqual(by_symbol["BONK"]["display_name"], "Bonk")
         self.assertTrue(by_symbol["BONK"]["default_enabled"])
@@ -2073,6 +2288,44 @@ class TestSanity(unittest.TestCase):
         self.assertEqual(by_symbol["FIGURE"]["display_name"], "Action Figure")
         self.assertFalse(by_symbol["FIGURE"]["verified"])
         self.assertNotIn("USDT", by_symbol)
+
+    def test_swap_tokens_preserves_registry_logo_uri_when_present(self):
+        with patch.dict(
+            TOKEN_META,
+            {
+                "LOGO": {
+                    "asset": "logo",
+                    "symbol": "LOGO",
+                    "display_name": "Logo Token",
+                    "mint": "Logo111111111111111111111111111111111111",
+                    "decimals": 6,
+                    "logo_uri": "https://example.invalid/logo-token.png",
+                    "verified": True,
+                    "default_enabled": True,
+                    "tags": ["test"],
+                },
+            },
+        ):
+            response = swap_tokens()
+
+        by_symbol = {token["symbol"]: token for token in response["tokens"]}
+        self.assertEqual(by_symbol["LOGO"]["logo_uri"], "https://example.invalid/logo-token.png")
+
+    def test_external_token_response_meta_preserves_logo_uri(self):
+        meta = _external_token_response_meta(
+            "to",
+            {
+                "external": True,
+                "symbol": "EXT",
+                "display_name": "External Token",
+                "mint": "Ext1111111111111111111111111111111111111",
+                "decimals": 6,
+                "logo_uri": "https://example.invalid/ext.png",
+                "resolver_source": "dexscreener",
+            },
+        )
+
+        self.assertEqual(meta["logo_uri"], "https://example.invalid/ext.png")
 
     def test_portfolio_report_includes_explicitly_requested_unpriced_balance(self):
         import portfolio as portfolio_module
@@ -2635,6 +2888,7 @@ class TestSanity(unittest.TestCase):
         sell_end = html.index('id="swapBuyCard"', sell_start)
         sell_block = html[sell_start:sell_end]
         self.assertIn('id="swapFromToken"', sell_block)
+        self.assertNotIn('token-symbol-compact', sell_block)
         self.assertIn('id="swapFromTokenIcon"', sell_block)
         self.assertIn('id="swapAmount"', sell_block)
         self.assertIn('id="swapFromBalanceHint"', sell_block)
@@ -2647,6 +2901,7 @@ class TestSanity(unittest.TestCase):
         buy_block = html[buy_start:buy_end]
         self.assertIn('id="swapToTokenSelector"', buy_block)
         self.assertIn('id="swapToToken"', buy_block)
+        self.assertNotIn('token-symbol-compact', buy_block)
         self.assertIn('id="swapToTokenIcon"', buy_block)
         self.assertIn('class="token-pill-arrow swap-token-selector-arrow"', buy_block)
         self.assertIn(".swap-token-selector {", html)
@@ -2654,7 +2909,18 @@ class TestSanity(unittest.TestCase):
         self.assertIn("border-radius: 999px;", html)
         self.assertIn("background: rgba(3, 10, 20, 0.52);", html)
         self.assertIn("flex: 0 1 68px;", html)
+        self.assertIn(".swap-token-selector.is-long-symbol input", html)
+        self.assertIn("input.token-symbol-compact", html)
+        self.assertIn("#swapToToken.token-symbol-compact", html)
+        self.assertIn("function applyTokenSymbolFit(side, symbol)", html)
+        self.assertIn("const isLongSymbol = normalized.length >= 5;", html)
+        self.assertIn('input?.classList.toggle("token-symbol-compact", isLongSymbol);', html)
+        self.assertIn('selector?.classList.toggle("is-long-symbol", isLongSymbol);', html)
+        self.assertIn('selector.dataset.longSymbol = isLongSymbol ? "true" : "false";', html)
         self.assertIn("function renderSwapTokenPillIcons()", html)
+        self.assertIn("logo_uri: token.logo_uri || token.logoURI || token.icon_uri || token.iconUrl || token.image || token.image_url || \"\"", html)
+        self.assertIn("token?.logo_uri ||", html)
+        self.assertIn("icon.classList.add(\"token-pill-icon-fallback\");", html)
         self.assertIn("function parseSwapReceiveAmountText(value)", html)
         self.assertIn('text === "—"', html)
         self.assertIn("/preview quote/i.test(text)", html)

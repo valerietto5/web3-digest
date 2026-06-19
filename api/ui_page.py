@@ -302,6 +302,14 @@ def build_ui_html() -> str:
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .swap-token-selector.is-long-symbol input,
+    .swap-token-selector input.token-symbol-compact {
+      font-size: 15px;
+      font-weight: 760;
+      letter-spacing: 0;
+      width: 74px;
+      flex-basis: 74px;
+    }
     .token-pill-icon {
       display: inline-flex;
       align-items: center;
@@ -350,6 +358,14 @@ def build_ui_html() -> str:
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    #swapToToken.token-symbol-compact,
+    .swap-token-selector.is-long-symbol #swapToToken {
+      width: 74px;
+      flex-basis: 74px;
+      font-size: 15px;
+      font-weight: 760;
+      letter-spacing: 0;
     }
     #swapBuyEstimate {
       min-height: 54px;
@@ -4983,7 +4999,7 @@ function qs(params) {
       mint: String(registryToken?.mint || mint).trim(),
       asset_key: assetKey,
       decimals,
-      logo_uri: token.logo_uri || "",
+      logo_uri: token.logo_uri || token.logoURI || token.icon_uri || token.iconUrl || token.image || token.image_url || "",
       source: token.source || token.resolver_source || "external_resolver",
       decimals_source: token.decimals_source || "",
       verified: Boolean(token.verified),
@@ -5214,6 +5230,16 @@ function qs(params) {
     return String(input?.dataset?.selectedSymbol || input?.value || "").trim();
   }
 
+  function applyTokenSymbolFit(side, symbol) {
+    const input = $(side === "from" ? "swapFromToken" : "swapToToken");
+    const selector = $(side === "from" ? "swapFromTokenSelector" : "swapToTokenSelector");
+    const normalized = normalizeSwapAssetKey(symbol).replace(/^SPL:/, "");
+    const isLongSymbol = normalized.length >= 5;
+    input?.classList.toggle("token-symbol-compact", isLongSymbol);
+    selector?.classList.toggle("is-long-symbol", isLongSymbol);
+    if (selector) selector.dataset.longSymbol = isLongSymbol ? "true" : "false";
+  }
+
   function tokenForPillIcon(side) {
     const input = $(side === "from" ? "swapFromToken" : "swapToToken");
     const value = normalizeSwapAssetKey(input?.value);
@@ -5251,6 +5277,7 @@ function qs(params) {
     const logoUri = safeTokenLogoUri(tokenLogoUri(token));
     const initials = symbol.slice(0, symbol.length >= 4 ? 4 : 3);
 
+    applyTokenSymbolFit(side, symbol);
     icon.className = "token-pill-icon";
     icon.style.backgroundImage = "";
     icon.textContent = initials;

@@ -32,7 +32,7 @@ from providers.token_holder_concentration import (
     fetch_token_holder_concentration,
     get_holder_concentration_rpc_config_status,
 )
-from providers.token_resolver import resolve_token
+from providers.token_resolver import maybe_enrich_token_logo_uri_from_dexscreener, resolve_token
 from token_registry import default_swap_token_meta_by_symbol, get_token_meta_by_symbol, mint_to_asset_key, TOKENS
 
 app = FastAPI(title="Web3 Digest API", version="0.1.0")
@@ -141,6 +141,7 @@ def _external_token_response_meta(side: str, meta: dict) -> dict | None:
         "display_name": meta.get("display_name") or meta.get("name") or meta.get("symbol"),
         "mint": meta.get("mint"),
         "decimals": meta.get("decimals"),
+        "logo_uri": meta.get("logo_uri"),
         "source": meta.get("resolver_source") or meta.get("source"),
         "verified": bool(meta.get("verified")),
         "warnings": meta.get("warnings") or [],
@@ -750,6 +751,7 @@ def _public_swap_token_meta(symbol: str, meta: dict) -> dict:
         "display_name": meta.get("display_name") or meta.get("name") or symbol,
         "mint": meta.get("mint"),
         "decimals": meta.get("decimals"),
+        "logo_uri": meta.get("logo_uri"),
         "tags": meta.get("tags") or [],
         "verified": bool(meta.get("verified")),
         "default_enabled": bool(meta.get("default_enabled")),
@@ -794,6 +796,9 @@ def token_resolve(query: str = Query(""), allow_external: bool = Query(True)):
     can_quote = isinstance(decimals, int) and decimals >= 0
     result["can_quote"] = bool(result.get("ok") is True and can_quote)
     if isinstance(token, dict):
+        if result.get("ok") is True:
+            token = maybe_enrich_token_logo_uri_from_dexscreener(token)
+            result["token"] = token
         token["can_quote"] = result["can_quote"]
     if result.get("ok") is True and not can_quote:
         result["reason"] = "decimals_unresolved"
