@@ -433,6 +433,175 @@ def build_ui_html() -> str:
       background: rgba(7, 17, 31, 0.54);
       box-shadow: none;
     }
+    .swap-summary-header {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .swap-summary-meta {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      font-size: 12px;
+    }
+    .swap-summary-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .quote-expiry-pill {
+      display: inline-flex;
+      width: fit-content;
+      padding: 4px 8px;
+      border: 1px solid rgba(245, 158, 11, 0.24);
+      border-radius: 999px;
+      background: rgba(245, 158, 11, 0.08);
+      font-size: 12px;
+      line-height: 1.2;
+    }
+    .quote-status-line {
+      margin-top: 6px;
+      font-size: 12px;
+      line-height: 1.4;
+      opacity: 0.84;
+    }
+    .quote-external-context {
+      opacity: 0.7;
+    }
+    .quote-external-details summary {
+      cursor: pointer;
+    }
+    .route-result-shell {
+      border-color: rgba(161, 190, 220, 0.12);
+      background: linear-gradient(180deg, rgba(11, 24, 41, 0.84), rgba(7, 17, 31, 0.78));
+      overflow: hidden;
+    }
+    .route-result-shell-recommended {
+      border-color: rgba(52, 245, 163, 0.26);
+      box-shadow: 0 18px 46px rgba(1, 9, 20, 0.18), inset 0 1px 0 rgba(237, 247, 255, 0.03);
+    }
+    .route-result-shell-direct {
+      background: rgba(11, 24, 41, 0.58);
+    }
+    .route-section-heading {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 8px 0;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    .route-section-heading-secondary {
+      color: var(--text-secondary);
+    }
+    .route-section-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 3px 8px;
+      border: 1px solid rgba(52, 245, 163, 0.34);
+      border-radius: 999px;
+      color: var(--accent-emerald);
+      background: rgba(52, 245, 163, 0.09);
+      font-size: 11px;
+      font-weight: 750;
+    }
+    .route-section-badge-secondary {
+      border-color: rgba(99, 230, 255, 0.2);
+      color: var(--accent-cyan);
+      background: rgba(99, 230, 255, 0.07);
+    }
+    .route-option-card {
+      position: relative;
+      margin-top: 8px;
+      padding: 14px;
+      border: 1px solid rgba(161, 190, 220, 0.11);
+      border-radius: var(--radius-md);
+      background: rgba(3, 10, 20, 0.3);
+    }
+    .route-option-card-recommended {
+      border-color: rgba(52, 245, 163, 0.18);
+      background: rgba(4, 18, 31, 0.48);
+      animation: routeResultFadeUp 180ms ease-out both;
+    }
+    .route-option-card-direct {
+      border-color: rgba(99, 230, 255, 0.12);
+      background: rgba(7, 17, 31, 0.42);
+      animation: routeResultFadeUp 180ms ease-out both;
+    }
+    .route-option-card-alternative {
+      animation: routeResultFadeUp 180ms ease-out both;
+    }
+    .route-provider-title {
+      margin-top: 3px;
+      padding-right: 190px;
+      color: var(--accent-cyan);
+      font-size: 15px;
+      font-weight: 750;
+    }
+    .route-provider-title strong {
+      color: inherit;
+      font-weight: 800;
+    }
+    .route-action-slot {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+    }
+    .route-action-button {
+      min-width: 160px;
+      min-height: 38px;
+      background: rgba(52, 245, 163, 0.1);
+      color: var(--accent-emerald);
+      border-color: rgba(52, 245, 163, 0.36);
+      box-shadow: none;
+    }
+    .route-action-button-direct {
+      background: rgba(52, 245, 163, 0.1);
+      color: var(--accent-emerald);
+      border-color: rgba(52, 245, 163, 0.36);
+      box-shadow: none;
+    }
+    .route-cost-summary {
+      display: inline-flex;
+      width: fit-content;
+      max-width: 100%;
+      margin-top: 6px;
+      font-size: 12px;
+      padding: 7px 9px;
+      border: 1px solid rgba(52, 245, 163, 0.13);
+      border-radius: var(--radius-sm);
+      background: rgba(52, 245, 163, 0.06);
+      color: var(--text-secondary);
+    }
+    .route-cost-summary strong {
+      color: var(--text-primary);
+      font-size: 13px;
+    }
+    .route-cost-details {
+      margin-top: 6px;
+    }
+    .route-cost-details summary {
+      cursor: pointer;
+    }
+    .quote-debug-details {
+      background: rgba(7, 17, 31, 0.36);
+      border-color: rgba(161, 190, 220, 0.08);
+    }
+    @keyframes routeResultFadeUp {
+      from { opacity: 0; transform: translate3d(0, 3px, 0); }
+      to { opacity: 1; transform: translate3d(0, 0, 0); }
+    }
     .swap-summary-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px; }
     .swap-summary-item {
       padding: 8px;
@@ -448,6 +617,12 @@ def build_ui_html() -> str:
     .route-flow-minus { color: var(--semantic-danger); }
     .route-flow-plus { color: var(--semantic-success); }
     .token-preview { margin-top: 6px; font-size: 12px; line-height: 1.35; min-height: 18px; }
+    .token-side .token-preview:first-of-type {
+      margin-top: 10px;
+    }
+    .token-side #swapFromBalanceHint {
+      margin-top: 8px;
+    }
     .token-side .token-preview {
       color: var(--text-secondary);
       overflow-wrap: anywhere;
@@ -482,6 +657,20 @@ def build_ui_html() -> str:
       color: #031423;
       border-color: rgba(52, 245, 163, 0.62);
       box-shadow: 0 0 0 1px rgba(52, 245, 163, 0.18), 0 14px 34px rgba(52, 245, 163, 0.24);
+    }
+    button.route-action-button {
+      min-width: 160px;
+      min-height: 38px;
+      background: rgba(52, 245, 163, 0.1);
+      color: var(--accent-emerald);
+      border-color: rgba(52, 245, 163, 0.36);
+      box-shadow: none;
+    }
+    button.route-action-button-direct {
+      background: rgba(52, 245, 163, 0.1);
+      color: var(--accent-emerald);
+      border-color: rgba(52, 245, 163, 0.36);
+      box-shadow: none;
     }
     @media (max-width: 760px) {
       body { padding: 12px; }
@@ -521,12 +710,36 @@ def build_ui_html() -> str:
       }
       .swap-actions { grid-template-columns: 1fr; }
       .swap-actions button { width: 100%; }
+      .route-provider-title {
+        padding-right: 0;
+      }
+      .route-action-slot {
+        position: static;
+        margin-top: 10px;
+      }
+      .route-action-button {
+        width: 100%;
+      }
+      .swap-summary-header,
+      .swap-summary-footer {
+        align-items: flex-start;
+      }
+      .swap-summary-meta {
+        justify-content: flex-start;
+      }
       .swap-token-card .amount-side input,
       #swapBuyEstimate {
         text-align: right;
         font-size: 30px;
       }
       input, select { min-width: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .route-option-card-recommended,
+      .route-option-card-direct,
+      .route-option-card-alternative {
+        animation: none;
+      }
     }
     button:disabled { opacity: .6; cursor: not-allowed; }
     .token-resolve-use { padding: 3px 7px; border-radius: 7px; font-size: 11px; margin-left: 6px; vertical-align: middle; }
@@ -799,7 +1012,13 @@ def build_ui_html() -> str:
     </div>
 
     <div class="card" id="swapInlineBaselineRow">
-      <h4 style="margin: 0 0 8px 0;">Swap summary</h4>
+      <div class="swap-summary-header">
+        <h4 style="margin: 0;">Swap summary</h4>
+        <div class="swap-summary-meta">
+          <span class="pill warn" id="pillSwapState" style="font-size:11px; padding:2px 7px;">Draft</span>
+          <span class="muted" id="swapCoverageDepth" style="display:none;"></span>
+        </div>
+      </div>
       <div class="swap-summary-grid">
         <div class="swap-summary-item">
           <div class="muted" style="font-size:12px;">You sell</div>
@@ -818,23 +1037,18 @@ def build_ui_html() -> str:
           <div id="swapMarketCompareHint" class="swap-summary-value">—</div>
         </div>
       </div>
-      <div class="muted" id="swapBaselineNote" style="margin-top:8px; font-size:12px; opacity:0.78;">Reference pricing is used only to compare route quality — not an executable route.</div>
+      <div class="swap-summary-footer">
+        <div class="muted" id="swapBaselineNote" style="font-size:12px; opacity:0.78;">Reference pricing is used only to compare route quality — not an executable route.</div>
+        <div class="muted quote-expiry-pill" id="swapQuoteFreshness" style="display:none;"></div>
+      </div>
     </div>
     </div>
 
-    <div class="card" id="swapQuoteCard" style="margin-top:10px;">
-      <div class="row" style="font-size:12px;">
-        <div><span class="pill warn" id="pillSwapState" style="font-size:11px; padding:2px 7px;">Draft</span></div>
-        <div class="muted" id="swapStateText" style="font-size:12px;">Ready to request a swap quote.</div>
-      </div>
-      <div class="muted" id="swapCoverageDepth" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
-      <div class="muted" id="swapExternalTokenNotice" style="display:none; margin-top:6px; font-size:12px; opacity:0.82;"></div>
-      <div class="muted" id="swapExecutionStatus" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;">Ready to prepare a swap route.</div>
-      <details class="card" id="swapVisiblePreflightDebugWrap" style="margin-top:8px; font-size:12px;">
-        <summary class="muted" style="cursor:pointer; font-weight:600;">Latest preflight diagnostics</summary>
-        <pre id="swapVisiblePreflightDebug" style="margin-top:8px;">No preflight check yet.</pre>
-      </details>
-      <div class="muted" id="swapQuoteFreshness" style="display:none; margin-top:6px; font-size:12px; opacity:0.86;"></div>
+    <div id="swapQuoteCard" style="display:none;">
+      <div class="muted" id="swapStateText" style="display:none;">Ready to request a swap quote.</div>
+      <div class="muted quote-status-line quote-external-context" id="swapExternalTokenNotice" style="display:none;"></div>
+      <div class="muted quote-status-line" id="swapExecutionStatus" style="display:none;"></div>
+      <pre id="swapVisiblePreflightDebug" style="display:none;">No preflight check yet.</pre>
       <div id="swapPreparedAction" style="display:none; margin-top:8px;">
         <div id="swapPreparedSummary" class="muted" style="font-size:12px; line-height:1.45;"></div>
         <label class="muted" style="display:flex; align-items:flex-start; gap:6px; margin-top:8px; font-size:12px;">
@@ -848,13 +1062,13 @@ def build_ui_html() -> str:
       <div class="muted" id="swapCompareSummary" style="margin-top:8px;">comparison summary: —</div>
     </div>
 
-    <div class="card" id="swapRecommendedCard" style="margin-top:10px;">
-      <h4 style="margin: 0 0 6px 0;">Recommended executable route</h4>
+    <div class="card route-result-shell route-result-shell-recommended" id="swapRecommendedCard" style="margin-top:10px;">
+      <h4 class="route-section-heading"><span class="route-section-badge route-section-badge-secondary">Recommended</span><span>Best executable route</span></h4>
       <div class="muted" id="swapRecommendedBox">No quote yet.</div>
     </div>
 
-    <div class="card" id="swapDirectCard" style="margin-top:10px;">
-      <h4 style="margin: 0 0 6px 0;">Direct/simple route check</h4>
+    <div class="card route-result-shell route-result-shell-direct" id="swapDirectCard" style="margin-top:10px;">
+      <h4 class="route-section-heading route-section-heading-secondary"><span class="route-section-badge route-section-badge-secondary">Direct</span><span>Simple route check</span></h4>
       <div class="muted" id="swapDirectBox">No direct-route check yet.</div>
     </div>
 
@@ -863,8 +1077,8 @@ def build_ui_html() -> str:
       <div id="swapAlternativesBox"></div>
     </div>
 
-    <details id="swapDebugWrap" class="card" style="margin-top:10px; display:none;">
-      <summary class="muted" style="cursor:pointer;">Raw quote debug JSON</summary>
+    <details id="swapDebugWrap" class="card quote-debug-details" style="margin-top:10px; display:none;">
+      <summary class="muted" style="cursor:pointer;">Developer quote debug JSON</summary>
       <pre id="swapQuotePreview" style="margin-top:8px;"></pre>
       <div class="muted" style="margin-top:10px; font-size:12px;">Latest preflight diagnostics</div>
       <pre id="swapPreflightDebug" style="margin-top:8px;">No preflight check yet.</pre>
@@ -1704,10 +1918,16 @@ function setSwapPhase(phase, text) {
 
 function showSwapStatus(kind, title, payload) {
   const box = $("swapStatus");
+  if (kind === "ok") {
+    box.style.display = "none";
+    box.innerHTML = "";
+    logActivity(kind, title, payload);
+    return;
+  }
   box.style.display = "block";
   box.className = "card " + (kind === "ok" ? "ok" : (kind === "warn" ? "warn" : "err"));
   box.innerHTML = "<strong>" + title + "</strong>";
-  if (payload) {
+  if (payload && kind !== "ok") {
     box.innerHTML += "<pre style='margin-top:8px;'>" + escapeHtml(JSON.stringify(payload, null, 2)) + "</pre>";
   }
 
@@ -1719,7 +1939,7 @@ function setSwapExecutionStatus(state, text, detail = null) {
   const box = $("swapExecutionStatus");
   if (!box) return;
 
-  if (!text) {
+  if (!text || swapExecutionState === "idle") {
     box.textContent = "";
     box.style.display = "none";
     box.className = "muted";
@@ -1796,7 +2016,7 @@ function clearSwapQuoteFreshness() {
   if (box) {
     box.textContent = "";
     box.style.display = "none";
-    box.className = "muted";
+    box.className = "muted quote-expiry-pill";
   }
 }
 
@@ -1811,12 +2031,12 @@ function updateSwapQuoteFreshness() {
   const remaining = Math.max(0, Math.ceil((swapQuoteExpiresAt - Date.now()) / 1000));
   box.style.display = "block";
   if (remaining > 0) {
-    box.className = "muted warn";
+    box.className = "muted warn quote-expiry-pill";
     box.textContent = "Quote expires in " + remaining + "s";
     return;
   }
 
-  box.className = "muted err";
+  box.className = "muted err quote-expiry-pill";
   box.textContent = "Quote expired — preview again before swapping.";
   if (swapQuoteTimerId) {
     clearInterval(swapQuoteTimerId);
@@ -1904,7 +2124,7 @@ function resetSwapExecutionPrepare() {
   const visiblePreflightDebug = $("swapVisiblePreflightDebug");
   if (visiblePreflightDebug) visiblePreflightDebug.textContent = "No preflight check yet.";
   setSwapPreparedActionVisible(false);
-  setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
+  setSwapExecutionStatus("idle", "");
 }
 
 function resetSwapStateForTokenChange(options = {}) {
@@ -2356,15 +2576,16 @@ function executableRouteButtonLabel(opt) {
 function renderRouteActionButton(label, opt, cardRole) {
   if (!isExecutableRouteOption(opt)) return "";
 
+  const role = cardRole || opt.kind || "route";
+  const roleClass = role === "direct" ? " route-action-button-direct" : "";
   return `
     <button
       type="button"
-      class="secondary"
-      style="min-width:160px;"
+      class="route-action-button${roleClass}"
       data-swap-execute="true"
       data-provider="${escapeHtml(opt.provider)}"
       data-variant-id="${escapeHtml(opt.variant_id)}"
-      data-card-role="${escapeHtml(cardRole || opt.kind || "route")}"
+      data-card-role="${escapeHtml(role)}"
     >
       ${escapeHtml(label || executableRouteButtonLabel(opt))}
     </button>
@@ -2577,8 +2798,8 @@ function renderSwapCoverageDepth(quote) {
   }
 
   const prefix = labels.length <= 2
-    ? "Limited live route coverage for this pair: "
-    : `${labels.length} live route options checked: `;
+    ? "Routes checked: "
+    : `${labels.length} routes checked: `;
 
   box.textContent = prefix + labels.join(", ");
   box.style.display = "block";
@@ -2612,8 +2833,15 @@ function renderSwapExternalTokenNotice(quote) {
     return;
   }
 
-  box.textContent = "External token metadata used: " + labels.join(", ") + " · unverified. External-token market references may be stale or incomplete. Use quoted output and wallet confirmation as source of truth.";
-  box.style.display = "block";
+  box.innerHTML = `
+    <details class="quote-external-details">
+      <summary>External token · unverified</summary>
+      <div style="margin-top:4px;">
+        External token context available for ${escapeHtml(labels.join(", "))}. Market references may be incomplete; confirm the final output in your wallet.
+      </div>
+    </details>
+  `;
+  box.style.display = "none";
 }
 
 function holderConcentrationTokenForSide(side) {
@@ -2887,10 +3115,7 @@ function renderSwapOptionCard(opt, opts = {}) {
     ? (Number.isFinite(routeFeesUsd) ? fmtUsdCost(routeFeesUsd) : "disclosed, USD not available")
     : "not disclosed for this swap";
 
-  const estimatedTotalSwapCostUsdText =
-    Number.isFinite(estimatedTotalSwapCostUsd)
-      ? fmtUsdCost(estimatedTotalSwapCostUsd)
-      : "n/a";
+  const estimatedTotalSwapCostUsdText = routeSwapCostUsdText(opt);
   const routeReferenceDifference = routeReferenceDifferenceText(opt);
   
       const tradeCostAmount = Number(opt?.estimated_trade_execution_cost?.amount);
@@ -2966,21 +3191,28 @@ function renderSwapOptionCard(opt, opts = {}) {
 
 
 
+  const routeCardClass = isRecommendedCard
+    ? "route-option-card route-option-card-recommended"
+    : compactDirect
+      ? "route-option-card route-option-card-direct"
+      : "route-option-card";
+  const providerTitle = routeLabel.replace(/^Via\\s+/i, "");
+
   return `
-    <div class="card" style="margin-top:8px; position:relative;">
+    <div class="${routeCardClass}">
       ${shouldShowSwapOptionCardTitle(opt, opts) ? `<div><strong>${escapeHtml(title)}</strong></div>` : ""}
-      <div style="margin-top:3px; font-weight:600;">${escapeHtml(routeLabel)}</div>
+      <div class="route-provider-title">Via <strong>${escapeHtml(providerTitle || routeLabel)}</strong></div>
       ${isComparisonOnly && opt?.provider !== "phantom-routing-api" ? renderSwapExecutionReadinessLine(opt) : ""}
       ${
         isRecommendedCard && showRecommendedAction && isExecutableRoute
           ? `
-            <div style="position:absolute; top:12px; right:12px;">
+            <div class="route-action-slot">
               ${renderRouteActionButton(executableRouteButtonLabel(opt), opt, opts.cardRole || "recommended")}
             </div>
           `
           : (compactDirect && showDirectAction && isExecutableRoute
               ? `
-                <div style="position:absolute; top:12px; right:12px;">
+                <div class="route-action-slot">
                   ${renderRouteActionButton(executableRouteButtonLabel(opt), opt, opts.cardRole || "direct")}
                 </div>
               `
@@ -2991,19 +3223,13 @@ function renderSwapOptionCard(opt, opts = {}) {
       ${
   isRecommendedCard || showCostSummary
     ? `
-      <div class="muted" style="margin-top:4px;">
+      <div class="muted route-cost-summary">
         <strong>Swap cost: ${escapeHtml(estimatedTotalSwapCostUsdText)}</strong>
       </div>
-      <div class="muted" style="margin-top:2px;">
-        ${escapeHtml(routeReferenceDifference || "Reference unavailable")}
-      </div>
-      <div class="muted" style="margin-top:2px;">
-        App fee: $0.00
-      </div>
-      <details style="margin-top:6px;">
-        <summary class="muted" style="cursor:pointer;">Show cost breakdown</summary>
+      <details class="route-cost-details">
+        <summary class="muted">Show cost breakdown</summary>
         <div class="muted" style="margin-top:6px;">
-          Swap cost is estimated as the value gap between the reference market price and the route’s expected output. It may reflect price impact, spread, route quality, quote movement, or reference-price uncertainty. It is not a separate Web3 Digest fee.
+          Swap cost estimates the gap between this quote and the market reference. It is not a Web3 Digest fee.
         </div>
         <div class="muted" style="margin-top:6px;">
           Market gap estimate: ${escapeHtml(executionCostUsdText)}
@@ -3013,6 +3239,9 @@ function renderSwapOptionCard(opt, opts = {}) {
         </div>
         <div class="muted" style="margin-top:2px;">
           Route fee estimate: ${escapeHtml(routeFeesUsdText)}
+        </div>
+        <div class="muted" style="margin-top:2px;">
+          Web3 Digest fee: $0.00
         </div>
       </details>
     `
@@ -3185,12 +3414,27 @@ function routeReferenceDifferenceText(opt) {
   return pctText + " " + direction;
 }
 
+function routeSwapCostUsdText(opt) {
+  const total = Number(opt?.estimated_total_swap_cost_usd);
+  if (Number.isFinite(total)) return fmtUsdCost(total);
+
+  const executionCostUsd = Number(opt?.execution_cost_usd);
+  if (Number.isFinite(executionCostUsd)) return fmtUsdCost(executionCostUsd);
+
+  const tradeCostUsd = Number(opt?.estimated_trade_execution_cost?.amount_usd);
+  if (Number.isFinite(tradeCostUsd)) return fmtUsdCost(tradeCostUsd);
+
+  return "n/a";
+}
+
 function renderCompactAlternativeCard(opt, idx = 0, bestOption = null) {
   if (!opt) return "";
 
   const routeLabel = surfaceRouteLabel(opt);
   const isExecutableRoute = isExecutableRouteOption(opt);
   const isComparisonOnly = opt.is_comparison_only === true && !isExecutableRoute;
+  const title = opt?.provider === "phantom-routing-api" ? "Benchmark — " + routeLabel : routeLabel;
+  const swapCostText = routeSwapCostUsdText(opt);
   const executionCostUsd = Number(opt?.execution_cost_usd);
   const executionCostText = routeVsBestOutputText(opt, bestOption) ||
     (Number.isFinite(executionCostUsd) && executionCostUsd !== 0
@@ -3198,13 +3442,13 @@ function renderCompactAlternativeCard(opt, idx = 0, bestOption = null) {
       : "Output comparison unavailable");
 
   return `
-    <div class="card" style="margin-top:8px; position:relative;">
-      <div><strong>${opt?.provider === "phantom-routing-api" ? "Benchmark" : "Alternative " + (idx + 1)} — ${escapeHtml(routeLabel)}</strong></div>
+    <div class="route-option-card route-option-card-alternative">
+      <div class="route-provider-title">${escapeHtml(title)}</div>
       ${isComparisonOnly && opt?.provider !== "phantom-routing-api" ? renderSwapExecutionReadinessLine(opt) : ""}
       ${
         isExecutableRoute
           ? `
-            <div style="position:absolute; top:12px; right:12px;">
+            <div class="route-action-slot">
               ${renderRouteActionButton(executableRouteButtonLabel(opt), opt, opt.kind || "alternative")}
             </div>
           `
@@ -3212,7 +3456,10 @@ function renderCompactAlternativeCard(opt, idx = 0, bestOption = null) {
       }
       ${renderRouteFlowRows(opt, true)}
       ${renderRouteShapeLine(opt, true)}
-      <div class="muted" style="margin-top:2px;">
+      <div class="muted route-cost-summary">
+        <strong>Swap cost: ${escapeHtml(swapCostText)}</strong>
+      </div>
+      <div class="muted" style="margin-top:4px;">
         ${escapeHtml(executionCostText)}
       </div>
       ${
@@ -4008,7 +4255,7 @@ async function previewSwap() {
   latestPreparedSwap = null;
   setSwapPreparedActionVisible(false);
   clearSwapQuoteFreshness();
-  setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
+  setSwapExecutionStatus("idle", "");
 
   const fromToken = canonicalSwapTokenQuery("from");
   const toToken = canonicalSwapTokenQuery("to");
@@ -4095,7 +4342,7 @@ async function previewSwap() {
   if (!quote?.ok || !(bestQuote || recommended)) {
     clearSwapQuoteFreshness();
     setSwapPreparedActionVisible(false);
-    setSwapExecutionStatus("idle", "Ready to prepare a swap route.");
+    setSwapExecutionStatus("idle", "");
     setSwapPhase("Failed", "No executable route found for this token/amount.");
     $("swapRecommendedBox").innerHTML =
       "<div class='muted'>No executable route found. Reference price is available, but no live route was found.</div>";
@@ -4110,6 +4357,7 @@ async function previewSwap() {
       "Reference price is available, but no live route was found. Reference pricing is not an executable route.";
     $("swapQuotePreview").textContent = JSON.stringify(quote, null, 2);
     $("swapDebugWrap").style.display = "block";
+    $("swapDebugWrap").open = false;
     showSwapStatus("warn", "No executable route found", { quote });
     return;
   }
@@ -4322,9 +4570,10 @@ async function previewSwap() {
     }
 
     $("swapDebugWrap").style.display = "block";
+    $("swapDebugWrap").open = false;
     $("swapQuotePreview").textContent = JSON.stringify(quote, null, 2);
 
-    setSwapPhase("Quoted", "Backend quote preview ready.");
+    setSwapPhase("Quoted", "");
     showSwapStatus("ok", "Swap preview ready", quote);
   } catch (err) {
     console.error("previewSwap render error:", err);
