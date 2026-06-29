@@ -3218,6 +3218,112 @@ def _fetch_solana_send_transaction(
     }
 
 
+def _fetch_solana_signature_status(*, signature: str, rpc_url: str) -> dict:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignatureStatuses",
+        "params": [
+            [signature],
+            {"searchTransactionHistory": True},
+        ],
+    }
+
+    try:
+        response = requests.post(
+            rpc_url,
+            json=payload,
+            timeout=12,
+            headers={"accept": "application/json", "content-type": "application/json"},
+        )
+    except requests.RequestException as exc:
+        return _swap_submit_error(
+            "SWAP_STATUS_FAILED",
+            "Transaction status lookup failed.",
+            detail=_safe_rpc_request_exception_detail(exc),
+        )
+
+    if response.status_code == 403:
+        return _swap_submit_error(
+            "SWAP_STATUS_FORBIDDEN",
+            "Transaction status lookup was blocked by RPC.",
+            status_code=response.status_code,
+        )
+    if response.status_code == 429:
+        return _swap_submit_error(
+            "SWAP_STATUS_RATE_LIMITED",
+            "RPC is rate-limited. Try again later.",
+            status_code=response.status_code,
+        )
+    if not response.ok:
+        return _swap_submit_error(
+            "SWAP_STATUS_FAILED",
+            "Transaction status lookup failed.",
+            status_code=response.status_code,
+            detail="RPC returned an HTTP error.",
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        return _swap_submit_error(
+            "SWAP_STATUS_FAILED",
+            "Transaction status lookup returned invalid JSON.",
+            detail=str(exc),
+        )
+
+    if not isinstance(data, dict):
+        return _swap_submit_error(
+            "SWAP_STATUS_FAILED",
+            "Transaction status lookup returned an unexpected response shape.",
+        )
+
+    if data.get("error"):
+        rpc_error = data.get("error")
+        safe_rpc_error = _safe_submit_rpc_error(rpc_error)
+        if _is_swap_submit_rate_limited(rpc_error):
+            return _swap_submit_error(
+                "SWAP_STATUS_RATE_LIMITED",
+                "RPC is rate-limited. Try again later.",
+                status_code=429,
+                rpc_error=safe_rpc_error,
+            )
+        if _is_swap_submit_forbidden(rpc_error):
+            return _swap_submit_error(
+                "SWAP_STATUS_FORBIDDEN",
+                "Transaction status lookup was blocked by RPC.",
+                status_code=403,
+                rpc_error=safe_rpc_error,
+            )
+        return _swap_submit_error(
+            "SWAP_STATUS_FAILED",
+            "Transaction status lookup failed.",
+            rpc_error=safe_rpc_error,
+        )
+
+    values = data.get("result", {}).get("value") if isinstance(data.get("result"), dict) else None
+    status = values[0] if isinstance(values, list) and values else None
+    if status is not None and not isinstance(status, dict):
+        status = None
+
+    confirmation_status = status.get("confirmationStatus") if status else None
+    confirmations = status.get("confirmations") if status else None
+    err = status.get("err") if status else None
+    finalized = confirmation_status == "finalized"
+    confirmed = finalized or confirmation_status == "confirmed"
+
+    return {
+        "ok": True,
+        "signature": signature,
+        "confirmation_status": confirmation_status,
+        "confirmations": confirmations,
+        "confirmed": confirmed,
+        "finalized": finalized,
+        "err": err,
+        "status": status,
+    }
+
+
 MAX_SWAP_PREFLIGHT_TRANSACTION_BASE64_CHARS = 200_000
 SPL_TOKEN_ACCOUNT_RENT_EXEMPT_LAMPORTS_FALLBACK = 2_039_280
 SPL_TOKEN_ACCOUNT_RENT_EXEMPT_SIZE = 165
@@ -5193,13 +5299,13 @@ def _build_recommended_swap_cost_summary(
     reference_prices: dict | None,
 ) -> dict | None:
     """
-    Build the recommended-route cost summary in USD.
+    Build route-card cost fields in USD.
 
     Headline math rule:
-    estimated_total_swap_cost_usd =
-        execution_cost_usd
-      + network_cost_usd
-      + route_fees_usd (only when disclosed and priceable)
+    estimated_total_swap_cost_usd = benchmark/reference output gap in USD.
+
+    Network costs and disclosed provider fees remain separate breakdown fields
+    because they are not part of the quote-output-vs-reference gap.
     """
     if not option:
         return None
@@ -5235,18 +5341,13 @@ def _build_recommended_swap_cost_summary(
     route_fees_usd = route_fee_summary.get("route_fees_usd")
     route_fees_disclosed = bool(route_fee_summary.get("route_fees_disclosed"))
 
-    known_parts = [
-        x for x in [execution_cost_usd, network_cost_usd, route_fees_usd] if x is not None
-    ]
-    estimated_total_swap_cost_usd = sum(known_parts) if known_parts else None
-
     return {
         "execution_cost_usd": execution_cost_usd,
         "network_cost_usd": network_cost_usd,
         "route_fees_usd": route_fees_usd,
         "route_fees_disclosed": route_fees_disclosed,
-        "estimated_total_swap_cost_usd": estimated_total_swap_cost_usd,
-        "math_rule": "execution_cost_usd + network_cost_usd + disclosed_route_fees_usd_only",
+        "estimated_total_swap_cost_usd": execution_cost_usd,
+        "math_rule": "benchmark_reference_gap_usd_only",
         "route_fee_detail": route_fee_summary,
     }
 
@@ -6464,6 +6565,41 @@ def swap_execute_submit(payload: dict = Body(...)):
         "ok": True,
         "signature": result.get("signature"),
         "status": "submitted",
+        "rpc": {
+            "source": rpc_source,
+            "url_configured": True,
+        },
+    }
+
+
+@app.get("/swap/transaction/status")
+def swap_transaction_status(signature: str):
+    signature = (signature or "").strip()
+    if not signature:
+        return _swap_submit_error(
+            "SWAP_STATUS_SIGNATURE_REQUIRED",
+            "Transaction signature is required.",
+        )
+
+    rpc_url, rpc_source = _configured_swap_submit_rpc_url()
+    if not rpc_url:
+        return _swap_submit_error(
+            "SWAP_STATUS_RPC_CONFIG_MISSING",
+            "Set SWAP_SUBMIT_RPC_URL, SOLANA_RPC_URL, SOLANA_MAINNET_RPC_URL, or HELIUS_RPC_URL to check transaction status.",
+        )
+
+    result = _fetch_solana_signature_status(signature=signature, rpc_url=rpc_url)
+    if result.get("ok") is not True:
+        return result
+
+    return {
+        "ok": True,
+        "signature": result.get("signature"),
+        "confirmation_status": result.get("confirmation_status"),
+        "confirmations": result.get("confirmations"),
+        "confirmed": bool(result.get("confirmed")),
+        "finalized": bool(result.get("finalized")),
+        "err": result.get("err"),
         "rpc": {
             "source": rpc_source,
             "url_configured": True,

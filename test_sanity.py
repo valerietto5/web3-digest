@@ -18,6 +18,7 @@ from api.main import (
     SWAP_EXECUTION_PROVIDER_CAPABILITIES,
     _apply_external_token_reference_prices,
     _attach_cost_fields,
+    _build_recommended_swap_cost_summary,
     _build_promotion_audit_summary,
     _build_meteora_dlmm_quote_payload,
     _build_orca_whirlpool_quote_payload,
@@ -53,6 +54,7 @@ from api.main import (
     _try_fetch_phoenix_quote,
     _try_fetch_pumpswap_quote,
     _fetch_solana_send_transaction,
+    _fetch_solana_signature_status,
     _fetch_solana_simulate_transaction,
     _decode_solana_transaction_diagnostics,
     _build_swap_setup_cost_estimate,
@@ -71,6 +73,7 @@ from api.main import (
     swap_execute_prepare,
     swap_execute_preflight,
     swap_execute_submit,
+    swap_transaction_status,
     swap_quote,
     swap_tokens,
     token_resolve,
@@ -2475,6 +2478,65 @@ class TestSanity(unittest.TestCase):
         self.assertIn("USD estimate unavailable", result["usd_reference_note"])
         self.assertEqual(result["estimated_output"], 123456789.0)
 
+    def test_attach_cost_fields_computes_positive_reference_gap_usd(self):
+        option = {
+            "to_token": "ANSEM",
+            "estimated_output": 14.5246,
+        }
+
+        result = _attach_cost_fields(
+            option,
+            reference_output_amount=14.7923,
+            reference_prices={"ANSEM": {"usd": 0.0872, "pricing_source": "dexscreener_solana"}},
+        )
+
+        self.assertGreater(result["estimated_trade_execution_cost"]["amount"], 0)
+        self.assertAlmostEqual(result["estimated_trade_execution_cost"]["amount"], 14.7923 - 14.5246)
+        self.assertAlmostEqual(result["execution_cost_usd"], (14.7923 - 14.5246) * 0.0872)
+        self.assertAlmostEqual(result["estimated_output_usd"], 14.5246 * 0.0872)
+
+    def test_attach_cost_fields_equal_or_better_route_never_negative(self):
+        equal = _attach_cost_fields(
+            {"to_token": "ANSEM", "estimated_output": 14.7923},
+            reference_output_amount=14.7923,
+            reference_prices={"ANSEM": {"usd": 0.0872}},
+        )
+        better = _attach_cost_fields(
+            {"to_token": "ANSEM", "estimated_output": 14.7983},
+            reference_output_amount=14.7923,
+            reference_prices={"ANSEM": {"usd": 0.0872}},
+        )
+
+        self.assertEqual(equal["estimated_trade_execution_cost"]["amount"], 0)
+        self.assertEqual(equal["execution_cost_usd"], 0)
+        self.assertEqual(better["estimated_trade_execution_cost"]["amount"], 0)
+        self.assertEqual(better["execution_cost_usd"], 0)
+        self.assertLess(better["estimated_trade_execution_cost"]["raw_difference"], 0)
+
+    def test_recommended_swap_cost_summary_uses_reference_gap_as_headline(self):
+        option = {
+            "to_token": "ANSEM",
+            "estimated_trade_execution_cost": {
+                "amount": 0.2677,
+                "token": "ANSEM",
+            },
+            "estimated_network_fee": {"sol": 0.001},
+            "explicit_route_fees": {"has_explicit_fees": False, "route_fee_items": []},
+        }
+
+        summary = _build_recommended_swap_cost_summary(
+            option,
+            reference_prices={
+                "ANSEM": {"usd": 0.0872},
+                "SOL": {"usd": 140.0},
+            },
+        )
+
+        self.assertAlmostEqual(summary["execution_cost_usd"], 0.2677 * 0.0872)
+        self.assertAlmostEqual(summary["network_cost_usd"], 0.14)
+        self.assertAlmostEqual(summary["estimated_total_swap_cost_usd"], 0.2677 * 0.0872)
+        self.assertEqual(summary["math_rule"], "benchmark_reference_gap_usd_only")
+
     def test_reference_baseline_delta_includes_token_and_usd_difference(self):
         baseline, delta = _build_reference_baseline_from_resolved_prices(
             from_token="SOL",
@@ -2539,10 +2601,11 @@ class TestSanity(unittest.TestCase):
         self.assertIn(".route-provider-title strong {\n      color: inherit;", html)
         self.assertIn("button.route-action-button", html)
         self.assertIn("button.route-action-button-direct", html)
-        self.assertIn("button.route-action-button {\n      min-width: 160px;", html)
+        self.assertIn(".route-action-slot {\n      position: absolute;\n      top: 12px;\n      right: 12px;\n      z-index: 3;", html)
+        self.assertIn(".route-action-button {\n      position: relative;\n      z-index: 1;\n      min-width: 160px;", html)
+        self.assertIn("pointer-events: auto;", html)
         self.assertIn("background: rgba(52, 245, 163, 0.1);", html)
         self.assertIn("color: var(--accent-emerald);", html)
-        self.assertNotIn("button.route-action-button {\n      min-width: 160px;\n      min-height: 38px;\n      background: linear-gradient(180deg, #4cffb3, var(--accent-emerald));", html)
         self.assertIn('class="route-action-button${roleClass}"', html)
         self.assertIn(".route-flow { margin-top:8px; padding-right:220px; font-size:15px;", html)
         self.assertIn(".route-flow.compact { padding-right:180px; font-size:14px;", html)
@@ -2580,10 +2643,21 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Network cost", html)
         self.assertIn("Route fee estimate", html)
         self.assertIn("function routeSwapCostUsdText(opt)", html)
+        self.assertIn("function finiteNumberOrNull(value)", html)
+        self.assertIn("if (value === null || value === undefined || value === \"\") return null;", html)
         self.assertIn("const estimatedTotalSwapCostUsdText = routeSwapCostUsdText(opt);", html)
-        self.assertIn("const total = Number(opt?.estimated_total_swap_cost_usd);", html)
-        self.assertIn("const executionCostUsd = Number(opt?.execution_cost_usd);", html)
-        self.assertIn("const tradeCostUsd = Number(opt?.estimated_trade_execution_cost?.amount_usd);", html)
+        self.assertIn("const total = finiteNumberOrNull(opt?.estimated_total_swap_cost_usd);", html)
+        self.assertIn("if (total !== null) return fmtUsdCost(Math.max(0, total));", html)
+        self.assertIn("const executionCostUsd = finiteNumberOrNull(opt?.execution_cost_usd);", html)
+        self.assertIn("const tradeCostUsd = finiteNumberOrNull(opt?.estimated_trade_execution_cost?.amount_usd);", html)
+        self.assertNotIn("const total = Number(opt?.estimated_total_swap_cost_usd);", html)
+        helper_start = html.index("function routeSwapCostUsdText(opt)")
+        helper_end = html.index("function renderCompactAlternativeCard", helper_start)
+        helper_block = html[helper_start:helper_end]
+        self.assertIn('return "n/a";', helper_block)
+        self.assertNotIn("Number(opt?.estimated_total_swap_cost_usd)", helper_block)
+        self.assertNotIn("Number(opt?.execution_cost_usd)", helper_block)
+        self.assertNotIn("Number(opt?.estimated_trade_execution_cost?.amount_usd)", helper_block)
         self.assertIn(".route-cost-summary strong", html)
         self.assertIn("display: inline-flex;", html)
         self.assertIn("width: fit-content;", html)
@@ -2769,9 +2843,9 @@ class TestSanity(unittest.TestCase):
         self.assertIn('add("SOL");', html)
         self.assertIn("summary?.from_token || canonicalSwapTokenQuery(\"from\")", html)
         self.assertIn("summary?.to_token || canonicalSwapTokenQuery(\"to\")", html)
-        self.assertIn("Refreshing balances…", html)
-        self.assertIn("Balances updated just now.", html)
-        self.assertIn("Swap confirmed. Balance refresh failed — refresh manually.", html)
+        self.assertIn("Balances refreshing…", html)
+        self.assertIn("Balances updated.", html)
+        self.assertIn("Swap submitted. Balance refresh failed — refresh manually.", html)
         self.assertIn("refreshBalances({ assetsOverride: assets || null, silent: true, afterSwap: true })", html)
         self.assertIn("swapBalancesStaleAfterSubmit = false;", html)
         self.assertIn('id="btnSwapRefreshBalances"', html)
@@ -2838,6 +2912,9 @@ class TestSanity(unittest.TestCase):
         self.assertIn("quote-expiry-pill", html)
         self.assertIn('id="swapExecutionStatus" style="display:none;"></div>', html)
         self.assertIn('setSwapExecutionStatus("idle", "");', html)
+        self.assertIn('const card = $("swapQuoteCard");', html)
+        self.assertIn('if (card) card.style.display = "block";', html)
+        self.assertIn('card.style.display = "none";', html)
         self.assertNotIn("Ready to prepare a swap route.", html)
         self.assertNotIn("Backend quote preview ready.", html)
         self.assertIn("SWAP_QUOTE_TTL_SECONDS = 90", html)
@@ -2971,8 +3048,8 @@ class TestSanity(unittest.TestCase):
         self.assertIn("replace(/,/g, \"\")", html)
         self.assertIn("function currentSwapReceiveAmountText()", html)
         self.assertIn("function swapSellBuyTokens()", html)
-        self.assertIn('$("btnSwapDirection").addEventListener("click", swapSellBuyTokens);', html)
-        self.assertIn('$("swapToTokenSelector").addEventListener("click", () => openSwapTokenModal("to"));', html)
+        self.assertIn('bindUiEvent("btnSwapDirection", "click", swapSellBuyTokens);', html)
+        self.assertIn('bindUiEvent("swapToTokenSelector", "click", () => openSwapTokenModal("to"));', html)
         swap_direction_start = html.index("function swapSellBuyTokens()")
         swap_direction_end = html.index("function tokenSourceLabel(token)", swap_direction_start)
         swap_direction_block = html[swap_direction_start:swap_direction_end]
@@ -3000,8 +3077,8 @@ class TestSanity(unittest.TestCase):
         self.assertIn('id="swapWalletConnectHint"', html)
         self.assertIn("Connect Phantom to prepare and approve swaps.", html)
         self.assertIn("function renderSwapWalletControls()", html)
-        self.assertIn('$("btnSwapConnectPhantom").addEventListener("click", () => connectPhantom(false));', html)
-        self.assertIn('$("btnSwapDisconnectPhantom").addEventListener("click", disconnectPhantom);', html)
+        self.assertIn('bindUiEvent("btnSwapConnectPhantom", "click", () => connectPhantom(false));', html)
+        self.assertIn('bindUiEvent("btnSwapDisconnectPhantom", "click", disconnectPhantom);', html)
         wallet_strip_start = html.index("function renderSwapWalletStrip()")
         wallet_strip_end = html.index("function renderSwapFromBalance()", wallet_strip_start)
         wallet_strip_block = html[wallet_strip_start:wallet_strip_end]
@@ -3050,8 +3127,8 @@ class TestSanity(unittest.TestCase):
         self.assertIn("for (const asset of recognizedSwapTokenAssetKeys())", html)
         self.assertIn('const assets = swapPortfolioAssetRequestValue();', html)
         self.assertIn('const force = "true";', html)
-        self.assertIn('$("swapFromTokenSelector").addEventListener("click", () => openSwapTokenModal("from"));', html)
-        self.assertIn('$("swapToToken").addEventListener("click", () => openSwapTokenModal("to"));', html)
+        self.assertIn('bindUiEvent("swapFromTokenSelector", "click", () => openSwapTokenModal("from"));', html)
+        self.assertIn('bindUiEvent("swapToToken", "click", () => openSwapTokenModal("to"));', html)
         self.assertIn("token_input_value", html)
         self.assertIn("rawAsset.toLowerCase().startsWith(\"spl:\")", html)
         self.assertIn('data-swap-holding-input="${escapeHtml(row.token_input_value)}"', html)
@@ -3082,7 +3159,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Balances are from snapshots. Refresh before swapping.", html)
         self.assertNotIn("Balances may be stale after this swap — refresh balances.", html)
         self.assertIn('id="btnSwapRefreshBalances"', html)
-        self.assertIn('$("btnSwapRefreshBalances").addEventListener("click", refreshBalances);', html)
+        self.assertIn('bindUiEvent("btnSwapRefreshBalances", "click", refreshBalances);', html)
         self.assertIn("const assets = swapPortfolioAssetRequestValue();", html)
         self.assertIn('fetchMaybeJson("/refresh/balances?" + qs({ account, force, assets })', html)
         self.assertIn("requested_assets_sent_by_ui: assets", html)
@@ -3108,15 +3185,15 @@ class TestSanity(unittest.TestCase):
         self.assertIn("resetSwapQuoteDisplay();", reset_block)
         self.assertIn("resetSwapInlineBaseline();", reset_block)
 
-        events_start = html.index('$("swapHoldingsDropdown").addEventListener("click"')
+        events_start = html.index('bindUiEvent("swapHoldingsDropdown", "click"')
         events_end = html.index("// init", events_start)
         events_block = html[events_start:events_end]
 
         self.assertIn('resetSwapStateForTokenChange({ clearAmount: true });', events_block)
-        self.assertIn('$("swapFromToken").addEventListener("input"', events_block)
-        self.assertIn('$("swapFromToken").addEventListener("change"', events_block)
-        self.assertIn('$("swapToToken").addEventListener("input"', events_block)
-        self.assertIn('$("swapToToken").addEventListener("change"', events_block)
+        self.assertIn('bindUiEvent("swapFromToken", "input"', events_block)
+        self.assertIn('bindUiEvent("swapFromToken", "change"', events_block)
+        self.assertIn('bindUiEvent("swapToToken", "input"', events_block)
+        self.assertIn('bindUiEvent("swapToToken", "change"', events_block)
         self.assertIn('resetSwapStateForTokenChange({ clearAmount: false });', events_block)
 
         use_start = html.index("function useResolvedSwapToken(side)")
@@ -3375,8 +3452,8 @@ class TestSanity(unittest.TestCase):
     def test_swap_ui_live_baseline_updates_before_preview_from_amount_tokens_and_resolver(self):
         html = build_ui_html()
 
-        amount_listener_start = html.index('$("swapAmount").addEventListener("input"')
-        amount_listener_end = html.index('$("swapFromToken").addEventListener("focus"', amount_listener_start)
+        amount_listener_start = html.index('bindUiEvent("swapAmount", "input"')
+        amount_listener_end = html.index('bindUiEvent("swapFromToken", "focus"', amount_listener_start)
         amount_listener = html[amount_listener_start:amount_listener_end]
         self.assertIn("updateLiveSwapBaseline();", amount_listener)
 
@@ -3442,6 +3519,9 @@ class TestSanity(unittest.TestCase):
         self.assertIn("This route appears to require additional SOL for account setup/rent.", html)
         self.assertNotIn("Simulation indicates insufficient SOL or account setup/rent requirements.", html)
         self.assertIn("Try a lower amount, add SOL, or choose another route.", html)
+        self.assertIn("function findPreflightAlternativeSuggestion(failedProvider, failedVariant)", html)
+        self.assertIn("function renderPreflightAlternativeNudge(preflight)", html)
+        self.assertIn("renderPreflightAlternativeNudge(preparedPreflight);", sign_block)
         self.assertIn("Simulation category: ", html)
         self.assertNotIn("Logs: ", html)
         self.assertNotIn("Program AToken", html)
@@ -3452,6 +3532,34 @@ class TestSanity(unittest.TestCase):
             sign_block.index("preflightPreparedSwapBeforePhantom()"),
             sign_block.index("phantomProvider.signTransaction(tx)"),
         )
+
+    def test_swap_ui_preflight_failure_nudges_to_alternative_without_auto_prepare(self):
+        html = build_ui_html()
+
+        helper_start = html.index("function findPreflightAlternativeSuggestion(failedProvider, failedVariant)")
+        helper_end = html.index("function renderRouteActionButton", helper_start)
+        helper_block = html[helper_start:helper_end]
+
+        self.assertIn("quote?.direct_route_check || null", helper_block)
+        self.assertIn("quote?.recommended_executable_option || null", helper_block)
+        self.assertIn("...(Array.isArray(quote?.other_options) ? quote.other_options : [])", helper_block)
+        self.assertIn("if (!isExecutableRouteOption(opt)) continue;", helper_block)
+        self.assertIn("if (providerKey === failedProviderKey && variantKey === failedVariantKey) continue;", helper_block)
+        self.assertIn("const chosen = executable.find(isDirectLikeRouteOption) || executable[0];", helper_block)
+        self.assertIn('"direct route"', helper_block)
+
+        nudge_start = html.index("function renderPreflightAlternativeNudge(preflight)")
+        nudge_end = html.index("async function preflightPreparedSwapBeforePhantom", nudge_start)
+        nudge_block = html[nudge_start:nudge_end]
+
+        self.assertIn("failed preflight. Try the ", nudge_block)
+        self.assertIn("button.type = \"button\";", nudge_block)
+        self.assertIn("event.stopPropagation();", nudge_block)
+        self.assertIn("showPreflightAlternativeRoute(suggestion);", nudge_block)
+        self.assertNotIn("prepareSwapRoute(", nudge_block)
+        self.assertIn("routeActionButtonForSuggestion(suggestion)", html)
+        self.assertIn('[data-swap-execute="true"]', html)
+        self.assertIn(".preflight-alternative-nudge", html)
 
     def test_swap_ui_renders_preflight_diagnostics_in_debug_json(self):
         html = build_ui_html()
@@ -3675,6 +3783,12 @@ class TestSanity(unittest.TestCase):
         self.assertIn('let latestPreparedSwap = null;', html)
         self.assertIn('let swapExecutionState = "idle";', html)
         self.assertIn("function setSwapExecutionStatus(state, text, detail = null)", html)
+        status_start = html.index("function setSwapExecutionStatus(state, text, detail = null)")
+        status_end = html.index("function sanitizeSwapPreflightDebug", status_start)
+        status_block = html[status_start:status_end]
+        self.assertIn('const card = $("swapQuoteCard");', status_block)
+        self.assertIn('if (card) card.style.display = "block";', status_block)
+        self.assertIn('box.style.display = "block";', status_block)
         self.assertIn("async function prepareSwapRoute(routeRequest)", html)
         self.assertIn('fetchMaybeJson("/swap/execute/prepare"', html)
         self.assertIn("provider,", html)
@@ -3816,6 +3930,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn('opt?.execution_status === "executable_capable"', html)
         self.assertIn("!!opt?.variant_id", html)
         self.assertIn('data-swap-execute="true"', html)
+        self.assertNotIn('data-swap-execute="true" disabled', html)
         self.assertIn('data-provider="${escapeHtml(opt.provider)}"', html)
         self.assertIn('data-variant-id="${escapeHtml(opt.variant_id)}"', html)
         self.assertIn('const role = cardRole || opt.kind || "route";', html)
@@ -3840,7 +3955,15 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn("function handleSwapExecuteClick(event)", html)
         self.assertIn('event.target?.closest?.(\'[data-swap-execute="true"]\')', html)
-        self.assertIn('$("swapCard").addEventListener("click", handleSwapExecuteClick);', html)
+        self.assertIn("if (button.disabled) return;", html)
+        self.assertIn("function bindUiEvent(id, type, handler)", html)
+        self.assertIn("if (!el) return null;", html)
+        self.assertIn('document.addEventListener("click", handleSwapExecuteClick);', html)
+        self.assertNotIn('$("swapCard").addEventListener("click", handleSwapExecuteClick);', html)
+        self.assertIn('.modal-backdrop { position: fixed; inset: 0; display: none;', html)
+        self.assertIn('z-index: 50; pointer-events: none;', html)
+        self.assertIn('.modal-backdrop.is-open { display: flex; pointer-events: auto; }', html)
+        self.assertIn('if (event.target?.id === "swapSuccessTxCopy") copySwapSuccessSignature();', html)
         self.assertIn("latestSwapQuoteResponse = quote;", html)
         self.assertIn("runHolderConcentration();", html)
 
@@ -3855,35 +3978,83 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Review and sign in Phantom", html)
         self.assertIn("I understand this is a real Solana mainnet swap", html)
         self.assertIn("async function signAndSubmitPreparedSwap()", html)
-        self.assertIn('$("btnSignPreparedSwap").addEventListener("click", signAndSubmitPreparedSwap);', html)
-        self.assertIn('$("swapSignAcknowledgement").addEventListener("change", updateSwapSignButtonState);', html)
-        self.assertIn("Swap submitted successfully", html)
-        self.assertIn("Provider: ${escapeHtml(providerLabel)}", html)
-        self.assertIn("Open in Solana Explorer", html)
-        self.assertIn("Token received — check your Phantom wallet.", html)
+        self.assertIn('bindUiEvent("btnSignPreparedSwap", "click", signAndSubmitPreparedSwap);', html)
+        self.assertIn('bindUiEvent("swapSignAcknowledgement", "change", updateSwapSignButtonState);', html)
+        self.assertIn("Swap submitted", html)
+        self.assertIn("Transaction is confirming on Solana.", html)
+        self.assertIn("Confirming on Solana", html)
+        self.assertIn('renderSwapSuccessRow("Route", details.provider)', html)
+        self.assertIn("View on Solscan", html)
+        self.assertIn('renderSwapSuccessRow("Expected receive", details.expected)', html)
+        self.assertNotIn("Swap submitted successfully", html)
+        self.assertNotIn("Swap successful", html)
         self.assertIn("Balances may have changed after the last swap — refresh balances.", html)
         self.assertIn('id="swapSuccessModal"', html)
+        self.assertIn('id="swapSuccessModalPanel"', html)
         self.assertIn('id="swapSuccessModalTitle"', html)
         self.assertIn('id="swapSuccessModalBody"', html)
         self.assertIn('id="swapSuccessExplorerLink"', html)
+        self.assertIn('id="swapSuccessRocket"', html)
+        self.assertIn('id="swapSuccessRocketLogo"', html)
+        self.assertIn('id="swapSuccessRocketSymbol"', html)
+        self.assertIn('id="swapSuccessCheck"', html)
+        self.assertIn('id="swapSuccessBalanceStatus"', html)
+        self.assertIn('id="swapSuccessTxCopy"', html)
         self.assertIn('id="btnCloseSwapSuccessModal"', html)
         self.assertIn("function showSwapSuccessModal(details)", html)
+        self.assertIn("function updateSwapSuccessModalState(state)", html)
+        self.assertIn("function pollSwapConfirmationStatus(signature)", html)
+        self.assertIn("SWAP_CONFIRMATION_POLL_INTERVAL_MS = 1500", html)
+        self.assertIn("SWAP_CONFIRMATION_POLL_TIMEOUT_MS = 20000", html)
         self.assertIn("function closeSwapSuccessModal()", html)
-        self.assertIn("Provider: \" + details.provider", html)
-        self.assertIn("Spent: \" + details.spent", html)
-        self.assertIn("Expected received: \" + details.expected", html)
-        self.assertIn("Swap cost: \" + details.swapCost", html)
+        self.assertIn("function swapSuccessVariantForToken(symbol)", html)
+        self.assertIn("function swapSuccessTokenVisual(summary)", html)
+        self.assertIn('return normalized === "SOL" || normalized === "USDC" ? "neutral" : "risk-on";', html)
+        self.assertIn('renderSwapSuccessRow("Sold", details.spent)', html)
+        self.assertIn('renderSwapSuccessRow("Expected receive", details.expected)', html)
+        self.assertIn('renderSwapSuccessRow("Route", details.provider)', html)
+        self.assertIn("renderSwapSuccessTxRow(details.signature)", html)
+        self.assertIn('String(details.tokenFallback || "").slice(0, 4)', html)
+        self.assertIn("rocketLogo.onerror", html)
+        self.assertIn("function copySwapSuccessSignature()", html)
         self.assertIn("function appendUsdEstimateText(baseText, usdValue)", html)
+        self.assertIn("function preparedSwapQuoteOption(summary)", html)
+        self.assertIn("function preparedSwapModalUsdEstimates(summary)", html)
         self.assertIn("function preparedSwapDisplayCost(summary)", html)
+        self.assertIn("const modalUsdEstimates = preparedSwapModalUsdEstimates(summary);", html)
         self.assertIn("const spentWithUsd = appendUsdEstimateText(", html)
         self.assertIn("const expectedWithUsd = appendUsdEstimateText(", html)
+        self.assertIn("modalUsdEstimates.spentUsd", html)
+        self.assertIn("modalUsdEstimates.expectedUsd", html)
+        self.assertIn("matchedOption?.estimated_output_usd", html)
+        self.assertIn("baseline.input_usd_value", html)
+        self.assertIn("outputUsdPrice * expectedAmount", html)
         self.assertIn("const swapCostText = preparedSwapDisplayCost(summary);", html)
         self.assertIn("spent: spentWithUsd", html)
         self.assertIn("expected: expectedWithUsd", html)
         self.assertIn("swapCost: swapCostText", html)
-        self.assertIn('"Network: Solana mainnet"', html)
+        self.assertIn("signature,", html)
+        self.assertIn("variant: tokenVisual.variant", html)
+        self.assertIn("tokenLogoUri: tokenVisual.logoUri", html)
+        self.assertIn("tokenFallback: tokenVisual.fallback", html)
+        self.assertIn('title.textContent = "Swap complete";', html)
+        self.assertIn('subtitle.textContent = "Your swap was confirmed on Solana.";', html)
+        self.assertIn('statusText.textContent = "Confirmed on Solana";', html)
+        self.assertIn('title.textContent = "Swap failed";', html)
+        self.assertIn('statusText.textContent = "Still confirming";', html)
+        self.assertNotIn('renderSwapSuccessRow("Received"', html)
+        self.assertIn('fetchMaybeJson("/swap/transaction/status?" + qs({ signature }))', html)
+        self.assertIn('updateSwapSuccessModalState("complete");', html)
+        self.assertIn('updateSwapSuccessModalState("failed");', html)
+        self.assertIn('updateSwapSuccessModalState("timeout");', html)
+        self.assertIn("Network: Solana mainnet", html)
+        self.assertIn(".swap-success-rocket", html)
+        self.assertIn("@keyframes swap-rocket-launch", html)
+        self.assertIn("@keyframes swap-check-pulse", html)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", html)
         self.assertIn('modal.classList.add("is-open")', html)
-        self.assertIn('$("btnCloseSwapSuccessModal").addEventListener("click", closeSwapSuccessModal);', html)
+        self.assertIn('bindUiEvent("btnCloseSwapSuccessModal", "click", closeSwapSuccessModal);', html)
+        self.assertIn('if (event.target?.id === "swapSuccessTxCopy") copySwapSuccessSignature();', html)
         self.assertIn("Swap failed.", html)
         self.assertIn("Swap was rejected in Phantom.", html)
         self.assertIn("Quote expired. Preview again.", html)
@@ -3902,10 +4073,14 @@ class TestSanity(unittest.TestCase):
         success_end = html.index("async function signAndSubmitPreparedSwap()", success_start)
         success_block = html[success_start:success_end]
         self.assertIn("showSwapSuccessModal({", success_block)
+        self.assertIn("setCompactSubmittedStatus(signature);", success_block)
         self.assertIn("provider: providerLabel", success_block)
         self.assertIn("spent,", success_block)
         self.assertIn("expected,", success_block)
         self.assertIn("explorer,", success_block)
+        self.assertIn("signature,", success_block)
+        self.assertIn("pollSwapConfirmationStatus(signature);", success_block)
+        self.assertNotIn('title.textContent = "Swap complete";', success_block)
 
         signing_catch = sign_block[sign_block.index("swap signing error:"):sign_block.index("if (!signedTx)")]
         self.assertNotIn("renderSwapSubmittedSuccess", signing_catch)
@@ -4073,6 +4248,8 @@ class TestSanity(unittest.TestCase):
         html = build_ui_html()
 
         self.assertIn("function setSwapPreparedActionVisible(visible)", html)
+        self.assertIn('const card = $("swapQuoteCard");', html)
+        self.assertIn("if (card && visible) card.style.display = \"block\";", html)
         self.assertIn("if (ack) ack.checked = false;", html)
         self.assertIn("if (button) button.disabled = true;", html)
         self.assertIn("button.disabled = !(latestPreparedSwap && ack?.checked);", html)
@@ -8615,6 +8792,95 @@ class TestSanity(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(json.dumps(TOKEN_META, sort_keys=True), before)
+
+    def test_fetch_solana_signature_status_maps_confirmed_status(self):
+        class Response:
+            status_code = 200
+            ok = True
+
+            def json(self):
+                return {
+                    "jsonrpc": "2.0",
+                    "result": {
+                        "value": [{
+                            "confirmationStatus": "confirmed",
+                            "confirmations": 3,
+                            "err": None,
+                        }]
+                    },
+                }
+
+        with patch("api.main.requests.post", return_value=Response()) as post:
+            result = _fetch_solana_signature_status(signature="sig123", rpc_url="https://rpc.example")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["signature"], "sig123")
+        self.assertEqual(result["confirmation_status"], "confirmed")
+        self.assertTrue(result["confirmed"])
+        self.assertFalse(result["finalized"])
+        self.assertIsNone(result["err"])
+        self.assertEqual(post.call_args.kwargs["json"]["method"], "getSignatureStatuses")
+        self.assertTrue(post.call_args.kwargs["json"]["params"][1]["searchTransactionHistory"])
+
+    def test_fetch_solana_signature_status_maps_failed_status(self):
+        class Response:
+            status_code = 200
+            ok = True
+
+            def json(self):
+                return {
+                    "jsonrpc": "2.0",
+                    "result": {
+                        "value": [{
+                            "confirmationStatus": "processed",
+                            "confirmations": 0,
+                            "err": {"InstructionError": [0, "Custom"]},
+                        }]
+                    },
+                }
+
+        with patch("api.main.requests.post", return_value=Response()):
+            result = _fetch_solana_signature_status(signature="sig123", rpc_url="https://rpc.example")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["confirmed"])
+        self.assertFalse(result["finalized"])
+        self.assertEqual(result["err"], {"InstructionError": [0, "Custom"]})
+
+    def test_swap_transaction_status_requires_configured_rpc(self):
+        with patch.dict(os.environ, {}, clear=True):
+            result = swap_transaction_status("sig123")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "SWAP_STATUS_RPC_CONFIG_MISSING")
+
+    def test_swap_transaction_status_returns_safe_confirmed_status(self):
+        with (
+            patch.dict(os.environ, {"SWAP_SUBMIT_RPC_URL": "https://rpc.example?api-key=secret"}, clear=True),
+            patch(
+                "api.main._fetch_solana_signature_status",
+                return_value={
+                    "ok": True,
+                    "signature": "sig123",
+                    "confirmation_status": "finalized",
+                    "confirmations": None,
+                    "confirmed": True,
+                    "finalized": True,
+                    "err": None,
+                },
+            ) as status,
+        ):
+            result = swap_transaction_status("sig123")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["signature"], "sig123")
+        self.assertEqual(result["confirmation_status"], "finalized")
+        self.assertTrue(result["confirmed"])
+        self.assertTrue(result["finalized"])
+        self.assertIsNone(result["err"])
+        self.assertEqual(result["rpc"]["source"], "SWAP_SUBMIT_RPC_URL")
+        self.assertNotIn("rpc.example", json.dumps(result))
+        status.assert_called_once_with(signature="sig123", rpc_url="https://rpc.example?api-key=secret")
 
     def test_fetch_solana_send_transaction_maps_http_errors(self):
         class Response:

@@ -557,14 +557,18 @@ def build_ui_html() -> str:
       position: absolute;
       top: 12px;
       right: 12px;
+      z-index: 3;
     }
     .route-action-button {
+      position: relative;
+      z-index: 1;
       min-width: 160px;
       min-height: 38px;
       background: rgba(52, 245, 163, 0.1);
       color: var(--accent-emerald);
       border-color: rgba(52, 245, 163, 0.36);
       box-shadow: none;
+      pointer-events: auto;
     }
     .route-action-button-direct {
       background: rgba(52, 245, 163, 0.1);
@@ -583,6 +587,30 @@ def build_ui_html() -> str:
       border-radius: var(--radius-sm);
       background: rgba(52, 245, 163, 0.06);
       color: var(--text-secondary);
+    }
+    .preflight-alternative-nudge {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      width: fit-content;
+      max-width: 100%;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border: 1px solid rgba(99, 230, 255, 0.18);
+      border-radius: var(--radius-sm);
+      background: rgba(99, 230, 255, 0.07);
+      color: var(--text-primary);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .preflight-alternative-nudge button {
+      min-height: 30px;
+      padding: 6px 9px;
+      white-space: nowrap;
+      color: var(--accent-emerald);
+      border-color: rgba(52, 245, 163, 0.32);
+      background: rgba(52, 245, 163, 0.09);
     }
     .route-cost-summary strong {
       color: var(--text-primary);
@@ -737,7 +765,10 @@ def build_ui_html() -> str:
     @media (prefers-reduced-motion: reduce) {
       .route-option-card-recommended,
       .route-option-card-direct,
-      .route-option-card-alternative {
+      .route-option-card-alternative,
+      .swap-success-status-dot,
+      .swap-success-check,
+      .swap-success-rocket {
         animation: none;
       }
     }
@@ -768,10 +799,264 @@ def build_ui_html() -> str:
     .ok { background: rgba(34, 197, 94, 0.14); color: #bff7d1; border-color: rgba(34, 197, 94, 0.26); }
     .warn { background: rgba(245, 158, 11, 0.15); color: #ffd899; border-color: rgba(245, 158, 11, 0.28); }
     .err { background: rgba(240, 68, 56, 0.14); color: #ffc7c2; border-color: rgba(240, 68, 56, 0.28); }
-    .modal-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.62); z-index: 50; }
-    .modal-backdrop.is-open { display: flex; }
+    .modal-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.62); z-index: 50; pointer-events: none; }
+    .modal-backdrop.is-open { display: flex; pointer-events: auto; }
     .modal-panel { width: min(480px, 100%); background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow-card); }
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+    .swap-success-panel {
+      width: min(430px, 100%);
+      padding: 18px;
+      border-radius: 24px;
+      border-color: rgba(99, 230, 255, 0.22);
+      background:
+        radial-gradient(circle at 50% 0%, rgba(52, 245, 163, 0.12), transparent 36%),
+        linear-gradient(180deg, rgba(13, 29, 49, 0.98), rgba(5, 14, 26, 0.98));
+      box-shadow: 0 24px 70px rgba(1, 9, 20, 0.54), var(--shadow-glow);
+      text-align: center;
+    }
+    .swap-success-visual {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 86px;
+      margin-bottom: 4px;
+    }
+    .swap-success-status-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      margin-top: 12px;
+      padding: 6px 10px;
+      border: 1px solid rgba(52, 245, 163, 0.28);
+      border-radius: 999px;
+      background: rgba(52, 245, 163, 0.1);
+      color: var(--accent-emerald);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .swap-success-status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 14px rgba(52, 245, 163, 0.62);
+      animation: swap-status-pulse 1.35s ease-out 2;
+    }
+    .swap-success-subtitle {
+      margin-top: 7px;
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.42;
+    }
+    .swap-success-body {
+      display: grid;
+      gap: 8px;
+      margin-top: 16px;
+      text-align: left;
+    }
+    .swap-success-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 10px;
+      border: 1px solid rgba(161, 190, 220, 0.12);
+      border-radius: 12px;
+      background: rgba(3, 10, 20, 0.34);
+    }
+    .swap-success-row-label {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .swap-success-row-value {
+      min-width: 0;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 700;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+    .swap-success-tx-button {
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--accent-cyan);
+      box-shadow: none;
+      font: inherit;
+      font-weight: 800;
+      cursor: copy;
+    }
+    .swap-success-copy-hint {
+      margin-top: -2px;
+      min-height: 14px;
+      color: var(--accent-emerald);
+      font-size: 11px;
+      text-align: right;
+    }
+    .swap-success-balance {
+      margin-top: 12px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      text-align: center;
+    }
+    .swap-success-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .swap-success-actions button,
+    .swap-success-actions a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      text-decoration: none;
+    }
+    .swap-success-actions a {
+      padding: 10px 12px;
+      border-radius: var(--radius-md);
+      font-weight: 700;
+    }
+    .swap-success-actions .swap-success-done {
+      background: linear-gradient(180deg, #4cffb3, var(--accent-emerald));
+      color: #031423;
+      border-color: rgba(52, 245, 163, 0.62);
+      box-shadow: 0 14px 34px rgba(52, 245, 163, 0.18);
+    }
+    .swap-success-check {
+      display: none;
+      width: 70px;
+      height: 70px;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(99, 230, 255, 0.28);
+      border-radius: 999px;
+      background: rgba(99, 230, 255, 0.08);
+      color: var(--accent-cyan);
+      font-size: 34px;
+      box-shadow: 0 0 30px rgba(99, 230, 255, 0.12);
+      animation: swap-check-pulse 1.2s ease-out 2;
+    }
+    .swap-success-rocket {
+      display: none;
+      position: relative;
+      width: 82px;
+      height: 86px;
+      animation: swap-rocket-launch 900ms cubic-bezier(.2,.74,.24,1) both;
+    }
+    .swap-success-rocket-body {
+      position: absolute;
+      left: 24px;
+      top: 5px;
+      width: 34px;
+      height: 61px;
+      border: 1px solid rgba(237, 247, 255, 0.32);
+      border-radius: 50% 50% 38% 38%;
+      background: linear-gradient(180deg, #edf7ff, #91aac8 62%, #526a89);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.55), 0 16px 30px rgba(99, 230, 255, 0.14);
+    }
+    .swap-success-rocket-body::before {
+      content: "";
+      position: absolute;
+      left: 8px;
+      top: 12px;
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      background: var(--rocket-token-bg, linear-gradient(135deg, rgba(155, 124, 255, 0.9), rgba(99, 230, 255, 0.8)));
+      background-size: cover;
+      background-position: center;
+      border: 2px solid rgba(5, 14, 26, 0.78);
+    }
+    .swap-success-rocket-logo {
+      position: absolute;
+      left: 33px;
+      top: 19px;
+      z-index: 2;
+      display: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      object-fit: cover;
+    }
+    .swap-success-rocket-symbol {
+      position: absolute;
+      left: 32px;
+      top: 22px;
+      width: 18px;
+      color: #031423;
+      font-size: 6px;
+      font-weight: 900;
+      line-height: 1;
+      text-align: center;
+      z-index: 1;
+    }
+    .swap-success-rocket-fin {
+      position: absolute;
+      top: 47px;
+      width: 18px;
+      height: 22px;
+      background: linear-gradient(180deg, var(--accent-purple), #5f49b8);
+      border-radius: 12px 12px 4px 4px;
+    }
+    .swap-success-rocket-fin-left { left: 14px; transform: rotate(-28deg); }
+    .swap-success-rocket-fin-right { right: 14px; transform: rotate(28deg); }
+    .swap-success-rocket-flame {
+      position: absolute;
+      left: 31px;
+      top: 65px;
+      width: 20px;
+      height: 22px;
+      border-radius: 50% 50% 60% 60%;
+      background: linear-gradient(180deg, var(--accent-emerald), var(--accent-cyan) 52%, rgba(99, 230, 255, 0));
+      filter: blur(0.2px);
+      opacity: 0.9;
+    }
+    .swap-success-rocket-glow {
+      position: absolute;
+      left: 24px;
+      top: 68px;
+      width: 34px;
+      height: 18px;
+      border-radius: 999px;
+      background: rgba(52, 245, 163, 0.16);
+      filter: blur(8px);
+    }
+    .swap-success-panel.is-risk-on .swap-success-rocket { display: block; }
+    .swap-success-panel.is-neutral .swap-success-check { display: inline-flex; }
+    .swap-success-panel.is-complete .swap-success-status-pill {
+      border-color: rgba(99, 230, 255, 0.28);
+      background: rgba(99, 230, 255, 0.09);
+      color: var(--accent-cyan);
+    }
+    .swap-success-panel.is-failed .swap-success-status-pill {
+      border-color: rgba(240, 68, 56, 0.34);
+      background: rgba(240, 68, 56, 0.12);
+      color: #ffc7c2;
+    }
+    .swap-success-panel.is-failed .swap-success-status-dot {
+      background: var(--semantic-danger);
+      box-shadow: 0 0 14px rgba(240, 68, 56, 0.45);
+    }
+    @keyframes swap-rocket-launch {
+      0% { transform: translateY(10px) scale(.96); opacity: 0; }
+      45% { opacity: 1; }
+      100% { transform: translateY(-7px) scale(1); opacity: 1; }
+    }
+    @keyframes swap-check-pulse {
+      0% { transform: scale(.94); box-shadow: 0 0 0 0 rgba(99, 230, 255, 0.22); }
+      60% { transform: scale(1); box-shadow: 0 0 0 12px rgba(99, 230, 255, 0); }
+      100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(99, 230, 255, 0); }
+    }
+    @keyframes swap-status-pulse {
+      0% { transform: scale(.9); opacity: .72; }
+      50% { transform: scale(1.25); opacity: 1; }
+      100% { transform: scale(1); opacity: .86; }
+    }
     .token-modal-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.62); z-index: 60; }
     .token-modal-backdrop.is-open { display: flex; }
     .token-modal { width: min(520px, 100%); max-height: min(720px, 92vh); overflow: auto; background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: 14px; box-shadow: var(--shadow-card), var(--shadow-glow); }
@@ -1087,12 +1372,28 @@ def build_ui_html() -> str:
     <div id="swapStatus" class="card" style="display:none; margin-top:10px;"></div>
 
     <div id="swapSuccessModal" class="modal-backdrop" aria-hidden="true">
-      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="swapSuccessModalTitle">
-        <h3 id="swapSuccessModalTitle" style="margin:0 0 8px 0;">Swap submitted successfully</h3>
-        <div id="swapSuccessModalBody" class="muted" style="line-height:1.45;"></div>
-        <div class="modal-actions">
-          <a id="swapSuccessExplorerLink" class="secondary" href="#" target="_blank" style="display:none; padding:10px 12px; border-radius:10px; text-decoration:none;">Open in Solana Explorer</a>
-          <button id="btnCloseSwapSuccessModal" type="button" class="secondary">Close</button>
+      <div id="swapSuccessModalPanel" class="modal-panel swap-success-panel" role="dialog" aria-modal="true" aria-labelledby="swapSuccessModalTitle">
+        <div class="swap-success-visual" aria-hidden="true">
+          <div id="swapSuccessRocket" class="swap-success-rocket">
+            <div class="swap-success-rocket-glow"></div>
+            <div class="swap-success-rocket-fin swap-success-rocket-fin-left"></div>
+            <div class="swap-success-rocket-fin swap-success-rocket-fin-right"></div>
+            <div id="swapSuccessRocketBody" class="swap-success-rocket-body"></div>
+            <img id="swapSuccessRocketLogo" class="swap-success-rocket-logo" alt="" />
+            <div id="swapSuccessRocketSymbol" class="swap-success-rocket-symbol"></div>
+            <div class="swap-success-rocket-flame"></div>
+          </div>
+          <div id="swapSuccessCheck" class="swap-success-check">✓</div>
+        </div>
+        <h3 id="swapSuccessModalTitle" style="margin:0;">Swap submitted</h3>
+        <div id="swapSuccessSubtitle" class="swap-success-subtitle">Transaction is confirming on Solana.</div>
+        <div id="swapSuccessStatusPill" class="swap-success-status-pill"><span class="swap-success-status-dot" aria-hidden="true"></span><span id="swapSuccessStatusText">Confirming on Solana</span></div>
+        <div id="swapSuccessModalBody" class="swap-success-body"></div>
+        <div id="swapSuccessCopyHint" class="swap-success-copy-hint" aria-live="polite"></div>
+        <div id="swapSuccessBalanceStatus" class="swap-success-balance">Balances refreshing…</div>
+        <div class="modal-actions swap-success-actions">
+          <button id="btnCloseSwapSuccessModal" type="button" class="swap-success-done">Done</button>
+          <a id="swapSuccessExplorerLink" class="secondary" href="#" target="_blank" rel="noopener" style="display:none;">View on Solscan</a>
         </div>
       </div>
     </div>
@@ -1175,10 +1476,12 @@ def build_ui_html() -> str:
 
   const DEVNET_RPC_URL = "https://api.devnet.solana.com";
   const DEVNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
-  const MAINNET_EXPLORER_BASE = "https://explorer.solana.com/tx/";
+  const MAINNET_EXPLORER_BASE = "https://solscan.io/tx/";
 
   const ACTIVITY_LIMIT = 8;
   const SWAP_QUOTE_TTL_SECONDS = 90;
+  const SWAP_CONFIRMATION_POLL_INTERVAL_MS = 1500;
+  const SWAP_CONFIRMATION_POLL_TIMEOUT_MS = 20000;
   const SWAP_BALANCE_FRESH_MS = 10 * 60 * 1000;
   const SWAP_SOL_FEE_ACCOUNT_SETUP_BUFFER_SOL = 0.001;
   const SWAP_DEFAULT_NETWORK_FEE_SOL = 0.0001;
@@ -1209,6 +1512,7 @@ def build_ui_html() -> str:
   let swapExecutionState = "idle";
   let swapQuoteExpiresAt = null;
   let swapQuoteTimerId = null;
+  let swapConfirmationPollToken = 0;
   let swapBalancesStaleAfterSubmit = false;
   let activeTokenSide = "from";
   let tokenSearchQuery = "";
@@ -1937,12 +2241,16 @@ function showSwapStatus(kind, title, payload) {
 function setSwapExecutionStatus(state, text, detail = null) {
   swapExecutionState = state || "idle";
   const box = $("swapExecutionStatus");
+  const card = $("swapQuoteCard");
   if (!box) return;
 
   if (!text || swapExecutionState === "idle") {
     box.textContent = "";
     box.style.display = "none";
     box.className = "muted";
+    if (card && $("swapPreparedAction")?.style.display !== "block") {
+      card.style.display = "none";
+    }
     return;
   }
 
@@ -1958,6 +2266,7 @@ function setSwapExecutionStatus(state, text, detail = null) {
   box.className = "muted " + kind;
   box.textContent = detail ? text + " " + detail : text;
   box.style.display = "block";
+  if (card) card.style.display = "block";
 }
 
 function sanitizeSwapPreflightDebug(value) {
@@ -2054,8 +2363,10 @@ function startSwapQuoteFreshnessTimer() {
 
 function setSwapPreparedActionVisible(visible) {
   const box = $("swapPreparedAction");
+  const card = $("swapQuoteCard");
   if (!box) return;
   box.style.display = visible ? "block" : "none";
+  if (card && visible) card.style.display = "block";
   if (!visible) {
     const summary = $("swapPreparedSummary");
     const ack = $("swapSignAcknowledgement");
@@ -2063,6 +2374,9 @@ function setSwapPreparedActionVisible(visible) {
     if (summary) summary.textContent = "";
     if (ack) ack.checked = false;
     if (button) button.disabled = true;
+    if (card && $("swapExecutionStatus")?.style.display !== "block") {
+      card.style.display = "none";
+    }
   } else {
     updateSwapSignButtonState();
   }
@@ -2571,6 +2885,77 @@ function executableRouteButtonLabel(opt) {
   if (opt?.provider === "meteora-dlmm") return "Swap via Meteora";
   if (opt?.provider === "pumpswap") return "Swap via PumpSwap";
   return "Swap this route";
+}
+
+function routeProviderDisplayLabel(optOrProvider) {
+  const provider = typeof optOrProvider === "string"
+    ? optOrProvider
+    : (optOrProvider?.execution_surface_label || optOrProvider?.provider || "");
+  if (provider === "jupiter-metis") return "Jupiter";
+  if (provider === "raydium-trade-api") return "Raydium";
+  if (provider === "orca-whirlpool") return "Orca";
+  if (provider === "meteora-dlmm") return "Meteora";
+  if (provider === "pumpswap") return "PumpSwap";
+  return provider || "Selected route";
+}
+
+function routeOptionKey(opt) {
+  if (!opt) return "";
+  return [
+    opt?.provider || "",
+    opt?.variant_id || "",
+    String(opt?.estimated_output_raw ?? opt?.estimated_output ?? "")
+  ].join("|");
+}
+
+function isDirectLikeRouteOption(opt) {
+  if (!opt) return false;
+  const shape = String(opt?.route_shape || "").toLowerCase();
+  const steps = Number(opt?.route_step_count || 0);
+  return opt?.variant_id === "direct_route_check" ||
+    steps === 1 ||
+    shape === "direct" ||
+    shape === "single-pool" ||
+    shape === "single-path" ||
+    shape === "single-clob-market" ||
+    shape === "wallet-routing";
+}
+
+function findPreflightAlternativeSuggestion(failedProvider, failedVariant) {
+  const quote = latestSwapQuoteResponse || {};
+  const failedProviderKey = String(failedProvider || "").toLowerCase();
+  const failedVariantKey = String(failedVariant || "").toLowerCase();
+  const candidates = [
+    quote?.direct_route_check || null,
+    quote?.recommended_executable_option || null,
+    quote?.recommended_option || quote?.recommended || quote?.best_quote_option || null,
+    ...(Array.isArray(quote?.other_options) ? quote.other_options : [])
+  ];
+  const seen = new Set();
+  const executable = [];
+
+  for (const opt of candidates) {
+    if (!isExecutableRouteOption(opt)) continue;
+    const providerKey = String(opt?.provider || "").toLowerCase();
+    const variantKey = String(opt?.variant_id || "").toLowerCase();
+    if (providerKey === failedProviderKey && variantKey === failedVariantKey) continue;
+    const key = routeOptionKey(opt);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    executable.push(opt);
+  }
+
+  if (!executable.length) return null;
+  const chosen = executable.find(isDirectLikeRouteOption) || executable[0];
+  const label = routeProviderDisplayLabel(chosen);
+  const routeKind = isDirectLikeRouteOption(chosen) ? "direct route" : "route";
+  return {
+    provider: chosen.provider,
+    variant_id: chosen.variant_id,
+    label,
+    route_label: label + " " + routeKind,
+    button_label: "Show " + label + " route"
+  };
 }
 
 function renderRouteActionButton(label, opt, cardRole) {
@@ -3414,15 +3799,21 @@ function routeReferenceDifferenceText(opt) {
   return pctText + " " + direction;
 }
 
+function finiteNumberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function routeSwapCostUsdText(opt) {
-  const total = Number(opt?.estimated_total_swap_cost_usd);
-  if (Number.isFinite(total)) return fmtUsdCost(total);
+  const total = finiteNumberOrNull(opt?.estimated_total_swap_cost_usd);
+  if (total !== null) return fmtUsdCost(Math.max(0, total));
 
-  const executionCostUsd = Number(opt?.execution_cost_usd);
-  if (Number.isFinite(executionCostUsd)) return fmtUsdCost(executionCostUsd);
+  const executionCostUsd = finiteNumberOrNull(opt?.execution_cost_usd);
+  if (executionCostUsd !== null) return fmtUsdCost(Math.max(0, executionCostUsd));
 
-  const tradeCostUsd = Number(opt?.estimated_trade_execution_cost?.amount_usd);
-  if (Number.isFinite(tradeCostUsd)) return fmtUsdCost(tradeCostUsd);
+  const tradeCostUsd = finiteNumberOrNull(opt?.estimated_trade_execution_cost?.amount_usd);
+  if (tradeCostUsd !== null) return fmtUsdCost(Math.max(0, tradeCostUsd));
 
   return "n/a";
 }
@@ -3920,6 +4311,51 @@ function renderSwapPreflightFailureDetail(preflight) {
   return bits.join(". ");
 }
 
+function routeActionButtonForSuggestion(suggestion) {
+  if (!suggestion) return null;
+  const buttons = Array.from(document.querySelectorAll('[data-swap-execute="true"]'));
+  return buttons.find((button) => {
+    return button.dataset.provider === suggestion.provider &&
+      button.dataset.variantId === suggestion.variant_id;
+  }) || null;
+}
+
+function showPreflightAlternativeRoute(suggestion) {
+  const button = routeActionButtonForSuggestion(suggestion);
+  const target = button?.closest?.(".route-result-shell, .route-option-card") || button;
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (button?.focus) button.focus({ preventScroll: true });
+}
+
+function renderPreflightAlternativeNudge(preflight) {
+  const box = $("swapExecutionStatus");
+  if (!box) return;
+
+  const suggestion = findPreflightAlternativeSuggestion(preflight?.provider, preflight?.variant_id);
+  if (!suggestion) return;
+
+  const failedLabel = routeProviderDisplayLabel(preflight?.provider);
+  const nudge = document.createElement("div");
+  nudge.className = "preflight-alternative-nudge";
+
+  const text = document.createElement("span");
+  text.textContent = failedLabel + " failed preflight. Try the " + suggestion.route_label + " instead.";
+  nudge.appendChild(text);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = suggestion.button_label;
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    showPreflightAlternativeRoute(suggestion);
+  });
+  nudge.appendChild(button);
+
+  box.appendChild(nudge);
+}
+
 async function preflightPreparedSwapBeforePhantom() {
   const summary = latestPreparedSwap?.quote_summary || {};
   const payload = {
@@ -3979,21 +4415,103 @@ function closeSwapSuccessModal() {
   modal.setAttribute("aria-hidden", "true");
 }
 
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function swapSuccessVariantForToken(symbol) {
+  const normalized = normalizeSwapAssetKey(symbol);
+  return normalized === "SOL" || normalized === "USDC" ? "neutral" : "risk-on";
+}
+
+function swapSuccessTokenVisual(summary) {
+  const toSymbol = normalizeSwapAssetKey(summary?.to_token || tokenDisplaySymbolForSide("to") || "TOKEN");
+  const token = tokenForPillIcon("to") || {};
+  const logoUri = safeTokenLogoUri(
+    summary?.to_token_logo_uri ||
+    summary?.to_logo_uri ||
+    summary?.output_token_logo_uri ||
+    tokenLogoUri(token)
+  );
+  return {
+    symbol: toSymbol || "TOKEN",
+    fallback: (toSymbol || "TOKEN").slice(0, 4),
+    logoUri,
+    variant: swapSuccessVariantForToken(toSymbol)
+  };
+}
+
+function renderSwapSuccessRow(label, value, extraClass="") {
+  if (!value) return "";
+  return `
+    <div class="swap-success-row${extraClass ? " " + extraClass : ""}">
+      <span class="swap-success-row-label">${escapeHtml(label)}</span>
+      <span class="swap-success-row-value">${escapeHtml(value)}</span>
+    </div>
+  `;
+}
+
+function renderSwapSuccessTxRow(signature) {
+  if (!signature) return "";
+  const shortSignature = shortenMiddle(String(signature), 4, 4);
+  return `
+    <div class="swap-success-row">
+      <span class="swap-success-row-label">Tx</span>
+      <span class="swap-success-row-value">
+        <button id="swapSuccessTxCopy" type="button" class="swap-success-tx-button" data-signature="${escapeHtml(String(signature))}" aria-label="Copy transaction signature">${escapeHtml(shortSignature)}</button>
+      </span>
+    </div>
+  `;
+}
+
 function showSwapSuccessModal(details) {
   const modal = $("swapSuccessModal");
+  const panel = $("swapSuccessModalPanel");
   const body = $("swapSuccessModalBody");
   const explorerLink = $("swapSuccessExplorerLink");
+  const rocketBody = $("swapSuccessRocketBody");
+  const rocketLogo = $("swapSuccessRocketLogo");
+  const rocketSymbol = $("swapSuccessRocketSymbol");
+  const copyHint = $("swapSuccessCopyHint");
+  const modalBalanceStatus = $("swapSuccessBalanceStatus");
   if (!modal || !body) return;
 
-  const lines = [
-    details.provider ? "Provider: " + details.provider : "",
-    details.spent ? "Spent: " + details.spent : "",
-    details.expected ? "Expected received: " + details.expected : "",
-    details.swapCost ? "Swap cost: " + details.swapCost : "",
-    "Network: Solana mainnet"
-  ].filter(Boolean);
+  const variant = details.variant === "neutral" ? "neutral" : "risk-on";
+  if (panel) {
+    panel.classList.toggle("is-neutral", variant === "neutral");
+    panel.classList.toggle("is-risk-on", variant === "risk-on");
+    panel.classList.remove("is-complete", "is-failed", "is-timeout");
+  }
+  if (rocketBody) {
+    rocketBody.style.removeProperty("--rocket-token-bg");
+  }
+  if (rocketLogo) {
+    if (details.tokenLogoUri) {
+      rocketLogo.src = details.tokenLogoUri;
+      rocketLogo.style.display = "block";
+      rocketLogo.onerror = () => {
+        rocketLogo.style.display = "none";
+        rocketLogo.removeAttribute("src");
+      };
+    } else {
+      rocketLogo.style.display = "none";
+      rocketLogo.removeAttribute("src");
+      rocketLogo.onerror = null;
+    }
+  }
+  if (rocketSymbol) {
+    rocketSymbol.textContent = String(details.tokenFallback || "").slice(0, 4);
+  }
+  if (copyHint) copyHint.textContent = "";
+  if (modalBalanceStatus) modalBalanceStatus.textContent = "Balances refreshing…";
+  updateSwapSuccessModalState("submitted");
 
-  body.innerHTML = lines.map((line) => `<div>${escapeHtml(line)}</div>`).join("");
+  body.innerHTML = [
+    renderSwapSuccessRow("Sold", details.spent),
+    renderSwapSuccessRow("Expected receive", details.expected),
+    renderSwapSuccessRow("Route", details.provider),
+    renderSwapSuccessTxRow(details.signature)
+  ].filter(Boolean).join("");
 
   if (explorerLink && details.explorer) {
     explorerLink.href = details.explorer;
@@ -4007,10 +4525,140 @@ function showSwapSuccessModal(details) {
   modal.setAttribute("aria-hidden", "false");
 }
 
+function updateSwapSuccessModalState(state) {
+  const panel = $("swapSuccessModalPanel");
+  const title = $("swapSuccessModalTitle");
+  const subtitle = $("swapSuccessSubtitle");
+  const statusText = $("swapSuccessStatusText");
+  if (!title || !subtitle || !statusText) return;
+
+  panel?.classList.remove("is-complete", "is-failed", "is-timeout");
+
+  if (state === "complete") {
+    title.textContent = "Swap complete";
+    subtitle.textContent = "Your swap was confirmed on Solana.";
+    statusText.textContent = "Confirmed on Solana";
+    panel?.classList.add("is-complete");
+    return;
+  }
+
+  if (state === "failed") {
+    title.textContent = "Swap failed";
+    subtitle.textContent = "The transaction was not confirmed on Solana.";
+    statusText.textContent = "Failed";
+    panel?.classList.add("is-failed");
+    return;
+  }
+
+  if (state === "timeout") {
+    title.textContent = "Swap submitted";
+    subtitle.textContent = "This is taking longer than usual. You can track it on Solscan.";
+    statusText.textContent = "Still confirming";
+    panel?.classList.add("is-timeout");
+    return;
+  }
+
+  title.textContent = "Swap submitted";
+  subtitle.textContent = "Transaction is confirming on Solana.";
+  statusText.textContent = "Confirming on Solana";
+}
+
+async function pollSwapConfirmationStatus(signature) {
+  if (!signature) return;
+  const pollToken = ++swapConfirmationPollToken;
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < SWAP_CONFIRMATION_POLL_TIMEOUT_MS) {
+    await delay(SWAP_CONFIRMATION_POLL_INTERVAL_MS);
+    if (pollToken !== swapConfirmationPollToken) return;
+
+    let response;
+    try {
+      response = await fetchMaybeJson("/swap/transaction/status?" + qs({ signature }));
+    } catch (err) {
+      continue;
+    }
+
+    const data = response.data || {};
+    if (!response.ok || data?.ok === false) continue;
+
+    if (data.err) {
+      updateSwapSuccessModalState("failed");
+      setCompactSubmittedStatus(signature, "Transaction failed · ");
+      return;
+    }
+
+    if (data.confirmed || data.finalized || data.confirmation_status === "confirmed" || data.confirmation_status === "finalized") {
+      updateSwapSuccessModalState("complete");
+      setCompactSubmittedStatus(signature, "Transaction confirmed · ");
+      return;
+    }
+  }
+
+  if (pollToken === swapConfirmationPollToken) {
+    updateSwapSuccessModalState("timeout");
+    setCompactSubmittedStatus(signature, "Still confirming · ");
+  }
+}
+
+function setCompactSubmittedStatus(signature, prefix="Transaction sent · ") {
+  const box = $("swapExecutionStatus");
+  if (!box) return;
+  const explorer = signature ? mainnetExplorerLink(signature) : "";
+  box.className = "muted";
+  box.innerHTML = `${escapeHtml(prefix)}${explorer ? `<a href="${escapeHtml(explorer)}" target="_blank" rel="noopener">View on Solscan</a>` : ""}`;
+  box.style.display = "block";
+  const card = $("swapQuoteCard");
+  if (card) card.style.display = "block";
+}
+
 function appendUsdEstimateText(baseText, usdValue) {
   const usd = Number(usdValue);
   if (!baseText || !Number.isFinite(usd) || usd <= 0) return baseText || "";
   return baseText + " ≈ " + fmtUsdCost(usd);
+}
+
+function preparedSwapQuoteOption(summary) {
+  const quote = latestSwapQuoteResponse || {};
+  const provider = String(latestPreparedSwap?.provider || summary?.provider || "").toLowerCase();
+  const variant = String(summary?.variant_id || "").toLowerCase();
+  const candidates = [
+    quote?.recommended_executable_option || null,
+    quote?.recommended_option || quote?.recommended || quote?.best_quote_option || null,
+    quote?.direct_route_check || null,
+    ...(Array.isArray(quote?.other_options) ? quote.other_options : [])
+  ];
+  return candidates.find((opt) => {
+    const optProvider = String(opt?.provider || "").toLowerCase();
+    const optVariant = String(opt?.variant_id || "").toLowerCase();
+    return (!provider || optProvider === provider) && (!variant || optVariant === variant);
+  }) || null;
+}
+
+function preparedSwapModalUsdEstimates(summary) {
+  const matchedOption = preparedSwapQuoteOption(summary);
+  const baseline = latestSwapQuoteResponse?.inline_baseline || {};
+  const outputUsdPrice = finiteNumberOrNull(baseline.output_usd_price);
+  const expectedAmount = finiteNumberOrNull(summary?.estimated_output);
+  const expectedFromBaselinePrice =
+    outputUsdPrice !== null && expectedAmount !== null
+      ? outputUsdPrice * expectedAmount
+      : null;
+  return {
+    spentUsd:
+      finiteNumberOrNull(summary?.input_usd_value) ??
+      finiteNumberOrNull(summary?.swap_usd_value) ??
+      finiteNumberOrNull(summary?.spend_usd) ??
+      finiteNumberOrNull(matchedOption?.input_usd_value) ??
+      finiteNumberOrNull(matchedOption?.estimated_input_usd) ??
+      finiteNumberOrNull(baseline.input_usd_value),
+    expectedUsd:
+      finiteNumberOrNull(summary?.estimated_output_usd) ??
+      finiteNumberOrNull(summary?.output_usd_value) ??
+      finiteNumberOrNull(matchedOption?.estimated_output_usd) ??
+      finiteNumberOrNull(matchedOption?.output_usd_value) ??
+      expectedFromBaselinePrice
+  };
 }
 
 function preparedSwapDisplayCost(summary) {
@@ -4036,45 +4684,37 @@ function renderSwapSubmittedSuccess(signature) {
   const expected = summary.estimated_output != null
     ? fmtNum(Number(summary.estimated_output), 6) + (toToken ? " " + toToken : "")
     : "";
+  const modalUsdEstimates = preparedSwapModalUsdEstimates(summary);
   const spentWithUsd = appendUsdEstimateText(
     spent,
-    summary.input_usd_value ?? summary.swap_usd_value ?? summary.spend_usd
+    modalUsdEstimates.spentUsd
   );
   const expectedWithUsd = appendUsdEstimateText(
     expected,
-    summary.estimated_output_usd ?? summary.output_usd_value
+    modalUsdEstimates.expectedUsd
   );
   const swapCostText = preparedSwapDisplayCost(summary);
   const explorer = mainnetExplorerLink(signature);
-  const tokenText = toToken ? toToken + " received — check your Phantom wallet." : "Token received — check your Phantom wallet.";
-
-  const lines = [
-    `<div style="font-weight:600; color:#e5eefb;">Swap submitted successfully</div>`,
-    `<div>Provider: ${escapeHtml(providerLabel)}</div>`,
-    spentWithUsd ? `<div>Spent: ${escapeHtml(spentWithUsd)}</div>` : "",
-    expectedWithUsd ? `<div>Expected received: ${escapeHtml(expectedWithUsd)}</div>` : "",
-    swapCostText ? `<div>Swap cost: ${escapeHtml(swapCostText)}</div>` : "",
-    `<div>Network: Solana mainnet</div>`,
-    `<div><a href="${escapeHtml(explorer)}" target="_blank">Open in Solana Explorer</a></div>`,
-    `<div style="margin-top:4px;">${escapeHtml(tokenText)}</div>`,
-    `<div class="muted" id="swapPostSuccessBalanceStatus" style="margin-top:4px;">Refreshing balances…</div>`
-  ].filter(Boolean);
+  const tokenVisual = swapSuccessTokenVisual(summary);
 
   swapExecutionState = "submitted";
   swapBalancesStaleAfterSubmit = true;
-  box.className = "muted ok";
-  box.innerHTML = lines.join("");
-  box.style.display = "block";
+  setCompactSubmittedStatus(signature);
   showSwapSuccessModal({
     provider: providerLabel,
     spent: spentWithUsd,
     expected: expectedWithUsd,
     swapCost: swapCostText,
     explorer,
+    signature,
+    variant: tokenVisual.variant,
+    tokenLogoUri: tokenVisual.logoUri,
+    tokenFallback: tokenVisual.fallback,
   });
   renderSwapBalanceFreshnessHint(selectedFromHolding());
   renderSwapFromBalance();
   refreshBalancesAfterSwap(summary);
+  pollSwapConfirmationStatus(signature);
 }
 
 async function signAndSubmitPreparedSwap() {
@@ -4139,6 +4779,7 @@ async function signAndSubmitPreparedSwap() {
           : "This route would likely fail before Phantom approval.",
         renderSwapPreflightFailureDetail(preparedPreflight)
       );
+      renderPreflightAlternativeNudge(preparedPreflight);
       return;
     }
   }
@@ -4239,6 +4880,7 @@ async function signAndSubmitPreparedSwap() {
 function handleSwapExecuteClick(event) {
   const button = event.target?.closest?.('[data-swap-execute="true"]');
   if (!button) return;
+  if (button.disabled) return;
 
   event.preventDefault();
   prepareSwapRoute({
@@ -6211,18 +6853,38 @@ function fmtUsdCost(x) {
 
   async function refreshBalancesAfterSwap(summary) {
     const status = $("swapPostSuccessBalanceStatus");
-    if (status) status.textContent = "Refreshing balances…";
+    const modalStatus = $("swapSuccessBalanceStatus");
+    if (status) status.textContent = "Balances refreshing…";
+    if (modalStatus) modalStatus.textContent = "Balances refreshing…";
     const assets = swapPostSuccessRefreshAssets(summary);
     const ok = await refreshBalances({ assetsOverride: assets || null, silent: true, afterSwap: true });
     if (ok) {
       swapBalancesStaleAfterSubmit = false;
-      if (status) status.textContent = "Balances updated just now.";
+      if (status) status.textContent = "Balances updated.";
+      if (modalStatus) modalStatus.textContent = "Balances updated.";
       renderSwapBalanceFreshnessHint(selectedFromHolding());
       renderSwapFromBalance();
       renderSwapWalletStrip();
     } else {
-      if (status) status.textContent = "Swap confirmed. Balance refresh failed — refresh manually.";
+      if (status) status.textContent = "Swap submitted. Balance refresh failed — refresh manually.";
+      if (modalStatus) modalStatus.textContent = "Swap submitted. Balance refresh failed — refresh manually.";
       renderSwapBalanceFreshnessHint(selectedFromHolding());
+    }
+  }
+
+  async function copySwapSuccessSignature() {
+    const button = $("swapSuccessTxCopy");
+    const hint = $("swapSuccessCopyHint");
+    const signature = button?.dataset?.signature || "";
+    if (!button || !signature || !navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(signature);
+      if (hint) hint.textContent = "Copied";
+      window.setTimeout(() => {
+        if (hint) hint.textContent = "";
+      }, 1400);
+    } catch (err) {
+      if (hint) hint.textContent = "";
     }
   }
 
@@ -6252,29 +6914,41 @@ function fmtUsdCost(x) {
 
   console.log("attaching listeners");
 
-  $("btnLoad").addEventListener("click", loadReportAndHistory);
-  $("btnRefreshBalances").addEventListener("click", refreshBalances);
-  $("btnSwapRefreshBalances").addEventListener("click", refreshBalances);
-  $("btnRefreshPrices").addEventListener("click", refreshPrices);
+  function bindUiEvent(id, type, handler) {
+    const el = $(id);
+    if (!el) return null;
+    el.addEventListener(type, handler);
+    return el;
+  }
 
-  $("btnConnectPhantom").addEventListener("click", () => connectPhantom(false));
-  $("btnDisconnectPhantom").addEventListener("click", disconnectPhantom);
-  $("btnSwapConnectPhantom").addEventListener("click", () => connectPhantom(false));
-  $("btnSwapDisconnectPhantom").addEventListener("click", disconnectPhantom);
-  $("btnSignMessage").addEventListener("click", signMessageWithPhantom);
-  $("btnValidateSend").addEventListener("click", validateSendSol);
-  $("btnSendSol").addEventListener("click", sendSol);
-  $("btnAirdropDevnet").addEventListener("click", requestDevnetAirdrop);
-  $("btnPreviewSwap").addEventListener("click", previewSwap);
-  $("btnSignPreparedSwap").addEventListener("click", signAndSubmitPreparedSwap);
-  $("swapSignAcknowledgement").addEventListener("change", updateSwapSignButtonState);
-  $("btnClearSwap").addEventListener("click", clearSwapUi);
-  $("btnCloseSwapSuccessModal").addEventListener("click", closeSwapSuccessModal);
-  $("btnCloseSwapTokenModal").addEventListener("click", closeSwapTokenModal);
-  $("swapSuccessModal").addEventListener("click", (event) => {
+  document.addEventListener("click", handleSwapExecuteClick);
+
+  bindUiEvent("btnLoad", "click", loadReportAndHistory);
+  bindUiEvent("btnRefreshBalances", "click", refreshBalances);
+  bindUiEvent("btnSwapRefreshBalances", "click", refreshBalances);
+  bindUiEvent("btnRefreshPrices", "click", refreshPrices);
+
+  bindUiEvent("btnConnectPhantom", "click", () => connectPhantom(false));
+  bindUiEvent("btnDisconnectPhantom", "click", disconnectPhantom);
+  bindUiEvent("btnSwapConnectPhantom", "click", () => connectPhantom(false));
+  bindUiEvent("btnSwapDisconnectPhantom", "click", disconnectPhantom);
+  bindUiEvent("btnSignMessage", "click", signMessageWithPhantom);
+  bindUiEvent("btnValidateSend", "click", validateSendSol);
+  bindUiEvent("btnSendSol", "click", sendSol);
+  bindUiEvent("btnAirdropDevnet", "click", requestDevnetAirdrop);
+  bindUiEvent("btnPreviewSwap", "click", previewSwap);
+  bindUiEvent("btnSignPreparedSwap", "click", signAndSubmitPreparedSwap);
+  bindUiEvent("swapSignAcknowledgement", "change", updateSwapSignButtonState);
+  bindUiEvent("btnClearSwap", "click", clearSwapUi);
+  bindUiEvent("btnCloseSwapSuccessModal", "click", closeSwapSuccessModal);
+  bindUiEvent("btnCloseSwapTokenModal", "click", closeSwapTokenModal);
+  bindUiEvent("swapSuccessModal", "click", (event) => {
     if (event.target?.id === "swapSuccessModal") closeSwapSuccessModal();
   });
-  $("swapTokenModalBackdrop").addEventListener("click", (event) => {
+  bindUiEvent("swapSuccessModal", "click", (event) => {
+    if (event.target?.id === "swapSuccessTxCopy") copySwapSuccessSignature();
+  });
+  bindUiEvent("swapTokenModalBackdrop", "click", (event) => {
     if (event.target?.id === "swapTokenModalBackdrop") closeSwapTokenModal();
   });
   document.addEventListener("keydown", (event) => {
@@ -6283,19 +6957,19 @@ function fmtUsdCost(x) {
       closeSwapTokenModal();
     }
   });
-  $("btnSwapAmountHalf").addEventListener("click", () => setSwapAmountFromHolding(0.5));
-  $("btnSwapAmountMax").addEventListener("click", () => setSwapAmountFromHolding(1));
-  $("btnSwapDirection").addEventListener("click", swapSellBuyTokens);
-  $("swapFromTokenSelector").addEventListener("click", () => openSwapTokenModal("from"));
-  $("swapToTokenSelector").addEventListener("click", () => openSwapTokenModal("to"));
-  $("swapToToken").addEventListener("click", () => openSwapTokenModal("to"));
-  $("swapTokenModalSearch").addEventListener("input", (event) => {
+  bindUiEvent("btnSwapAmountHalf", "click", () => setSwapAmountFromHolding(0.5));
+  bindUiEvent("btnSwapAmountMax", "click", () => setSwapAmountFromHolding(1));
+  bindUiEvent("btnSwapDirection", "click", swapSellBuyTokens);
+  bindUiEvent("swapFromTokenSelector", "click", () => openSwapTokenModal("from"));
+  bindUiEvent("swapToTokenSelector", "click", () => openSwapTokenModal("to"));
+  bindUiEvent("swapToToken", "click", () => openSwapTokenModal("to"));
+  bindUiEvent("swapTokenModalSearch", "input", (event) => {
     tokenSearchQuery = String(event.target?.value || "");
     tokenModalResolvedExternalToken = null;
     renderSwapTokenModal();
     scheduleTokenModalResolve();
   });
-  $("swapTokenModalBody").addEventListener("click", (event) => {
+  bindUiEvent("swapTokenModalBody", "click", (event) => {
     const importButton = event.target?.closest?.("[data-token-modal-import]");
     if (importButton) {
       importTokenModalExternalToken();
@@ -6311,7 +6985,7 @@ function fmtUsdCost(x) {
       source: row.dataset.tokenSource || ""
     });
   });
-  $("swapHoldingsDropdown").addEventListener("click", (event) => {
+  bindUiEvent("swapHoldingsDropdown", "click", (event) => {
     const button = event.target?.closest?.("[data-swap-holding-token]");
     if (!button) return;
     $("swapFromToken").value = button.dataset.swapHoldingInput || button.dataset.swapHoldingToken || "";
@@ -6321,40 +6995,39 @@ function fmtUsdCost(x) {
     renderSwapFromBalance();
     renderSwapTokenPillIcon("from");
   });
-  $("swapCard").addEventListener("click", handleSwapExecuteClick);
-  $("swapCard").addEventListener("click", (event) => {
+  bindUiEvent("swapCard", "click", (event) => {
     const button = event.target.closest("[data-token-resolve-use]");
     if (!button) return;
     useResolvedSwapToken(button.dataset.tokenResolveUse || "from");
   });
-  $("swapAmount").addEventListener("input", () => {
+  bindUiEvent("swapAmount", "input", () => {
     clearSwapQuoteFreshness();
     updateLiveSwapBaseline();
   });
-  $("swapFromToken").addEventListener("focus", () => {
+  bindUiEvent("swapFromToken", "focus", () => {
     openSwapTokenModal("from");
   });
-  $("swapFromToken").addEventListener("input", () => {
+  bindUiEvent("swapFromToken", "input", () => {
     resetSwapStateForTokenChange({ clearAmount: true });
     resetResolvedSwapTokenSelection("from");
     renderSwapFromBalance();
     renderSwapTokenPillIcon("from");
     scheduleSwapTokenResolve("from");
   });
-  $("swapToToken").addEventListener("input", () => {
+  bindUiEvent("swapToToken", "input", () => {
     resetSwapStateForTokenChange({ clearAmount: false });
     resetResolvedSwapTokenSelection("to");
     renderSwapTokenPillIcon("to");
     scheduleSwapTokenResolve("to");
   });
-  $("swapFromToken").addEventListener("change", () => {
+  bindUiEvent("swapFromToken", "change", () => {
     resetSwapStateForTokenChange({ clearAmount: true });
     resolveSwapTokenInput("from");
     updateLiveSwapBaseline();
     renderSwapFromBalance();
     renderSwapTokenPillIcon("from");
   });
-  $("swapToToken").addEventListener("change", () => {
+  bindUiEvent("swapToToken", "change", () => {
     resetSwapStateForTokenChange({ clearAmount: false });
     resolveSwapTokenInput("to");
     renderSwapTokenPillIcon("to");
