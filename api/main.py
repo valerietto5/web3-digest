@@ -42,6 +42,8 @@ app = FastAPI(title="Web3 Digest API", version="0.1.0")
 
 TOKEN_META = default_swap_token_meta_by_symbol()
 
+EXTERNAL_REFERENCE_IMPLIED_USD_MAX_MULTIPLE = 5.0
+
 
 def _resolve_swap_token_meta(token_symbol: str) -> dict | None:
     meta = get_token_meta_by_symbol(token_symbol)
@@ -185,6 +187,48 @@ def _apply_external_token_reference_prices(reference_prices: dict, token_meta_by
         if row:
             prices[token_label] = row
     return prices
+
+
+def _is_unreliable_external_reference_price(row: dict | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    detail = row.get("pricing_source_detail") or {}
+    return (
+        row.get("usd_valuation_reliable") is False
+        or row.get("reference_quality") == "external_unverified_reference"
+        or (isinstance(detail, dict) and detail.get("external_token_metadata") is True)
+    )
+
+
+def _external_reference_sanity_check(
+    *,
+    input_usd_value: float | None,
+    quoted_output_amount: float | None,
+    output_usd_price: float | None,
+) -> dict | None:
+    if (
+        input_usd_value is None
+        or quoted_output_amount is None
+        or output_usd_price is None
+        or input_usd_value <= 0
+        or quoted_output_amount <= 0
+        or output_usd_price <= 0
+    ):
+        return None
+
+    quote_implied_output_usd = quoted_output_amount * output_usd_price
+    ratio = quote_implied_output_usd / input_usd_value
+    if ratio <= EXTERNAL_REFERENCE_IMPLIED_USD_MAX_MULTIPLE:
+        return None
+
+    return {
+        "reference_unreliable": True,
+        "reason": "external_reference_inconsistent_with_executable_quote",
+        "quote_implied_output_usd": quote_implied_output_usd,
+        "input_usd_value": input_usd_value,
+        "ratio": ratio,
+        "max_allowed_ratio": EXTERNAL_REFERENCE_IMPLIED_USD_MAX_MULTIPLE,
+    }
 
 
 def _coingecko_id_for_quote_token(token_symbol: str) -> str | None:
@@ -465,6 +509,15 @@ def _build_reference_baseline_from_resolved_prices(
     output_usd_price = float(to_row["usd"])
     input_usd_value = amount * input_usd_price
     ideal_output_amount = input_usd_value / output_usd_price
+    sanity = (
+        _external_reference_sanity_check(
+            input_usd_value=input_usd_value,
+            quoted_output_amount=best_output_amount,
+            output_usd_price=output_usd_price,
+        )
+        if _is_unreliable_external_reference_price(to_row)
+        else None
+    )
 
     pricing_source = (
         to_row.get("pricing_source")
@@ -484,21 +537,28 @@ def _build_reference_baseline_from_resolved_prices(
         "input_token": from_token,
         "input_usd_price": input_usd_price,
         "input_usd_value": input_usd_value,
-        "ideal_output_amount": ideal_output_amount,
+        "ideal_output_amount": None if sanity else ideal_output_amount,
         "output_token": to_token,
         "output_usd_price": output_usd_price,
-        "output_usd_value": ideal_output_amount * output_usd_price,
+        "output_usd_value": None if sanity else ideal_output_amount * output_usd_price,
         "pricing_source": pricing_source,
         "pricing_ts": pricing_ts,
         "pricing_source_detail": {
             "from_token": from_row.get("pricing_source_detail"),
             "to_token": to_row.get("pricing_source_detail"),
         },
-        "note": "Fresh market reference for quote comparison. Not an executable quote.",
+        "reference_unreliable": bool(sanity),
+        "reference_unreliable_reason": (sanity or {}).get("reason"),
+        "reference_sanity_check": sanity,
+        "note": (
+            "External token reference price is inconsistent with the executable quote; USD comparison is hidden."
+            if sanity
+            else "Fresh market reference for quote comparison. Not an executable quote."
+        ),
     }
 
     baseline_vs_recommended = None
-    if best_output_amount is not None and ideal_output_amount:
+    if not sanity and best_output_amount is not None and ideal_output_amount:
         diff_abs = best_output_amount - ideal_output_amount
         diff_usd = diff_abs * output_usd_price
         diff_pct = (diff_abs / ideal_output_amount) * 100
@@ -5174,6 +5234,7 @@ def _attach_cost_fields(
     option: dict | None,
     reference_output_amount: float | None,
     reference_prices: dict | None = None,
+    reference_unreliable: bool = False,
 ) -> dict | None:
     if not option:
         return option
@@ -5193,10 +5254,7 @@ def _attach_cost_fields(
     output_token = option.get("to_token")
     output_price_row = reference_prices.get(output_token) or {}
     output_token_usd_price = _safe_float(output_price_row.get("usd"))
-    output_reference_uncertain = (
-        output_price_row.get("usd_valuation_reliable") is False
-        or (output_price_row.get("pricing_source_detail") or {}).get("external_token_metadata") is True
-    )
+    output_reference_uncertain = bool(reference_unreliable)
     estimated_output_usd = (
         quoted_output_amount * output_token_usd_price
         if quoted_output_amount is not None and output_token_usd_price is not None and not output_reference_uncertain
@@ -5217,7 +5275,7 @@ def _attach_cost_fields(
     option["execution_cost_usd"] = execution_cost_usd
     option["usd_reference_uncertain"] = output_reference_uncertain
     option["usd_reference_note"] = (
-        "USD estimate unavailable / reference uncertain. External-token market references are comparison-only."
+        "USD estimate unavailable / reference inconsistent with executable quote."
         if output_reference_uncertain
         else None
     )
@@ -7124,25 +7182,34 @@ def swap_quote(
     )
 
     reference_output_amount = _safe_float((inline_baseline or {}).get("ideal_output_amount"))
+    reference_unreliable = bool((inline_baseline or {}).get("reference_unreliable"))
 
     best_quote_option = _attach_cost_fields(
         best_quote_option,
         reference_output_amount,
         reference_prices=reference_prices,
+        reference_unreliable=reference_unreliable,
     )
     recommended_executable_option = _attach_cost_fields(
         recommended_executable_option,
         reference_output_amount,
         reference_prices=reference_prices,
+        reference_unreliable=reference_unreliable,
     )
     ranked_other_options = [
-        _attach_cost_fields(opt, reference_output_amount, reference_prices=reference_prices)
+        _attach_cost_fields(
+            opt,
+            reference_output_amount,
+            reference_prices=reference_prices,
+            reference_unreliable=reference_unreliable,
+        )
         for opt in ranked_other_options
     ] 
     direct_route_output = _attach_cost_fields(
         direct_route_output,
         reference_output_amount,
         reference_prices=reference_prices,
+        reference_unreliable=reference_unreliable,
     )
 
     if _is_executable_quote_option(best_quote_option):

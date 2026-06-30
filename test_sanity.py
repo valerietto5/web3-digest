@@ -1951,9 +1951,10 @@ class TestSanity(unittest.TestCase):
             response = swap_quote(from_token="SOL", to_token=ext_mint, amount=1.0)
 
         self.assertEqual(response["to_token"], "JUP")
-        self.assertIsNone(response["recommended_option"]["estimated_output_usd"])
-        self.assertTrue(response["recommended_option"]["usd_reference_uncertain"])
-        self.assertIn("USD estimate unavailable", response["recommended_option"]["usd_reference_note"])
+        self.assertAlmostEqual(response["recommended_option"]["estimated_output_usd"], 0.4)
+        self.assertFalse(response["recommended_option"]["usd_reference_uncertain"])
+        self.assertIsNone(response["recommended_option"]["usd_reference_note"])
+        self.assertAlmostEqual(response["recommended_option"]["execution_cost_usd"], 83.6)
         self.assertEqual(response["inline_baseline"]["pricing_source"], "dexscreener_solana")
         self.assertEqual(response["inline_baseline"]["output_token"], "JUP")
         self.assertAlmostEqual(response["inline_baseline"]["output_usd_price"], 0.2)
@@ -2452,14 +2453,39 @@ class TestSanity(unittest.TestCase):
         self.assertFalse(out["FIGURE"]["usd_valuation_reliable"])
         self.assertEqual(out["FIGURE"]["reference_quality"], "external_unverified_reference")
 
-    def test_external_token_uncertain_reference_suppresses_route_usd_estimates(self):
+    def test_external_token_reference_can_price_routes_when_sanity_passes(self):
+        option = {
+            "to_token": "GACHA",
+            "estimated_output": 1000.0,
+        }
+        result = _attach_cost_fields(
+            option,
+            reference_output_amount=1006.0,
+            reference_prices={
+                "GACHA": {
+                    "usd": 0.0014,
+                    "pricing_source": "dexscreener_solana",
+                    "usd_valuation_reliable": False,
+                    "pricing_source_detail": {
+                        "external_token_metadata": True,
+                    },
+                }
+            },
+        )
+
+        self.assertAlmostEqual(result["estimated_output_usd"], 1.4)
+        self.assertAlmostEqual(result["execution_cost_usd"], 0.0084)
+        self.assertFalse(result["usd_reference_uncertain"])
+        self.assertIsNone(result["usd_reference_note"])
+
+    def test_unreliable_external_reference_suppresses_route_usd_estimates(self):
         option = {
             "to_token": "GACHA",
             "estimated_output": 123456789.0,
         }
         result = _attach_cost_fields(
             option,
-            reference_output_amount=123000000.0,
+            reference_output_amount=None,
             reference_prices={
                 "GACHA": {
                     "usd": 999.0,
@@ -2470,13 +2496,60 @@ class TestSanity(unittest.TestCase):
                     },
                 }
             },
+            reference_unreliable=True,
         )
 
         self.assertIsNone(result["estimated_output_usd"])
         self.assertIsNone(result["execution_cost_usd"])
         self.assertTrue(result["usd_reference_uncertain"])
-        self.assertIn("USD estimate unavailable", result["usd_reference_note"])
+        self.assertIn("reference inconsistent", result["usd_reference_note"])
         self.assertEqual(result["estimated_output"], 123456789.0)
+
+    def test_external_token_absurd_quote_reference_marks_baseline_unreliable(self):
+        baseline, delta = _build_reference_baseline_from_resolved_prices(
+            from_token="SOL",
+            to_token="COBIE",
+            amount=0.019068,
+            best_output_amount=998.0,
+            from_row={"usd": 74.47, "pricing_source": "coingecko_simple_price"},
+            to_row={
+                "usd": 0.708337,
+                "pricing_source": "dexscreener_solana",
+                "usd_valuation_reliable": False,
+                "reference_quality": "external_unverified_reference",
+                "pricing_source_detail": {"external_token_metadata": True},
+            },
+        )
+
+        self.assertTrue(baseline["reference_unreliable"])
+        self.assertEqual(
+            baseline["reference_unreliable_reason"],
+            "external_reference_inconsistent_with_executable_quote",
+        )
+        self.assertIsNone(baseline["ideal_output_amount"])
+        self.assertIsNone(baseline["output_usd_value"])
+        self.assertIsNone(delta)
+        self.assertGreater(baseline["reference_sanity_check"]["ratio"], 5.0)
+
+    def test_external_token_reasonable_quote_reference_keeps_baseline(self):
+        baseline, delta = _build_reference_baseline_from_resolved_prices(
+            from_token="SOL",
+            to_token="COBIE",
+            amount=0.019068,
+            best_output_amount=998.0,
+            from_row={"usd": 74.47, "pricing_source": "coingecko_simple_price"},
+            to_row={
+                "usd": 0.00142,
+                "pricing_source": "dexscreener_solana",
+                "usd_valuation_reliable": False,
+                "reference_quality": "external_unverified_reference",
+                "pricing_source_detail": {"external_token_metadata": True},
+            },
+        )
+
+        self.assertFalse(baseline["reference_unreliable"])
+        self.assertIsNotNone(baseline["ideal_output_amount"])
+        self.assertIsNotNone(delta)
 
     def test_attach_cost_fields_computes_positive_reference_gap_usd(self):
         option = {
@@ -2576,11 +2649,15 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Used only to compare route quality", html)
         self.assertIn("fmtUsdCost(Number(baseline.input_usd_value))", html)
         self.assertIn("fmtUsdCost(tradeCostUsd)", html)
-        self.assertIn("if (abs < 0.01) return sign + \"$\" + abs.toFixed(6);", html)
-        self.assertIn("if (abs < 1) return sign + \"$\" + abs.toFixed(4);", html)
+        self.assertIn('if (abs < 0.0001) return sign + "<$0.0001";', html)
+        self.assertIn("const fixed = abs.toFixed(6).replace(/0+$/, \"\").replace(/[.]$/, \"\");", html)
+        self.assertIn("return sign + \"$\" + fixed;", html)
         self.assertIn("estimated_output_usd", html)
         self.assertIn('const sign = n < 0 ? "-" : "";', html)
         self.assertIn('return sign + "$" + abs.toFixed(2);', html)
+        source = Path("api/main.py").read_text()
+        self.assertIn("reference_unreliable = bool((inline_baseline or {}).get(\"reference_unreliable\"))", source)
+        self.assertIn("reference_unreliable=reference_unreliable", source)
 
     def test_swap_ui_recommended_and_direct_titles_include_surface(self):
         html = build_ui_html()
@@ -2630,6 +2707,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Web3 Digest fee: $0.00", html)
         self.assertNotIn("Estimated swap cost vs market:", html)
         self.assertIn("function routeReferenceDifferenceText(opt)", html)
+        self.assertIn("if (opt?.usd_reference_uncertain) return \"\";", html)
         self.assertIn('const direction = pct >= 0 ? "above reference" : "below reference";', html)
         self.assertIn('return pctText + " " + direction;', html)
         self.assertIn('Matches reference', html)
@@ -2646,6 +2724,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("function finiteNumberOrNull(value)", html)
         self.assertIn("if (value === null || value === undefined || value === \"\") return null;", html)
         self.assertIn("const estimatedTotalSwapCostUsdText = routeSwapCostUsdText(opt);", html)
+        self.assertIn('if (opt?.usd_reference_uncertain) return "n/a";', html)
         self.assertIn("const total = finiteNumberOrNull(opt?.estimated_total_swap_cost_usd);", html)
         self.assertIn("if (total !== null) return fmtUsdCost(Math.max(0, total));", html)
         self.assertIn("const executionCostUsd = finiteNumberOrNull(opt?.execution_cost_usd);", html)
@@ -2673,6 +2752,14 @@ class TestSanity(unittest.TestCase):
         self.assertIn("opt?.usd_reference_uncertain", html)
         self.assertIn("const referenceUsdPrice = Number(opt?.estimated_trade_execution_cost?.token_usd_price);", html)
         self.assertIn('return " ≈ " + fmtUsdCost(referenceUsd) + " est.";', html)
+        receive_helper = html[
+            html.index("function routeReceiveUsdText(opt)"):
+            html.index("function routeInputUsdText(opt)")
+        ]
+        self.assertLess(
+            receive_helper.index("if (opt?.usd_reference_uncertain)"),
+            receive_helper.index("const referenceUsdPrice"),
+        )
         self.assertIn("if (estimatedOutput > 0)", html)
         self.assertIn(" · USD estimate unavailable / reference uncertain", html)
         self.assertIn("lower", html)
@@ -3799,7 +3886,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("slippage_bps: 50", html)
         self.assertIn("user_public_key: activeWalletPubkey", html)
         self.assertIn('network: "solana"', html)
-        self.assertIn("Swap transaction prepared. Review the summary before signing.", html)
+        self.assertIn("Checking route before Phantom…", html)
         self.assertIn("Jupiter authorization is required for execution prepare.", html)
         self.assertIn("Jupiter is rate-limited right now. Try again later.", html)
 
@@ -3859,7 +3946,7 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("transaction_base64", prepare_block)
         self.assertNotIn("swapTransaction", prepare_block)
 
-    def test_swap_ui_prepare_route_requires_phantom_and_does_not_sign(self):
+    def test_swap_ui_prepare_route_requires_phantom_and_continues_to_sign_flow(self):
         html = build_ui_html()
         start = html.index("async function prepareSwapRoute(routeRequest)")
         end = html.index("function isPhantomUserRejection", start)
@@ -3869,11 +3956,10 @@ class TestSanity(unittest.TestCase):
         self.assertIn("if (!activeWalletPubkey)", prepare_block)
         self.assertIn("SWAP_EXECUTABLE_PROVIDERS.has(provider)", prepare_block)
         self.assertIn("SWAP_EXECUTABLE_VARIANTS[provider]", prepare_block)
-        self.assertIn("setSwapPreparedActionVisible(true);", prepare_block)
+        self.assertIn("await signAndSubmitPreparedSwap();", prepare_block)
         self.assertNotIn("signTransaction", prepare_block)
         self.assertNotIn("sendRawTransaction", prepare_block)
         self.assertNotIn("VersionedTransaction", prepare_block)
-        self.assertNotIn("signAndSubmitPreparedSwap", prepare_block)
 
     def test_swap_ui_blocks_prepare_when_fresh_from_balance_is_insufficient(self):
         html = build_ui_html()
@@ -3940,6 +4026,8 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Swap via PumpSwap", html)
         self.assertNotIn("Execution-ready via", html)
         self.assertNotIn("Comparison-only - no swap action available yet.", html)
+        self.assertIn("route-action-helper", html)
+        self.assertIn("You’ll review and sign in Phantom.", html)
 
     def test_swap_ui_direct_route_uses_direct_variant_for_prepare(self):
         html = build_ui_html()
@@ -3970,16 +4058,16 @@ class TestSanity(unittest.TestCase):
     def test_swap_ui_includes_prepared_sign_action_and_copy(self):
         html = build_ui_html()
 
-        self.assertIn('id="swapPreparedAction"', html)
-        self.assertIn('id="swapPreparedSummary"', html)
-        self.assertIn('id="swapSignAcknowledgement"', html)
-        self.assertIn('id="btnSignPreparedSwap"', html)
-        self.assertIn('id="btnSignPreparedSwap" type="button" class="secondary" disabled', html)
-        self.assertIn("Review and sign in Phantom", html)
-        self.assertIn("I understand this is a real Solana mainnet swap", html)
+        self.assertNotIn('id="swapPreparedAction"', html)
+        self.assertNotIn('id="swapPreparedSummary"', html)
+        self.assertNotIn('id="swapSignAcknowledgement"', html)
+        self.assertNotIn('id="btnSignPreparedSwap"', html)
+        self.assertNotIn("I understand this is a real Solana mainnet swap", html)
+        self.assertIn("You’ll review and sign in Phantom.", html)
+        self.assertIn(".route-action-helper", html)
         self.assertIn("async function signAndSubmitPreparedSwap()", html)
-        self.assertIn('bindUiEvent("btnSignPreparedSwap", "click", signAndSubmitPreparedSwap);', html)
-        self.assertIn('bindUiEvent("swapSignAcknowledgement", "change", updateSwapSignButtonState);', html)
+        self.assertNotIn('bindUiEvent("btnSignPreparedSwap", "click", signAndSubmitPreparedSwap);', html)
+        self.assertNotIn('bindUiEvent("swapSignAcknowledgement", "change", updateSwapSignButtonState);', html)
         self.assertIn("Swap submitted", html)
         self.assertIn("Transaction is confirming on Solana.", html)
         self.assertIn("Confirming on Solana", html)
@@ -4028,6 +4116,8 @@ class TestSanity(unittest.TestCase):
         self.assertIn("modalUsdEstimates.expectedUsd", html)
         self.assertIn("matchedOption?.estimated_output_usd", html)
         self.assertIn("baseline.input_usd_value", html)
+        self.assertIn("const baselineOutputReliable = baseline?.reference_unreliable !== true;", html)
+        self.assertIn("baselineOutputReliable && outputUsdPrice !== null && expectedAmount !== null", html)
         self.assertIn("outputUsdPrice * expectedAmount", html)
         self.assertIn("const swapCostText = preparedSwapDisplayCost(summary);", html)
         self.assertIn("spent: spentWithUsd", html)
@@ -4103,6 +4193,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("Could not read prepared swap transaction. Preview again.", html)
         self.assertIn("Phantom signing failed.", html)
         self.assertIn("Phantom signing did not return a signed transaction.", html)
+        self.assertIn("Opening Phantom…", html)
         self.assertIn("Transaction submission failed.", html)
         self.assertIn("Transaction submission was blocked by RPC.", html)
         self.assertIn("RPC is rate-limited. Try again later.", html)
@@ -4148,9 +4239,8 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn("if (!latestPreparedSwap || !latestPreparedSwap.transaction_base64)", sign_block)
         self.assertIn("latestPreparedSwap?.submit_preflight?.can_submit === false", html)
-        self.assertIn("const ack = $(\"swapSignAcknowledgement\");", sign_block)
-        self.assertIn("if (!ack?.checked)", sign_block)
-        self.assertIn("Confirm you understand this is a real mainnet swap before signing.", sign_block)
+        self.assertNotIn("swapSignAcknowledgement", sign_block)
+        self.assertNotIn("Confirm you understand this is a real mainnet swap before signing.", sign_block)
         self.assertIn('latestPreparedSwap.transaction_format !== "versioned"', sign_block)
         self.assertIn("if (!phantomProvider || !activeWalletPubkey)", sign_block)
         self.assertIn("if (!solanaWeb3?.VersionedTransaction?.deserialize)", sign_block)
@@ -4192,7 +4282,7 @@ class TestSanity(unittest.TestCase):
         self.assertIn("MAINNET_EXPLORER_BASE", html)
         self.assertNotIn("sendRawTransaction", sign_block)
 
-    def test_swap_ui_prepare_success_reveals_sign_action_without_auto_signing(self):
+    def test_swap_ui_prepare_success_continues_to_preflight_and_phantom_flow(self):
         html = build_ui_html()
         start = html.index("async function prepareSwapRoute(routeRequest)")
         end = html.index("function isPhantomUserRejection", start)
@@ -4200,9 +4290,10 @@ class TestSanity(unittest.TestCase):
 
         self.assertIn("setSwapPreparedActionVisible(false);", prepare_block)
         self.assertIn("latestPreparedSwap = res.data || null;", prepare_block)
-        self.assertIn("renderPreparedSwapSummary(latestPreparedSwap);", prepare_block)
-        self.assertIn("setSwapPreparedActionVisible(true);", prepare_block)
-        self.assertNotIn("signAndSubmitPreparedSwap()", prepare_block)
+        self.assertIn('setSwapExecutionStatus("preparing", "Checking route before Phantom…");', prepare_block)
+        self.assertIn("await signAndSubmitPreparedSwap();", prepare_block)
+        self.assertNotIn("renderPreparedSwapSummary(latestPreparedSwap);", prepare_block)
+        self.assertNotIn("setSwapPreparedActionVisible(true);", prepare_block)
 
     def test_swap_ui_signing_uses_backend_submit_not_browser_rpc(self):
         html = build_ui_html()
@@ -4221,38 +4312,36 @@ class TestSanity(unittest.TestCase):
         self.assertNotIn("DEVNET_RPC_URL", sign_block)
         self.assertNotIn("DEVNET_EXPLORER_BASE", sign_block)
 
-    def test_swap_ui_prepared_summary_renders_mainnet_guardrails(self):
+    def test_swap_ui_prepared_summary_is_not_rendered_in_normal_route_flow(self):
         html = build_ui_html()
 
         self.assertIn("function renderPreparedSwapSummary(prepared)", html)
         self.assertIn("Prepared swap", html)
-        self.assertIn("Route: ${escapeHtml(routeLabel)}", html)
-        self.assertIn('prepared?.execution_surface_label || summary.provider_label || "Jupiter"', html)
-        self.assertIn("From:", html)
-        self.assertIn("To:", html)
-        self.assertIn("Estimated receive:", html)
-        self.assertIn("Minimum receive:", html)
-        self.assertIn("Slippage:", html)
-        self.assertIn("Network: Solana mainnet", html)
-        self.assertIn("Phantom may require extra SOL for network fees or account setup beyond the entered amount.", html)
-        self.assertNotIn("Keep extra SOL for network fees before approving in Phantom.</div>`", html)
-        self.assertIn("This is a real mainnet transaction. Review in Phantom before signing.", html)
+        self.assertNotIn('id="swapPreparedAction"', html)
+        self.assertNotIn('id="swapSignAcknowledgement"', html)
+        self.assertNotIn('id="btnSignPreparedSwap"', html)
 
+        prepare_start = html.index("async function prepareSwapRoute(routeRequest)")
+        prepare_end = html.index("function isPhantomUserRejection", prepare_start)
+        prepare_block = html[prepare_start:prepare_end]
+        self.assertNotIn("renderPreparedSwapSummary(latestPreparedSwap);", prepare_block)
+        self.assertNotIn("setSwapPreparedActionVisible(true);", prepare_block)
+
+    def test_swap_ui_prepared_summary_omits_transaction_payload(self):
+        html = build_ui_html()
         start = html.index("function renderPreparedSwapSummary(prepared)")
         end = html.index("function resetSwapExecutionPrepare", start)
         summary_block = html[start:end]
         self.assertNotIn('lines.push("<div style="', summary_block)
         self.assertNotIn("transaction_base64", summary_block)
 
-    def test_swap_ui_prepare_reset_clears_acknowledgement_and_disables_sign_button(self):
+    def test_swap_ui_prepare_reset_does_not_require_acknowledgement(self):
         html = build_ui_html()
 
         self.assertIn("function setSwapPreparedActionVisible(visible)", html)
         self.assertIn('const card = $("swapQuoteCard");', html)
-        self.assertIn("if (card && visible) card.style.display = \"block\";", html)
-        self.assertIn("if (ack) ack.checked = false;", html)
-        self.assertIn("if (button) button.disabled = true;", html)
-        self.assertIn("button.disabled = !(latestPreparedSwap && ack?.checked);", html)
+        self.assertNotIn('id="swapSignAcknowledgement"', html)
+        self.assertNotIn('id="btnSignPreparedSwap"', html)
 
     def test_insert_and_get_latest_prices_with_ts(self):
         t1 = "2026-02-25T00:00:00+00:00"

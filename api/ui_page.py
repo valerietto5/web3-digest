@@ -576,6 +576,14 @@ def build_ui_html() -> str:
       border-color: rgba(52, 245, 163, 0.36);
       box-shadow: none;
     }
+    .route-action-helper {
+      margin-top: 5px;
+      color: var(--text-muted);
+      font-size: 11px;
+      line-height: 1.25;
+      text-align: center;
+      white-space: nowrap;
+    }
     .route-cost-summary {
       display: inline-flex;
       width: fit-content;
@@ -1334,14 +1342,6 @@ def build_ui_html() -> str:
       <div class="muted quote-status-line quote-external-context" id="swapExternalTokenNotice" style="display:none;"></div>
       <div class="muted quote-status-line" id="swapExecutionStatus" style="display:none;"></div>
       <pre id="swapVisiblePreflightDebug" style="display:none;">No preflight check yet.</pre>
-      <div id="swapPreparedAction" style="display:none; margin-top:8px;">
-        <div id="swapPreparedSummary" class="muted" style="font-size:12px; line-height:1.45;"></div>
-        <label class="muted" style="display:flex; align-items:flex-start; gap:6px; margin-top:8px; font-size:12px;">
-          <input id="swapSignAcknowledgement" type="checkbox" style="width:auto; min-width:0; margin-top:2px;" />
-          <span>I understand this is a real Solana mainnet swap and Phantom will ask me to approve it.</span>
-        </label>
-        <button id="btnSignPreparedSwap" type="button" class="secondary" disabled style="margin-top:8px;">Review and sign in Phantom</button>
-      </div>
 
       <div class="muted" id="swapRecommendation" style="margin-top:8px;">recommendation: —</div>
       <div class="muted" id="swapCompareSummary" style="margin-top:8px;">comparison summary: —</div>
@@ -2964,16 +2964,19 @@ function renderRouteActionButton(label, opt, cardRole) {
   const role = cardRole || opt.kind || "route";
   const roleClass = role === "direct" ? " route-action-button-direct" : "";
   return `
-    <button
-      type="button"
-      class="route-action-button${roleClass}"
-      data-swap-execute="true"
-      data-provider="${escapeHtml(opt.provider)}"
-      data-variant-id="${escapeHtml(opt.variant_id)}"
-      data-card-role="${escapeHtml(role)}"
-    >
-      ${escapeHtml(label || executableRouteButtonLabel(opt))}
-    </button>
+    <div>
+      <button
+        type="button"
+        class="route-action-button${roleClass}"
+        data-swap-execute="true"
+        data-provider="${escapeHtml(opt.provider)}"
+        data-variant-id="${escapeHtml(opt.variant_id)}"
+        data-card-role="${escapeHtml(role)}"
+      >
+        ${escapeHtml(label || executableRouteButtonLabel(opt))}
+      </button>
+      <div class="route-action-helper">You’ll review and sign in Phantom.</div>
+    </div>
   `;
 }
 
@@ -3693,15 +3696,15 @@ function routeReceiveUsdText(opt) {
   if (Number.isFinite(receiveUsd) && !(receiveUsd === 0 && estimatedOutput > 0)) {
     return " ≈ " + fmtUsdCost(receiveUsd);
   }
+  if (opt?.usd_reference_uncertain) {
+    return " · USD estimate unavailable / reference uncertain";
+  }
   const referenceUsdPrice = Number(opt?.estimated_trade_execution_cost?.token_usd_price);
   const referenceUsd = Number.isFinite(referenceUsdPrice) && Number.isFinite(estimatedOutput)
     ? estimatedOutput * referenceUsdPrice
     : null;
   if (referenceUsd && referenceUsd > 0) {
     return " ≈ " + fmtUsdCost(referenceUsd) + " est.";
-  }
-  if (opt?.usd_reference_uncertain) {
-    return " · USD estimate unavailable / reference uncertain";
   }
   if (estimatedOutput > 0) {
     return " · USD estimate unavailable / reference uncertain";
@@ -3783,6 +3786,7 @@ function routeVsBestOutputText(opt, bestOption) {
 }
 
 function routeReferenceDifferenceText(opt) {
+  if (opt?.usd_reference_uncertain) return "";
   const gap = Number(opt?.estimated_trade_execution_cost?.amount);
   const output = Number(opt?.estimated_output);
   if (!Number.isFinite(gap) || !Number.isFinite(output)) return "";
@@ -3806,6 +3810,8 @@ function finiteNumberOrNull(value) {
 }
 
 function routeSwapCostUsdText(opt) {
+  if (opt?.usd_reference_uncertain) return "n/a";
+
   const total = finiteNumberOrNull(opt?.estimated_total_swap_cost_usd);
   if (total !== null) return fmtUsdCost(Math.max(0, total));
 
@@ -4035,18 +4041,8 @@ async function prepareSwapRoute(routeRequest) {
     return;
   }
 
-  const summary = latestPreparedSwap?.quote_summary || {};
-  const receive = summary.estimated_output != null
-    ? "Refreshed receive estimate: " + fmtNum(Number(summary.estimated_output), 6) + " " + (summary.to_token || "")
-    : "";
-
-  setSwapExecutionStatus(
-    "prepared",
-    "Swap transaction prepared. Review the summary before signing.",
-    receive
-  );
-  renderPreparedSwapSummary(latestPreparedSwap);
-  setSwapPreparedActionVisible(true);
+  setSwapExecutionStatus("preparing", "Checking route before Phantom…");
+  await signAndSubmitPreparedSwap();
 }
 
 function isPhantomUserRejection(err) {
@@ -4638,10 +4634,11 @@ function preparedSwapQuoteOption(summary) {
 function preparedSwapModalUsdEstimates(summary) {
   const matchedOption = preparedSwapQuoteOption(summary);
   const baseline = latestSwapQuoteResponse?.inline_baseline || {};
+  const baselineOutputReliable = baseline?.reference_unreliable !== true;
   const outputUsdPrice = finiteNumberOrNull(baseline.output_usd_price);
   const expectedAmount = finiteNumberOrNull(summary?.estimated_output);
   const expectedFromBaselinePrice =
-    outputUsdPrice !== null && expectedAmount !== null
+    baselineOutputReliable && outputUsdPrice !== null && expectedAmount !== null
       ? outputUsdPrice * expectedAmount
       : null;
   return {
@@ -4724,12 +4721,6 @@ async function signAndSubmitPreparedSwap() {
     return;
   }
 
-  const ack = $("swapSignAcknowledgement");
-  if (!ack?.checked) {
-    setSwapExecutionStatus("failed", "Confirm you understand this is a real mainnet swap before signing.");
-    return;
-  }
-
   if (latestPreparedSwap.transaction_format !== "versioned") {
     setSwapPreparedActionVisible(false);
     setSwapExecutionStatus("failed", "Swap preparation failed. Preview again.");
@@ -4750,6 +4741,7 @@ async function signAndSubmitPreparedSwap() {
     return;
   }
 
+  setSwapExecutionStatus("preparing", "Checking route before Phantom…");
   const solRequirement = preflightSolRequirementBeforePhantom();
   if (solRequirement && solRequirement.ok === false) {
     setSwapExecutionStatus(
@@ -4803,9 +4795,7 @@ async function signAndSubmitPreparedSwap() {
 
   let signedTx;
   try {
-    const signButton = $("btnSignPreparedSwap");
-    if (signButton) signButton.disabled = true;
-    setSwapExecutionStatus("signing", "Review and sign in Phantom…");
+    setSwapExecutionStatus("signing", "Opening Phantom…");
     signedTx = await phantomProvider.signTransaction(tx);
   } catch (err) {
     console.error("swap signing error:", err);
@@ -4815,8 +4805,6 @@ async function signAndSubmitPreparedSwap() {
       swapRuntimeFailureMessage("signing", err),
       reason ? "Execution phase: signing. " + reason : "Execution phase: signing"
     );
-    setSwapPreparedActionVisible(true);
-    updateSwapSignButtonState();
     return;
   }
 
@@ -4826,8 +4814,6 @@ async function signAndSubmitPreparedSwap() {
       swapRuntimeFailureMessage("missing_signed_transaction"),
       "Execution phase: signing"
     );
-    setSwapPreparedActionVisible(true);
-    updateSwapSignButtonState();
     return;
   }
 
@@ -6713,8 +6699,11 @@ function fmtUsdCost(x) {
   if (n === 0) return "$0.00";
   const sign = n < 0 ? "-" : "";
   const abs = Math.abs(n);
-  if (abs < 0.01) return sign + "$" + abs.toFixed(6);
-  if (abs < 1) return sign + "$" + abs.toFixed(4);
+  if (abs < 0.0001) return sign + "<$0.0001";
+  if (abs < 0.01) {
+    const fixed = abs.toFixed(6).replace(/0+$/, "").replace(/[.]$/, "");
+    return sign + "$" + fixed;
+  }
   return sign + "$" + abs.toFixed(2);
 }
 
@@ -6937,8 +6926,6 @@ function fmtUsdCost(x) {
   bindUiEvent("btnSendSol", "click", sendSol);
   bindUiEvent("btnAirdropDevnet", "click", requestDevnetAirdrop);
   bindUiEvent("btnPreviewSwap", "click", previewSwap);
-  bindUiEvent("btnSignPreparedSwap", "click", signAndSubmitPreparedSwap);
-  bindUiEvent("swapSignAcknowledgement", "change", updateSwapSignButtonState);
   bindUiEvent("btnClearSwap", "click", clearSwapUi);
   bindUiEvent("btnCloseSwapSuccessModal", "click", closeSwapSuccessModal);
   bindUiEvent("btnCloseSwapTokenModal", "click", closeSwapTokenModal);
